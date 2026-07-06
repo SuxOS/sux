@@ -57,6 +57,21 @@ describe("batch", () => {
 		expect(JSON.parse(r.content[0].text).results).toHaveLength(100);
 	});
 
+	it("bounds the fan-out product when mapping a nested fan-out tool (pipe)", async () => {
+		// batch{tool:'pipe'} would let 100 calls × 25 pipe steps = 2500 tool runs;
+		// the nested cap holds it to 25 pipe calls (25 × 25 = 625 max).
+		const calls = Array.from({ length: 26 }, () => ({ steps: [{ tool: "hash", args: { text: "x" } }] }));
+		const over = await batch.run({} as any, { tool: "pipe", calls });
+		expect(over.isError).toBe(true);
+		expect(over.content[0].text).toMatch(/Too many calls for nested fan-out tool 'pipe': 26 \(max 25/);
+		// Exactly 25 nested pipe calls is allowed (each pipe runs one hash step).
+		const ok25 = await batch.run({} as any, { tool: "pipe", calls: calls.slice(0, 25) });
+		expect(ok25.isError).toBeFalsy();
+		const out = JSON.parse(ok25.content[0].text);
+		expect(out.results).toHaveLength(25);
+		expect(out.results[0].ok).toBe(true);
+	});
+
 	it("reduce defaults to none — output is unchanged", async () => {
 		const base = await batch.run({} as any, { tool: "hash", calls: [{ text: "a" }, { text: "b" }] });
 		const explicit = await batch.run({} as any, { tool: "hash", calls: [{ text: "a" }, { text: "b" }], reduce: "none" });

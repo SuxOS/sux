@@ -16,6 +16,13 @@ import { type Fn, fail, ok } from "../registry";
 const CONCURRENCY = 8;
 // Amplification cap: one batch call may fan into at most this many tool runs.
 const MAX_CALLS = 100;
+// Nested fan-out cap: when the mapped tool is itself a fan-out (`pipe`), each
+// call can expand into many more tool runs, so the product must stay bounded.
+// pipe refuses batch/pipe inside itself (depth ≤ 2), and this tighter call limit
+// keeps map-over-pipeline legitimate while bounding the total work product
+// (≤ MAX_NESTED_CALLS × pipe's own step cap) instead of 100 × 25 = 2500.
+const NESTED_FANOUT_TOOLS = new Set(["pipe"]);
+const MAX_NESTED_CALLS = 25;
 // Joiner between mapped results before concat/summarize reduction.
 const SEP = "\n\n---\n\n";
 
@@ -58,6 +65,10 @@ export const batch: Fn = {
 		if (!Array.isArray(args?.calls)) return fail("`calls` must be an array of argument objects.");
 		const calls: unknown[] = args.calls;
 		if (calls.length > MAX_CALLS) return fail(`Too many calls: ${calls.length} (max ${MAX_CALLS} per batch).`);
+		// A fan-out tool mapped over many calls multiplies the work product; keep it bounded.
+		if (NESTED_FANOUT_TOOLS.has(toolName) && calls.length > MAX_NESTED_CALLS) {
+			return fail(`Too many calls for nested fan-out tool '${toolName}': ${calls.length} (max ${MAX_NESTED_CALLS} when mapping a fan-out tool).`);
+		}
 		const reduce = String(args?.reduce ?? "none");
 		if (reduce !== "none" && reduce !== "concat" && reduce !== "summarize") return fail(`Unknown reduce '${reduce}'. Options: none, concat, summarize.`);
 		const includeResults = args?.include_results !== false;

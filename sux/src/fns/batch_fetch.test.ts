@@ -65,6 +65,16 @@ describe("batch_fetch", () => {
 		expect(r.content[0].text).toMatch(/must not be empty/);
 	});
 
+	it("rejects more than 100 urls (amplification cap) but accepts exactly 100", async () => {
+		const many = Array.from({ length: 101 }, (_, i) => `https://a.com/${i}`);
+		const over = await batch_fetch.run({} as any, { urls: many });
+		expect(over.isError).toBe(true);
+		expect(over.content[0].text).toMatch(/Too many urls: 101 \(max 100/);
+		const at = await batch_fetch.run({} as any, { urls: many.slice(0, 100) });
+		expect(at.isError).toBeFalsy();
+		expect(JSON.parse(at.content[0].text)).toHaveLength(100);
+	});
+
 	it("marks the batch noCache when any URL errors or comes back 4xx (must not poison the cache)", async () => {
 		const bad = await batch_fetch.run({} as any, { urls: ["https://blocked.com", "https://ok.com"] });
 		expect(bad.isError).toBeFalsy(); // per-url results are still returned

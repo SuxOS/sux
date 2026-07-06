@@ -16,6 +16,10 @@ import { smartFetch } from "../proxy";
 
 const CONCURRENCY = 8;
 
+// Amplification cap: one batch_fetch call may drive at most this many upstream
+// fetches. Mirrors batch's MAX_CALLS — a fetch fan-out is the same DoS surface.
+const MAX_URLS = 100;
+
 // Raw-byte cap for as:"url" downloads. This is a size guard on stored objects,
 // distinct from max_bytes (a text-preview cap). Oversize is reported per-URL, so
 // one huge file never fails the whole batch.
@@ -66,7 +70,7 @@ export const batch_fetch: Fn = {
 		additionalProperties: false,
 		required: ["urls"],
 		properties: {
-			urls: { type: "array", items: { type: "string" }, description: "Absolute http(s) URLs to fetch." },
+			urls: { type: "array", items: { type: "string" }, maxItems: 100, description: "Absolute http(s) URLs to fetch (max 100)." },
 			method: { type: "string", default: "GET", description: "HTTP method (default GET)." },
 			as: {
 				type: "string",
@@ -82,6 +86,7 @@ export const batch_fetch: Fn = {
 		if (!Array.isArray(args?.urls)) return fail("`urls` must be an array of http(s) URLs.");
 		const urls: unknown[] = args.urls;
 		if (!urls.length) return fail("`urls` must not be empty.");
+		if (urls.length > MAX_URLS) return fail(`Too many urls: ${urls.length} (max ${MAX_URLS} per batch_fetch).`);
 
 		const method = String(args?.method ?? "GET").toUpperCase();
 		const as = String(args?.as ?? "text");

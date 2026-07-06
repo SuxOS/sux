@@ -1,8 +1,13 @@
 import puppeteer from "@cloudflare/puppeteer";
 import { type Fn, fail, ok } from "../registry";
-import { isHttpUrl } from "./_util";
+import { clamp, isHttpUrl } from "./_util";
 
 const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle0", "networkidle2"] as const;
+
+// Output cap: a JS-heavy page can render to multiple MB of HTML/text. Returning
+// it wholesale would balloon context and risk the 128MB isolate, so clamp the
+// rendered content to a generous-but-bounded size (matches _util.clamp default).
+const MAX_OUTPUT_BYTES = 2_000_000;
 
 export const render: Fn = {
 	name: "render",
@@ -45,7 +50,7 @@ export const render: Fn = {
 				as === "text"
 					? await page.evaluate(() => (globalThis as unknown as { document: { body: { innerText: string } } }).document.body.innerText)
 					: await page.content();
-			return ok(content);
+			return ok(clamp(content, MAX_OUTPUT_BYTES));
 		} catch (e) {
 			return fail(`render failed: ${String((e as Error).message ?? e)}`);
 		} finally {

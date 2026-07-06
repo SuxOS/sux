@@ -74,4 +74,23 @@ describe("render", () => {
 		expect(r.content[0].text).toMatch(/nav boom/);
 		expect(stubs.close).toHaveBeenCalled();
 	});
+
+	it("caps a huge rendered HTML page instead of returning it wholesale", async () => {
+		const huge = "x".repeat(3_000_000);
+		stubs.content.mockResolvedValueOnce(huge);
+		const r = await render.run(BROWSER_ENV, { url: "https://example.com" });
+		expect(r.isError).toBeFalsy();
+		// Clamped to the 2MB output cap (+ a short truncation marker), not 3MB.
+		expect(r.content[0].text.length).toBeLessThan(2_000_100);
+		expect(r.content[0].text).toContain("truncated at 2000000 bytes");
+	});
+
+	it("caps huge rendered text (as:text) too", async () => {
+		const huge = "y".repeat(3_000_000);
+		stubs.evaluate.mockResolvedValueOnce(huge);
+		const r = await render.run(BROWSER_ENV, { url: "https://example.com", as: "text" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text.length).toBeLessThan(2_000_100);
+		expect(r.content[0].text).toContain("truncated at 2000000 bytes");
+	});
 });
