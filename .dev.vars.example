@@ -1,0 +1,17 @@
+# Local development secrets. Copy to `.dev.vars` and fill in.
+# `.dev.vars` is git-ignored — never commit real values.
+# In production these are set with `wrangler secret put <NAME>` instead.
+
+# GitHub OAuth App (device-flow not required; web/redirect flow is used).
+# Callback URL must be registered as http://localhost:8788/callback for local.
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+
+# Signs the approval/CSRF cookies. Generate with: openssl rand -hex 32
+COOKIE_ENCRYPTION_KEY=
+
+# Kagi API token (from the Kagi dashboard) — injected server-side into upstream.
+KAGI_API_KEY=
+
+# Comma-separated GitHub usernames allowed through (case-insensitive), e.g. alice,bob
+ALLOWED_GITHUB_LOGIN=
