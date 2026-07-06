@@ -51,7 +51,9 @@ export const egress: Fn = {
 	inputSchema: { type: "object", additionalProperties: false, properties: {} },
 	run: async (env) => {
 		const [residential, datacenter] = await Promise.all([
-			withTimeout(ipInfo((u) => smartFetch(env, u, {})), 9000, null),
+			// Force the residential path even for direct-routed hosts (ipwho.is) —
+			// this probe MUST go through the exit to measure it.
+			withTimeout(ipInfo((u) => smartFetch(env, u, {}, "proxy")), 9000, null),
 			withTimeout(ipInfo((u) => fetch(u)), 9000, null),
 		]);
 		const configured = isTailscaleConfigured(env);

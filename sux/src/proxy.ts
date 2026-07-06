@@ -49,19 +49,45 @@ export function proxyEnabled(env: TailscaleEnv): boolean {
 	return isTailscaleConfigured(env) && env.TAILSCALE_PROXY_ALL !== "0";
 }
 
+// Smart routing: hosts that gain nothing from residential egress (authenticated
+// APIs, DoH resolvers, RDAP/CT/IP-geo lookups) go DIRECT even when the proxy is
+// on — direct is a hop faster and these never block datacenter IPs. Web pages
+// (the reason the residential exit exists) still proxy.
+const DIRECT_HOST_RE = /(^|\.)(?:kagi\.com|cloudflare-dns\.com|dns\.google|rdap\.org|crt\.sh|ipwho\.is|ip-api\.com)$/i;
+
+export function isDirectHost(url: string): boolean {
+	try {
+		return DIRECT_HOST_RE.test(new URL(url).hostname);
+	} catch {
+		return false;
+	}
+}
+
+export type Route = "auto" | "proxy" | "direct";
+
+/** Decide whether a fetch should go through the residential proxy. `auto`
+ * (default) proxies when enabled unless the host is a known direct host;
+ * `proxy`/`direct` force it (e.g. egress forces `proxy` to probe the exit). */
+export function willProxy(env: TailscaleEnv, url: string, route: Route = "auto"): boolean {
+	if (route === "direct") return false;
+	if (!proxyEnabled(env)) return false;
+	if (route === "proxy") return true;
+	return !isDirectHost(url);
+}
+
 /**
- * Drop-in `fetch` that routes through the Tailscale residential proxy when
- * enabled, and falls back to a DIRECT fetch if the proxy errors — so enabling
- * the proxy can never take the Worker down if the tailnet box is offline.
- * Bodies are strings (the Worker reads request bodies up front), which is all
- * the proxy transports.
+ * Drop-in `fetch` that routes through the Tailscale residential proxy per the
+ * smart-routing policy (see willProxy), and falls back to a DIRECT fetch if the
+ * proxy errors — so enabling the proxy can never take the Worker down if the
+ * tailnet box is offline. Bodies are strings (all the proxy transports).
  */
 export async function smartFetch(
 	env: TailscaleEnv,
 	url: string,
 	init: { method?: string; headers?: Headers | Record<string, string>; body?: string } = {},
+	route: Route = "auto",
 ): Promise<Response> {
-	if (proxyEnabled(env)) {
+	if (willProxy(env, url, route)) {
 		try {
 			const headers = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
 			return await fetchPageViaTailscale(env, url, { method: init.method, headers, body: init.body });
