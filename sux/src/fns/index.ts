@@ -4,6 +4,7 @@
 
 import type { Fn } from "../registry";
 import { protocol } from "./protocol";
+import { search } from "./search";
 import { scrape } from "./scrape";
 import { extract } from "./extract";
 import { hash } from "./hash";
@@ -14,6 +15,7 @@ import { youtube } from "./youtube";
 export const FUNCTIONS: Fn[] = [
 	// working
 	protocol,
+	search,
 	scrape,
 	extract,
 	hash,

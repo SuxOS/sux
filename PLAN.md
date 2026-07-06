@@ -174,6 +174,9 @@ zillow/redfin · flights/hotels · jobs · social · reviews.
 > real $ (paid APIs, Browser-Run volume), legal/ToS gray areas (bulk download,
 > auth-walled data), or destructive/irreversible actions.
 
+## Build priority (user-set): **1) search  2) filesize reduction  3) archive**
+Then the rest of the queue. (`search` #47 → `optimize`/`compress`/`shrink` #31-34 → `archive` #32.)
+
 ## 50 functions (build queue) — ✅ done · 🔨 next · ⬜ queued
 Each is one `Fn` file under `sux/src/fns/`. Bidirectional verbs marked ↔.
 
