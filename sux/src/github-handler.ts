@@ -10,6 +10,8 @@ import {
 	validateCSRFToken,
 } from "./workers-oauth-utils";
 import { hmacHex, isTailscaleConfigured, proxyEnabled, smartFetch, type TailscaleEnv } from "./proxy";
+import { type Metrics, readMetrics } from "./metrics";
+import type { RtEnv } from "./registry";
 
 type HandlerEnv = Env &
 	TailscaleEnv & { OAUTH_PROVIDER: OAuthHelpers } & {
@@ -101,6 +103,32 @@ async function nodeStatus(env: HandlerEnv): Promise<Record<string, unknown>> {
 	}
 }
 
+/** Caching-proxy effectiveness derived from the KV-backed metrics (presentation only).
+ * Mirrors observability.ts: r4() 4-dp rounding, rate = hits/calls. Route counts are the
+ * lifetime tally {proxied, direct, proxy_fallback, binary_refetch}; residential_ratio is
+ * the fraction that actually egressed residentially. Rates are null when there's no sample
+ * (guarded 0-denominators) so the UI can render "—" instead of NaN. */
+export function deriveMetrics(m: Metrics): {
+	calls: number;
+	cache_hit_rate: number | null;
+	residential_ratio: number | null;
+	error_rate: number | null;
+	proxied: number;
+	route_total: number;
+} {
+	const r4 = (n: number) => Math.round(n * 10000) / 10000;
+	const routeTotal = Object.values(m.routes ?? {}).reduce((a, b) => a + b, 0);
+	const proxied = m.routes?.proxied ?? 0;
+	return {
+		calls: m.total,
+		cache_hit_rate: m.total ? r4(m.cache_hits / m.total) : null,
+		residential_ratio: routeTotal ? r4(proxied / routeTotal) : null,
+		error_rate: m.total ? r4(m.errors / m.total) : null,
+		proxied,
+		route_total: routeTotal,
+	};
+}
+
 async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	const config = {
 		kagiKey: Boolean(env.KAGI_API_KEY),
@@ -110,12 +138,16 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 
 	// Residential (through the proxy) vs datacenter (direct) egress + tunnel latency.
 	const t0 = Date.now();
-	const [proxied, direct, status] = await Promise.all([
+	const [proxied, direct, status, rawMetrics] = await Promise.all([
 		withTimeout(ipInfo((u) => smartFetch(env, u, {})), 9000, null),
 		withTimeout(ipInfo((u) => fetch(u)), 9000, null),
 		withTimeout(nodeStatus(env), 9000, { available: false, reason: "timeout" } as Record<string, unknown>),
+		// Caching-proxy effectiveness (KV-backed). Degrade to null on a cold/failed
+		// isolate — this is presentation-only and must never fail the health page.
+		withTimeout(readMetrics(env as unknown as RtEnv).catch(() => null), 9000, null),
 	]);
 	const tunnelMs = Date.now() - t0;
+	const metrics = rawMetrics ? deriveMetrics(rawMetrics) : null;
 
 	const configured = isTailscaleConfigured(env);
 	let proxyUrlValid = false;
@@ -154,7 +186,7 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	}
 
 	const ok = config.kagiKey && config.githubClient && upstream.reachable;
-	return { status: ok ? "ok" : "degraded", config, tailscale, upstream };
+	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics };
 }
 
 function renderHealthHtml(h: any): string {
@@ -163,7 +195,11 @@ function renderHealthHtml(h: any): string {
 	const res = ts.residential;
 	const dc = ts.datacenter;
 	const node = ts.node ?? {};
+	// metrics null on a cold/failed KV read — render "—" and zeroes, never NaN.
+	const mx = h.metrics ?? { calls: 0, cache_hit_rate: null, residential_ratio: null, error_rate: null, proxied: 0, route_total: 0 };
 	const esc = (s: any) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+	// Rate (0..1) → readable %; null/undefined → em dash. Whole numbers drop the decimal (73%, not 73.0%).
+	const pct = (r: number | null | undefined) => (r == null ? "—" : `${Number.isInteger(r * 100) ? r * 100 : (r * 100).toFixed(1)}%`);
 	const check = (ok: boolean, label: string, reason?: string) =>
 		`<div class="chk"><span class="mark ${ok ? "ok" : "bad"}">${ok ? "✓" : "✗"}</span><div class="chk-body"><span class="chk-label">${label}</span>${!ok && reason ? `<span class="chk-why">${esc(reason)}</span>` : ""}</div></div>`;
 
@@ -220,6 +256,13 @@ function renderHealthHtml(h: any): string {
  <div class="row"><span class="k">Tunnel round-trip</span><span class="v">${ts.tunnel_ms} ms</span></div>
  <div class="row"><span class="k">Residential exit (wrapped)</span><span class="v big">${res ? res.ip : "—"}<br><span class="k">${loc(res)}${res?.org ? " · " + res.org : ""}</span></span></div>
  <div class="row"><span class="k">Datacenter exit (bare)</span><span class="v">${dc ? dc.ip : "—"}<br><span class="k">${loc(dc)}${dc?.org ? " · " + dc.org : ""}</span></span></div>
+</div>
+
+<div class="card"><h2>cache &amp; routing</h2>
+ <div class="row"><span class="k">Cache hit-rate</span><span class="v">${pct(mx.cache_hit_rate)}</span></div>
+ <div class="row"><span class="k">Residential-route ratio</span><span class="v">${pct(mx.residential_ratio)}${mx.route_total ? `<br><span class="k">${mx.proxied}/${mx.route_total} fetches via proxy</span>` : ""}</span></div>
+ <div class="row"><span class="k">Total calls</span><span class="v">${mx.calls}</span></div>
+ <div class="row"><span class="k">Error rate</span><span class="v">${pct(mx.error_rate)}</span></div>
 </div>
 
 <div class="card"><h2>tailscale · node <code>tailscaled status</code></h2>
