@@ -65,7 +65,7 @@ const rtServer = {
 	},
 };
 
-export default new OAuthProvider({
+const oauthProvider = new OAuthProvider({
 	apiHandler: rtServer as any,
 	apiRoute: "/mcp",
 	authorizeEndpoint: "/authorize",
@@ -73,3 +73,22 @@ export default new OAuthProvider({
 	defaultHandler: GitHubHandler as any,
 	tokenEndpoint: "/token",
 });
+
+// The OAuth library throws on malformed requests (e.g. an unregistered
+// redirect_uri), which Cloudflare surfaces as a raw 1101 error page. Wrap it so
+// those become clean JSON errors: 400 for client mistakes, 500 otherwise.
+export default {
+	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
+		try {
+			return await oauthProvider.fetch(request, env as any, ctx);
+		} catch (e) {
+			const msg = String((e as Error)?.message ?? e);
+			const clientError = /redirect|client|invalid|unauthoriz|unregister|missing|csrf|state/i.test(msg);
+			console.error(`oauth wrapper caught: ${msg}`);
+			return new Response(JSON.stringify({ error: clientError ? "invalid_request" : "server_error", error_description: msg }), {
+				status: clientError ? 400 : 500,
+				headers: { "content-type": "application/json" },
+			});
+		}
+	},
+};
