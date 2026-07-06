@@ -23,6 +23,8 @@
 	 * npx wrangler secret put GITHUB_CLIENT_SECRET
 	 * npx wrangler secret put COOKIE_ENCRYPTION_KEY
 	 */
+	[env..dev.vars],
+
 	"kv_namespaces": [
 		{
 			"binding": "OAUTH_KV",
