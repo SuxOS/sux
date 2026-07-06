@@ -60,6 +60,7 @@ export const shop: Fn = {
 		},
 	},
 	cacheable: true,
+	ttl: 300, // product prices/availability are live external state — keep fresh
 	run: async (env, args) => {
 		const q = String(args?.query ?? "").trim();
 		if (!q) return fail("query is required.");

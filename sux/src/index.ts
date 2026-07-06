@@ -76,7 +76,8 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		recordCall(env, ctx, { tool: name, ms: Date.now() - started, error: Boolean(result.isError), err });
 		// noCache/isError results are returned but never cached; the noCache flag is
 		// stripped and the KV write happens off the response path via ctx.waitUntil.
-		deferCacheWrite(env.OAUTH_KV, ctx, key, result);
+		// fn.ttl (when set) overrides the global cache lifetime for this fn.
+		deferCacheWrite(env.OAUTH_KV, ctx, key, result, fn.ttl);
 		return sseResponse({ jsonrpc: "2.0", id, result });
 	}
 	return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });

@@ -17,6 +17,7 @@ export const xml: Fn = {
 		},
 	},
 	cacheable: true,
+	ttl: 86400, // pure deterministic converter — same input always yields the same XML
 	run: async (_env, args) => {
 		const data = String(args?.data ?? "");
 		if (!data.trim()) return fail("`data` is required.");

@@ -15,6 +15,7 @@ export const hash: Fn = {
 		},
 	},
 	cacheable: true,
+	ttl: 86400, // pure deterministic transform — same text+algo always hashes identically
 	raw: true,
 	run: async (_env, args) => {
 		const algo = ALGOS[String(args?.algo ?? "sha256")];

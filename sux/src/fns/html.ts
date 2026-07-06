@@ -15,6 +15,7 @@ export const html: Fn = {
 		},
 	},
 	cacheable: true,
+	ttl: 86400, // pure deterministic converter — Markdown→HTML output never changes
 	run: async (_env, args) => {
 		const data = String(args?.data ?? "");
 		if (!data.trim()) return fail("`data` is required.");

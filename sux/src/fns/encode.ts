@@ -15,6 +15,7 @@ export const encode: Fn = {
 		},
 	},
 	cacheable: true,
+	ttl: 86400, // pure deterministic transform — encode/decode output never changes
 	raw: true,
 	run: async (_env, args) => {
 		const text = String(args?.text ?? "");

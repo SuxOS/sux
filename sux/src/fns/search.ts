@@ -25,6 +25,7 @@ export const search: Fn = {
 		},
 	},
 	cacheable: true,
+	ttl: 300, // live web search — reflects external state, cache only briefly
 	run: async (env, args) => {
 		const query = String(args?.query ?? "").trim();
 		if (!query) return fail("query is required.");

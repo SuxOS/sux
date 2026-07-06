@@ -73,13 +73,18 @@ export async function cacheKey(toolName: string, args: unknown): Promise<string>
 // - the write itself happens off the response path via ctx.waitUntil (same
 //   pattern as recordCall — a KV put costs tens of ms and the caller shouldn't
 //   wait for it), and a failed put is swallowed: caching is best-effort.
+// The optional ttl lets a fn override the global lifetime (registry Fn.ttl);
+// an unset/invalid ttl falls back to CACHE_TTL_SECONDS, so callers that don't
+// pass one keep the existing behavior.
 export function deferCacheWrite(
 	kv: { put: (key: string, value: string, opts: { expirationTtl: number }) => Promise<unknown> },
 	ctx: { waitUntil: (promise: Promise<unknown>) => void },
 	key: string | null,
 	result: { isError?: boolean; noCache?: boolean; [k: string]: unknown },
+	ttl?: number,
 ): void {
 	const cacheable = key && !result.isError && !result.noCache;
 	delete result.noCache;
-	if (cacheable) ctx.waitUntil(kv.put(key, JSON.stringify(result), { expirationTtl: CACHE_TTL_SECONDS }).catch(() => {}));
+	const expirationTtl = typeof ttl === "number" && ttl > 0 ? ttl : CACHE_TTL_SECONDS;
+	if (cacheable) ctx.waitUntil(kv.put(key, JSON.stringify(result), { expirationTtl }).catch(() => {}));
 }

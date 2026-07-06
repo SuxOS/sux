@@ -15,6 +15,7 @@ export const wayback: Fn = {
 		},
 	},
 	cacheable: true,
+	ttl: 300, // Internet Archive latest-snapshot lookups shift as new captures land
 	run: async (_env, args) => {
 		const url = String(args?.url ?? "");
 		if (!/^https?:\/\//i.test(url)) return fail("url must be absolute http(s).");

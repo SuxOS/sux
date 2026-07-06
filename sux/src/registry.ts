@@ -57,6 +57,10 @@ export type Fn = {
 	inputSchema: unknown;
 
 	cacheable?: boolean;
+	// Per-fn cache lifetime in seconds, used only when cacheable. Unset falls
+	// back to the global CACHE_TTL_SECONDS (~1h). Set short on volatile external
+	// data (search/shop/wayback) and long on pure deterministic transforms.
+	ttl?: number;
 	// Skip the automatic open/close text normalization (index.ts). Set on
 	// byte-exact fns — hashing, encoding, compression, binary/base64 output,
 	// crypto, and KV storage — where mutating bytes would corrupt the result.

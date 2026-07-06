@@ -88,6 +88,7 @@ export const webSearch: Fn = {
 		},
 	},
 	cacheable: true,
+	ttl: 300, // live web search — reflects external state, cache only briefly
 	run: async (env, args) => {
 		const q = String(args?.query ?? "").trim();
 		if (!q) return fail("query is required.");

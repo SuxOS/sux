@@ -60,6 +60,36 @@ describe("deferCacheWrite", () => {
 		expect(entry.opts).toEqual({ expirationTtl: CACHE_TTL_SECONDS });
 	});
 
+	it("uses a fn's ttl on the KV write when one is passed", async () => {
+		const { ctx, deferred } = makeCtx();
+		const { kv, store } = makeKv();
+
+		deferCacheWrite(kv, ctx, "cache:k1", { content: [{ type: "text", text: "hi" }] }, 300);
+
+		await Promise.all(deferred);
+		expect(store.get("cache:k1")!.opts).toEqual({ expirationTtl: 300 });
+	});
+
+	it("falls back to the global default ttl when a fn passes none", async () => {
+		const { ctx, deferred } = makeCtx();
+		const { kv, store } = makeKv();
+
+		deferCacheWrite(kv, ctx, "cache:k1", { content: [{ type: "text", text: "hi" }] });
+
+		await Promise.all(deferred);
+		expect(store.get("cache:k1")!.opts).toEqual({ expirationTtl: CACHE_TTL_SECONDS });
+	});
+
+	it("ignores a non-positive ttl and falls back to the global default", async () => {
+		const { ctx, deferred } = makeCtx();
+		const { kv, store } = makeKv();
+
+		deferCacheWrite(kv, ctx, "cache:k1", { content: [{ type: "text", text: "hi" }] }, 0);
+
+		await Promise.all(deferred);
+		expect(store.get("cache:k1")!.opts).toEqual({ expirationTtl: CACHE_TTL_SECONDS });
+	});
+
 	it("never writes isError results", async () => {
 		const { ctx, deferred } = makeCtx();
 		const { kv, store } = makeKv();
