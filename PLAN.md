@@ -180,8 +180,23 @@ zillow/redfin · flights/hotels · jobs · social · reviews.
 fewer tokens to the agent) and compose in front of every other verb. Then `search`
 #47 → `compress`/`shrink(bytes)`/`optimize` #31-34 → `archive` #32 → rest.
 
+## Status (live): **93 functions built** · type-checked · 364 tests green
+Source of truth = **`sux/FUNCTIONS.md`** (`npm run docs` regenerates it). 88 working +
+5 planned stubs (pdf/office/image — need Browser Rendering / WASM).
+- **Quality gate (Bosman):** *"the 101st function exists only because the first 100 are
+  perfect."* Stop padding count — perfect the set. New functions justified ONLY when they
+  wrap an overly-verbose public connector for gross efficiency (F13), never for volume.
+- **Conventions:** 1 test · 1 file · 1 function. Test quality bar = the `dns` suite
+  (validation + happy + edge + error).
+- **Observability (Bosman): logging + metrics, NO dashboard UI.** Serving `/health`,
+  `/metrics` (JSON + Prometheus), `/logs` (rolling call log w/ metric fields). Each call
+  emits one structured Workers-Logs line.
+- **Compression defaults:** highest ratio everywhere — `compress` = brotli(q11)/zstd(L19)/
+  gzip(L9) via node:zlib; QUIC/HTTP-3 automatic at the CF edge.
+
 ## 50 functions (build queue) — ✅ done · 🔨 next · ⬜ queued
 Each is one `Fn` file under `sux/src/fns/`. Bidirectional verbs marked ↔.
+(Historical checklist — see `FUNCTIONS.md` for what's actually built.)
 
 **Net / transport**
 1. ✅ `protocol(url,method,headers,body,as)` — full HTTP request via proxy
@@ -342,6 +357,57 @@ list. Non-negotiable for a trustworthy "next search". Applies to `kagi_search`,
   sites are cheap to add. Covers the verticals above.
 - **Change monitoring:** `watch(url)` → periodic residential snapshot + diff (ties Wayback + scheduled tasks).
 
+### F8 — Routing modes: keep full-proxy AND smart AND geo (user directive)
+Every outbound fetch picks a transport via one `route`/`mode` arg; direct stays available:
+- **full proxy** — dead-simple: force EVERYTHING through the residential exit, no fallback.
+  The "just proxy it" button. (`proxy`, `mode:"full"`.)
+- **smart routing** — the fetch/render ladder: cheapest rung first, residential only when a
+  datacenter IP is blocked, direct fallback so it never hard-fails. (`smartFetch`, default.)
+- **geo proxy** — choose the exit locale for region-priced / geo-gated data. `geo:"us-ca"|"de"…`.
+
+### F9 — Storage tiers (both services)
+- **KV** (live) — tool-result cache + metrics + OAuth state; hash-keyed, TTL'd.
+- **R2** (maybe) — large/binary artifacts: doc originals, archival/rendered PDFs, OCR inputs,
+  packed archives. Ties to F1 (optimize-before-store) + F2 (paperless). Fns: `r2_get/put/list`.
+- **Redis** (maybe) — hot ephemeral state: rate-limit counters, dedup sets, cross-isolate
+  metrics, short-lived proxy cookie jars. Durable Object is the CF-native alternative.
+- Thin primitives as fns: `kv_get/put/list/delete` (live), `r2_*`, `blob`.
+
+### F10 — Token optimization (agent-first, cross-cutting)
+Shape every result for minimal tokens: heavy work server-side, distilled output only;
+`shrink(kind="token")` squeezes text/JSON; `optimize`/`minify` for assets; `grep`/`select`
+project before returning; per-fn `fields`/`max_tokens`; summaries over dumps; cite by ref.
+
+### F11 — Privacy & decloud
+- **Privacy:** `redact` (PII, live), `strip_metadata` (EXIF/PDF/Office author+GPS), `anonymize`
+  (hash/tokenize ids), `scrub_headers`; decline-by-default consent; no retention past cache TTL.
+- **Decloud:** minimize lock-in — open Web APIs only, exportable results, self-hostable dumb
+  node, bring-your-own storage. The engine is portable, not a walled garden.
+
+### F12 — Batching / broadcasting (Julia invariant)
+`batch(verb, items[])` broadcasts any verb over a collection (URLs/docs/values),
+concurrency-capped, partial-failure tolerant → array of results. Every unary fn becomes bulk.
+
+### F13 — Connector wrapping ("kagi is just a function", generalized) ⭐
+Import a verbose 3rd-party MCP connector (e.g. **Todoist** — too many tools, too chatty),
+introspect its `tools/list`, and export a **lean, private, re-shaped wrapper**: fewer generic
+verbs, token-trimmed schemas/outputs, sane defaults, auth held server-side. Fns:
+`connector_inspect(url)` → inventory + token cost; `connector_wrap(url, keep[], rename{})` →
+curated private MCP surface. Exactly what sux did to Kagi. **Long-term: a local Dropbox connector.**
+- **Shipped (hand-tuned wrappers):** `pubmed` (NCBI E-utilities esearch+esummary → citable
+  list), `clinical_trials` (ClinicalTrials.gov v2 → distilled study list). Both collapse
+  huge verbose payloads to a few token-cheap fields.
+- **Rule (Bosman):** wrap a connector ONLY when it is overly verbose / grossly inefficient.
+  Candidates: PubMed ✓, ClinicalTrials ✓, then e.g. arXiv, Semantic Scholar, USPTO, SEC EDGAR,
+  data.gov, OpenAlex — NOT lean/well-shaped APIs.
+
+### F14 — Logging + metrics (NO dashboard for now)
+Bosman: no dashboard UI. Keep **logging with metrics** only:
+- `/metrics` — aggregate JSON (+ Prometheus): per-tool calls/errors/cache/latency.
+- `/logs` — rolling call log (last 50) with metric fields; `?tool=` / `?limit=`.
+- One structured `sux {…}` line per call → Workers Logs (`wrangler tail`).
+- Future (not now): fold Cloudflare / Tailscale / Claude sources into the log, still no UI.
+
 ---
 
 ## Incoming (raw directives, newest last)
@@ -369,3 +435,22 @@ list. Non-negotiable for a trustworthy "next search". Applies to `kagi_search`,
 - **Any useful transformation/query/scrape/proxy is in scope; greenlight all obvious** → new "Greenlit method catalog" (open-ended, obvious = pre-approved; only non-obvious/$/legal/destructive gets flagged).
 - **Repo structure reflects it: one function per file; everything is Workers** → DONE. `sux/src/fns/<name>.ts` (one Fn each) + `registry.ts` projects them into MCP tools/list + dispatch + KV cache. Add a capability = add one file + list it in `fns/index.ts`. All bundled into the one `sux` Worker.
 - **Better name — "kagi is just a function now / we invented cloudflare"** → renamed to **`sux`** (Service 2 Worker `sux/`). Kagi becomes a function inside it. Service 1 stays the lean dedicated Kagi connector.
+- **Docs + corresponding skills** → `sux/FUNCTIONS.md` (auto-gen via `npm run docs`); `sux` skill under `.claude/skills/`.
+- **Do 100 functions (need not align exactly)** → 58 built; expanding toward ~100 via the F8–F14 themes.
+- **Keep BOTH full-proxy and smart routing (+ geo proxy)** → Feature F8.
+- **KV / worker / maybe R2 / maybe Redis** → Feature F9 (storage tiers).
+- **Token optimization / minify** → Feature F10 (+ `optimize`, `shrink(token)`, `grep`).
+- **Decloud / privacy** → Feature F11.
+- **Batching** → Feature F12 (broadcast a verb over a collection).
+- **Show current table of functions** → `FUNCTIONS.md` (generated).
+- **Positive example: `dns.test`** → adopted as the per-function test quality bar (validation + happy + edge + error).
+- **Connector wrapping — import verbose connector (Todoist), export lean private wrapper** → Feature F13 ⭐. Long-term: local Dropbox connector.
+- **Dashboards/logs for Cloudflare, Tailscale, Claude** → Feature F14 (originally); superseded below.
+- **Sort functions by importance; optimize in that order** → `scripts/importance.mjs` drives tools/list + docs order; optimize top-down (Tier 0 first).
+- **suggest(idea) / issue(problem)** → chat commands that log sux improvements/bugs to memory (RL-style backlog). Stored in memory, not the plan.
+- **Continually deploy · test · add test · commit; show the plan as it changes** → working rhythm adopted.
+- **Low-hanging fruit: highest compression, zstd, brotli, QUIC/HTTP-3** → `compress` now brotli(q11)/zstd(L19)/gzip(L9) via node:zlib; QUIC/HTTP-3 automatic at edge. ("pdf optim by default" waits on the pdf WASM stubs, Tier 7.)
+- **Look at Nix** → idea: a `flake.nix` for a reproducible dev shell (node + wrangler) — reproducibility/decloud. Noted; low priority.
+- **The 101st function exists only because the first 100 are perfect** → quality gate; stop padding count, perfect the set.
+- **Wrap overly-verbose public MCPs (PubMed, ClinicalTrials, …) as lean private functions** → F13; shipped `pubmed` + `clinical_trials`. Only where gross inefficiency exists.
+- **No dashboards for now, but logging with metrics** → F14 revised: `/metrics` + `/logs` + one structured log line per call; dashboard UI removed.
