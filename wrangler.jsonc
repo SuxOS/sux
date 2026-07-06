@@ -43,7 +43,7 @@
 	// Kagi status out, cf-ray). Set to "0" (or remove) for a quiet, streaming
 	// production path. Not a secret — plain var so it's visible/toggleable here.
 	"vars": {
-		"DEBUG_MCP": "1"
+		"DEBUG_MCP": "0"
 	},
 	// Per-user rate limit on /mcp (abuse guard if a token leaks). Keyed by GitHub
 	// login in code. period must be 10 or 60; namespace_id is any account-unique id.
