@@ -100,8 +100,20 @@ export const CACHEABLE_TOOLS = new Set<string>(["kagi_search_fetch", "kagi_extra
 export const CACHE_TTL_SECONDS = 3600;
 const CACHE_PREFIX = "cache:";
 
+// Order-independent JSON so {a,b} and {b,a} hash to the same cache key — the
+// model can emit args in any key order and still hit the cache.
+function stableStringify(v: unknown): string {
+	if (v === null || typeof v !== "object") return JSON.stringify(v);
+	if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+	const obj = v as Record<string, unknown>;
+	return `{${Object.keys(obj)
+		.sort()
+		.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
+		.join(",")}}`;
+}
+
 export async function cacheKey(toolName: string, args: unknown): Promise<string> {
-	const data = new TextEncoder().encode(`${toolName}:${JSON.stringify(args ?? {})}`);
+	const data = new TextEncoder().encode(`${toolName}:${stableStringify(args ?? {})}`);
 	const buf = await crypto.subtle.digest("SHA-256", data);
 	const hex = Array.from(new Uint8Array(buf))
 		.map((b) => b.toString(16).padStart(2, "0"))

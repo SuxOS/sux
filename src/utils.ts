@@ -79,6 +79,28 @@ export async function fetchUpstreamAuthToken({
 	return [accessToken, null];
 }
 
+/**
+ * Fetch the authenticated GitHub user. Replaces the `octokit` SDK (12 MB in
+ * node_modules, one call used) with a single REST request — GitHub requires a
+ * User-Agent header.
+ */
+export async function fetchGitHubUser(
+	accessToken: string,
+): Promise<{ login: string; name: string | null; email: string | null }> {
+	const resp = await fetch("https://api.github.com/user", {
+		headers: {
+			Authorization: `Bearer ${accessToken}`,
+			Accept: "application/vnd.github+json",
+			"User-Agent": "kagi-mcp",
+		},
+	});
+	if (!resp.ok) {
+		throw new Error(`GitHub /user failed: HTTP ${resp.status}`);
+	}
+	const u = (await resp.json()) as { login: string; name: string | null; email: string | null };
+	return { login: u.login, name: u.name ?? null, email: u.email ?? null };
+}
+
 // Context from the auth process, encrypted & stored in the auth token
 // and provided to the DurableMCP as this.props
 export type Props = {

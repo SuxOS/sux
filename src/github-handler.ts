@@ -1,8 +1,7 @@
 import { env } from "cloudflare:workers";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
-import { Octokit } from "octokit";
-import { fetchUpstreamAuthToken, getUpstreamAuthorizeUrl, isAllowedLogin, type Props } from "./utils";
+import { fetchGitHubUser, fetchUpstreamAuthToken, getUpstreamAuthorizeUrl, isAllowedLogin, type Props } from "./utils";
 import {
 	addApprovedClient,
 	createOAuthState,
@@ -199,8 +198,7 @@ app.get("/callback", async (c) => {
 	});
 	if (errResponse) return errResponse;
 
-	const user = await new Octokit({ auth: accessToken }).rest.users.getAuthenticated();
-	const { login, name, email } = user.data;
+	const { login, name, email } = await fetchGitHubUser(accessToken);
 
 	// Gate at login time (defense in depth; clearer than a later silent 403).
 	const allowedRaw = (c.env as unknown as { ALLOWED_GITHUB_LOGIN?: string }).ALLOWED_GITHUB_LOGIN;

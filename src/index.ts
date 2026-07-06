@@ -173,15 +173,19 @@ const kagiProxy = {
 		// --- tools/call: cache read-only tools + audit -----------------------
 		if (method === "tools/call") {
 			const toolName = rpc?.params?.name ?? "";
-			const args = rpc?.params?.arguments;
+			const args = rpc?.params?.arguments as { query?: unknown; url?: unknown } | undefined;
 			const started = Date.now();
+
+			// What was searched/fetched — makes the audit log an actual query log.
+			const subject = typeof args?.query === "string" ? args.query : typeof args?.url === "string" ? args.url : undefined;
+			const q = subject ? subject.slice(0, 120) : undefined;
 
 			const key = CACHEABLE_TOOLS.has(toolName) ? await cacheKey(toolName, args) : null;
 
 			if (key) {
 				const cached = await env.OAUTH_KV.get(key);
 				if (cached) {
-					audit({ login, tool: toolName, cache: "hit", ms: Date.now() - started, ray });
+					audit({ login, tool: toolName, q, cache: "hit", ms: Date.now() - started, ray });
 					return sseResponse({ jsonrpc: "2.0", id: rpc?.id, result: JSON.parse(cached) });
 				}
 			}
@@ -201,6 +205,7 @@ const kagiProxy = {
 			audit({
 				login,
 				tool: toolName,
+				q,
 				cache: key ? "miss" : "skip",
 				ms: Date.now() - started,
 				status: upstream.status,

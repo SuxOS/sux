@@ -47,6 +47,11 @@ describe("cacheKey", () => {
 		expect(a).not.toBe(c);
 		expect(a.startsWith("cache:")).toBe(true);
 	});
+	it("is independent of argument key order", async () => {
+		const a = await cacheKey("t", { query: "x", limit: 5, include_domains: ["a", "b"] });
+		const b = await cacheKey("t", { include_domains: ["a", "b"], limit: 5, query: "x" });
+		expect(a).toBe(b);
+	});
 });
 
 describe("curateToolsResult", () => {
