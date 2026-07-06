@@ -25,6 +25,20 @@ describe("entities", () => {
 		expect(out.hashtags).toHaveLength(1);
 	});
 
+	it("keeps K/M/B/T magnitude suffixes on money", async () => {
+		const out = await parse("Raised $12.5M at a $500K seed, ARR $2B, fund of $3.4T.");
+		expect(out.money).toContain("$12.5M");
+		expect(out.money).toContain("$500K");
+		expect(out.money).toContain("$2B");
+		expect(out.money).toContain("$3.4T");
+	});
+
+	it("does not misclassify an ISO date as a phone number", async () => {
+		const out = await parse("Meeting on 2026-01-15. No phone here.");
+		expect(out.dates).toContain("2026-01-15");
+		expect(out.phones).toHaveLength(0);
+	});
+
 	it("fails on empty text", async () => {
 		const r = await entities.run({} as any, { text: "   " });
 		expect(r.isError).toBe(true);

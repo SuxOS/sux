@@ -15,8 +15,9 @@ const RE = {
 		/\b(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?,?\s+\d{4})\b/gi,
 	// Slash / dash numeric dates: 12/31/2024, 2024/12/31, 31-12-2024.
 	numeric_date: /\b\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\b/g,
-	// Currency: $1,234.56 · €10 · £5 · ¥100 · ₹50 · 1,234.56 USD.
-	money: /(?:[$€£¥₹]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|JPY|CNY|INR|CAD|AUD|CHF|BTC|ETH)\b)/gi,
+	// Currency: $1,234.56 · €10 · £5 · ¥100 · ₹50 · $12.5M · $500K · 1,234.56 USD.
+	// A trailing K/M/B/T magnitude suffix is kept (but not when it starts a word).
+	money: /(?:[$€£¥₹]\s?\d[\d,]*(?:\.\d+)?(?:\s?[KMBT](?![A-Za-z]))?|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|JPY|CNY|INR|CAD|AUD|CHF|BTC|ETH)\b)/gi,
 	percent: /\b\d+(?:\.\d+)?\s?%/g,
 	// Phone: optional +country and grouped digits; requires a separator so plain integers are skipped.
 	phone: /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{1,4}\)[\s.-]?)?\d{2,4}[\s.-]\d{2,4}(?:[\s.-]\d{2,4})?/g,
@@ -60,13 +61,17 @@ export const entities: Fn = {
 		const dates = [...collect(text, RE.iso_date), ...collect(masked, RE.text_date), ...collect(masked, RE.numeric_date)];
 		const dedupedDates = [...new Map(dates.map((d) => [d.toLowerCase(), d])).values()];
 
+		// Also strip dates before the phone scan — an ISO date like 2026-01-15 otherwise
+		// matches the grouped-digits phone pattern and leaks into `phones`.
+		const phoneSource = masked.replace(RE.iso_date, " ").replace(RE.numeric_date, " ").replace(RE.text_date, " ");
+
 		const result = {
 			dates: dedupedDates,
 			money: collect(text, RE.money),
 			percentages: collect(text, RE.percent),
 			emails: collect(text, RE.email),
 			urls: collect(text, RE.url),
-			phones: collect(masked, RE.phone).filter((p) => (p.match(/\d/g)?.length ?? 0) >= 7),
+			phones: collect(phoneSource, RE.phone).filter((p) => (p.match(/\d/g)?.length ?? 0) >= 7),
 			handles: collect(text, RE.handle),
 			hashtags: collect(text, RE.hashtag),
 		};
