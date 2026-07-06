@@ -119,6 +119,37 @@ Run `wrangler tail` (or watch `wrangler dev` output) and match the symptom:
 | `502 bad_gateway`; log shows `upstream: fetch ... threw` | Worker couldn't reach `mcp.kagi.com` | Transient network / Kagi outage — retry |
 | OAuth login loops or `Invalid state` | Stale/mismatched cookies or `COOKIE_ENCRYPTION_KEY` changed | Clear cookies; keep `COOKIE_ENCRYPTION_KEY` stable |
 
+## CI/CD (GitHub Actions)
+
+- **`.github/workflows/ci.yml`** — on every push/PR to `main`: `npm ci`,
+  `type-check`, and `wrangler deploy --dry-run` (validates the bundle & config
+  without deploying).
+- **`.github/workflows/deploy.yml`** — on push to `main` (or manual dispatch):
+  type-check then deploy via `cloudflare/wrangler-action`.
+
+Deploy needs two **repo secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | How to get it |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare dashboard → My Profile → API Tokens → *Edit Cloudflare Workers* template |
+| `CLOUDFLARE_ACCOUNT_ID` | Workers & Pages → account ID in the URL/sidebar |
+
+The deploy pushes **code + `wrangler.jsonc` vars only**. Worker *secrets*
+(`KAGI_API_KEY`, `GITHUB_CLIENT_*`, `COOKIE_ENCRYPTION_KEY`,
+`ALLOWED_GITHUB_LOGIN`) are managed out-of-band with `wrangler secret put` and are
+never in the repo or the pipeline.
+
+## Observability & debugging
+
+- **Workers Logs** are enabled (`observability.enabled` in `wrangler.jsonc`), so
+  requests are traceable in the Cloudflare dashboard, not just via live `wrangler
+  tail`.
+- **`DEBUG_MCP`** (a `vars` entry, default `"1"`) toggles verbose proxy logging:
+  each request logs the JSON-RPC method in and Kagi's status out, correlated by
+  `cf-ray`. Set it to `"0"` (and redeploy) for a quiet, fully-streaming
+  production path — when off, request bodies are streamed straight through
+  instead of being buffered to log them.
+
 ## Security notes
 
 - The Kagi API key lives only in Worker secrets and is injected server-side; it is

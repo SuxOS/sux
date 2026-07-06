@@ -29,11 +29,21 @@
 			"id": "2dc5422d32e042cc8010893818a2f0aa"
 		}
 	],
+	// Persist logs (Workers Logs) so requests are traceable in the dashboard
+	// beyond a live `wrangler tail`. head_sampling_rate=1 keeps everything;
+	// lower it if volume grows.
 	"observability": {
-		"enabled": false,
+		"enabled": true,
+		"head_sampling_rate": 1,
 		"traces": {
 			"enabled": true
 		}
+	},
+	// DEBUG_MCP=1 turns on verbose per-request proxy logging (JSON-RPC method in,
+	// Kagi status out, cf-ray). Set to "0" (or remove) for a quiet, streaming
+	// production path. Not a secret — plain var so it's visible/toggleable here.
+	"vars": {
+		"DEBUG_MCP": "1"
 	},
 	"dev": {
 		"port": 8788

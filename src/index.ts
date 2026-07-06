@@ -19,6 +19,8 @@ import { GitHubHandler } from "./github-handler";
 type KagiEnv = Env & {
 	KAGI_API_KEY: string;
 	ALLOWED_GITHUB_LOGIN: string;
+	// "1" enables verbose per-request proxy logging (see wrangler.jsonc vars).
+	DEBUG_MCP?: string;
 };
 
 // Props stamped onto the token by github-handler.ts (see completeAuthorization).
@@ -68,30 +70,36 @@ const kagiProxy = {
 		headers.set("Authorization", `Bearer ${env.KAGI_API_KEY}`);
 		headers.delete("host");
 
-		// DIAGNOSTIC: log the authenticated MCP method in, and Kagi's answer out.
-		// MCP JSON-RPC bodies are tiny, so we read the body fully and forward it as
-		// a string (streaming only matters on the response/SSE side).
-		console.log(`gate: allowed login=${JSON.stringify(ctx.props?.login)}`);
+		// Diagnostics are opt-in via DEBUG_MCP. When off, the request body is
+		// streamed straight through (no buffering); when on, we read the tiny
+		// JSON-RPC body to log its method/id, correlated by cf-ray.
+		const debug = env.DEBUG_MCP === "1";
+		const ray = request.headers.get("cf-ray") ?? "-";
 		const isBodyless = request.method === "GET" || request.method === "HEAD";
-		const bodyText = isBodyless ? undefined : await request.text();
-		if (bodyText !== undefined) {
+
+		let init: RequestInit;
+		if (isBodyless) {
+			init = { method: request.method, headers };
+		} else if (debug) {
+			const bodyText = await request.text();
 			try {
 				const j = JSON.parse(bodyText);
 				console.log(
-					`mcp -> ${request.method} method=${j.method ?? "?"} id=${JSON.stringify(j.id)} accept=${request.headers.get("accept")} sid=${request.headers.get("mcp-session-id") ?? "-"}`,
+					`[${ray}] mcp -> ${request.method} method=${j.method ?? "?"} id=${JSON.stringify(j.id)} login=${JSON.stringify(ctx.props?.login)} sid=${request.headers.get("mcp-session-id") ?? "-"}`,
 				);
 			} catch {
-				console.log(`mcp -> ${request.method} (non-JSON body, ${bodyText.length}b)`);
+				console.log(`[${ray}] mcp -> ${request.method} (non-JSON body, ${bodyText.length}b)`);
 			}
+			init = { method: request.method, headers, body: bodyText };
 		} else {
-			console.log(`mcp -> ${request.method} accept=${request.headers.get("accept")} sid=${request.headers.get("mcp-session-id") ?? "-"}`);
+			init = {
+				method: request.method,
+				headers,
+				body: request.body,
+				// @ts-expect-error - `duplex` is required for streaming request bodies on Workers
+				duplex: "half",
+			};
 		}
-
-		const init: RequestInit = {
-			method: request.method,
-			headers,
-			body: bodyText,
-		};
 
 		let upstream: Response;
 		try {
@@ -100,7 +108,7 @@ const kagiProxy = {
 			// Network-level failure reaching Kagi (DNS, TLS, timeout). The tool
 			// error path in Kagi returns 200 with an in-band JSON-RPC error, so
 			// reaching here means the request never completed at all.
-			console.error(`upstream: fetch to ${target} threw:`, err);
+			console.error(`[${ray}] upstream: fetch to ${target} threw:`, err);
 			return new Response(
 				JSON.stringify({
 					error: "bad_gateway",
@@ -110,12 +118,13 @@ const kagiProxy = {
 			);
 		}
 
-		// DIAGNOSTIC: what did Kagi answer?
-		console.log(
-			`mcp <- ${upstream.status} ct=${upstream.headers.get("content-type")} sid=${upstream.headers.get("mcp-session-id") ?? "-"} enc=${upstream.headers.get("content-encoding") ?? "-"}`,
-		);
+		if (debug) {
+			console.log(
+				`[${ray}] mcp <- ${upstream.status} ct=${upstream.headers.get("content-type")} sid=${upstream.headers.get("mcp-session-id") ?? "-"} enc=${upstream.headers.get("content-encoding") ?? "-"}`,
+			);
+		}
 		if (upstream.status >= 400) {
-			console.error(`upstream: Kagi returned HTTP ${upstream.status} for ${request.method} ${incoming.pathname}`);
+			console.error(`[${ray}] upstream: Kagi returned HTTP ${upstream.status} for ${request.method} ${incoming.pathname}`);
 		}
 
 		// Stream Kagi's response (JSON or text/event-stream) straight back.
