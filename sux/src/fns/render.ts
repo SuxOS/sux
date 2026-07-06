@@ -1,4 +1,5 @@
 import puppeteer from "@cloudflare/puppeteer";
+import { smartFetch } from "../proxy";
 import { type Fn, fail, ok } from "../registry";
 import { clamp, deliverBytes, inlineB64, isHttpUrl } from "./_util";
 
@@ -14,12 +15,19 @@ const MAX_OUTPUT_BYTES = 2_000_000;
 // (image/stylesheet/font/media are exactly what makes a screenshot look right).
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font", "stylesheet"]);
 
+// Hop-by-hop / framing headers that describe how bytes were transported, not the
+// bytes themselves. smartFetch already decoded the body (proxy.ts drops these on
+// its own path), so re-emitting them to request.respond would mislead Chromium
+// into re-decoding an already-decoded body. Mirror proxiedToResponse's drops.
+const STRIP_RESPONSE_HEADERS = new Set(["content-encoding", "content-length", "transfer-encoding"]);
+
 export const render: Fn = {
 	name: "render",
 	description:
-		"Scrape a JavaScript-rendered page via headless Chromium (Cloudflare Browser Rendering). Executes JS, unlike `scrape` (which fetches raw HTML through the residential proxy). NOTE: egresses from the Cloudflare datacenter, not the residential IP. " +
+		"Scrape a JavaScript-rendered page via headless Chromium (Cloudflare Browser Rendering). Executes JS, unlike `scrape` (which fetches raw HTML through the residential proxy). " +
 		"Give `url` (absolute http(s)); options: wait_until (load|domcontentloaded|networkidle0|networkidle2, default networkidle0), wait_ms (extra delay after load, ≤10000), as (html|text|screenshot, default html), timeout_ms (nav timeout, default 30000, ≤60000). " +
-		"as:screenshot captures a PNG (full_page to shoot the whole scroll height) and returns it as a content-addressed /s/<uuid> URL by default (delivery:base64 to inline). block_resources aborts image/font/stylesheet/media fetches before navigation to speed up html/text extraction (ignored for screenshots to keep them visually correct).",
+		"as:screenshot captures a PNG (full_page to shoot the whole scroll height) and returns it as a content-addressed /s/<uuid> URL by default (delivery:base64 to inline). block_resources aborts image/font/stylesheet/media fetches before navigation to speed up html/text extraction (ignored for screenshots to keep them visually correct). " +
+		"residential (default true) routes the browser's requests through the Tailscale residential proxy so they egress from a home IP instead of the Cloudflare datacenter — the point of this fn, since datacenter IPs are blocked by bot managers like Akamai. Trade-off: slower, because every subresource is proxied one by one; set residential:false to fetch directly from the datacenter (faster, but blockable). With residential and block_resources both on, heavy assets are still aborted and everything else is residential-routed; with residential on and block_resources off, images are proxied too (fully residential, heavier).",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -31,6 +39,12 @@ export const render: Fn = {
 			as: { type: "string", enum: ["html", "text", "screenshot"], default: "html", description: "Return rendered HTML (default), visible innerText, or a PNG screenshot." },
 			full_page: { type: "boolean", default: false, description: "Screenshot only: capture the full scroll height, not just the viewport." },
 			block_resources: { type: "boolean", default: false, description: "Abort image/font/stylesheet/media requests before navigation to speed up html/text extraction. Ignored for as:screenshot." },
+			residential: {
+				type: "boolean",
+				default: true,
+				description:
+					"Route the browser's requests through the Tailscale residential proxy so they egress from a home IP, bypassing datacenter-IP bot detection (Akamai etc.). Default true — this is render's main purpose. Slower (every subresource is proxied); set false to fetch directly from the datacenter.",
+			},
 			delivery: { type: "string", enum: ["base64", "url"], default: "url", description: "Screenshot only: content-addressed /s/<uuid> URL (default, ~100 tokens) or inline base64." },
 			timeout_ms: { type: "integer", minimum: 1, maximum: 60000, default: 30000, description: "Navigation timeout in ms." },
 		},
@@ -50,16 +64,21 @@ export const render: Fn = {
 		// Blocking image/media/font/stylesheet fetches would strip a screenshot of
 		// exactly what makes it look right — honor it only for text/html extraction.
 		const blockResources = args?.block_resources === true && as !== "screenshot";
+		// Default TRUE: bypassing datacenter-IP bot detection is this fn's whole
+		// point. Only an explicit false opts back into the direct datacenter path.
+		const residential = args?.residential !== false;
 
 		let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
 		try {
 			browser = await puppeteer.launch(env.BROWSER);
 			const page = await browser.newPage();
-			if (blockResources) {
+			// Interception is needed whenever we abort heavy assets (block_resources)
+			// OR route requests residentially. When neither is on, the browser fetches
+			// directly from the datacenter with no interception (today's behavior).
+			if (residential || blockResources) {
 				await page.setRequestInterception(true);
-				page.on("request", (req: { resourceType(): string; abort(): void; continue(): void }) => {
-					if (BLOCKED_RESOURCE_TYPES.has(req.resourceType())) req.abort();
-					else req.continue();
+				page.on("request", (req: RequestForInterception) => {
+					void handleRequest(env, req, { residential, blockResources });
 				});
 			}
 			await page.goto(url, { waitUntil, timeout });
