@@ -9,14 +9,16 @@ import {
 	renderApprovalDialog,
 	validateCSRFToken,
 } from "./workers-oauth-utils";
+import { hmacHex, isTailscaleConfigured, proxyEnabled, smartFetch, type TailscaleEnv } from "./proxy";
 
-type HandlerEnv = Env & { OAUTH_PROVIDER: OAuthHelpers } & {
-	GITHUB_CLIENT_ID: string;
-	GITHUB_CLIENT_SECRET: string;
-	COOKIE_ENCRYPTION_KEY: string;
-	ALLOWED_GITHUB_LOGIN?: string;
-	KAGI_API_KEY?: string;
-};
+type HandlerEnv = Env &
+	TailscaleEnv & { OAUTH_PROVIDER: OAuthHelpers } & {
+		GITHUB_CLIENT_ID: string;
+		GITHUB_CLIENT_SECRET: string;
+		COOKIE_ENCRYPTION_KEY: string;
+		ALLOWED_GITHUB_LOGIN?: string;
+		KAGI_API_KEY?: string;
+	};
 
 const text = (body: string, status = 200) =>
 	new Response(body, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
@@ -36,39 +38,159 @@ export const GitHubHandler = {
 	},
 };
 
-async function handleHealth(url: URL, env: HandlerEnv): Promise<Response> {
-	const body: Record<string, unknown> = {
-		status: "ok",
-		config: {
-			kagiKey: Boolean(env.KAGI_API_KEY),
-			allowlist: Boolean(env.ALLOWED_GITHUB_LOGIN?.trim()),
-			githubClient: Boolean(env.GITHUB_CLIENT_ID),
-		},
+const html = (body: string, status = 200) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
+
+/** Race a promise against a timeout; resolve to `fallback` if it's too slow. */
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+	return Promise.race([p, new Promise<T>((r) => setTimeout(() => r(fallback), ms))]);
+}
+
+/** IP + geo of whoever makes the request — used to show residential (via proxy) vs datacenter (direct) egress. */
+async function ipInfo(fetcher: (u: string) => Promise<Response>): Promise<Record<string, unknown> | null> {
+	try {
+		const j = (await (await fetcher("https://ipwho.is/")).json()) as any;
+		if (j?.success === false) return null;
+		return { ip: j.ip, city: j.city, region: j.region, country: j.country, org: j.connection?.org ?? j.connection?.isp, asn: j.connection?.asn };
+	} catch {
+		return null;
+	}
+}
+
+/** Best-effort `tailscale status --json` from the node's /status endpoint (HMAC-signed, same secret as /fetch). */
+async function nodeStatus(env: HandlerEnv): Promise<Record<string, unknown>> {
+	if (!isTailscaleConfigured(env)) return { available: false, reason: "proxy not configured" };
+	try {
+		const ts = String(Date.now());
+		const sig = await hmacHex(env.TAILSCALE_PROXY_SECRET!, `${ts}\n/status`);
+		const endpoint = new URL("/status", env.TAILSCALE_PROXY_URL).href;
+		const r = await fetch(endpoint, { headers: { "x-timestamp": ts, "x-signature": sig }, signal: AbortSignal.timeout(8000) });
+		if (!r.ok) return { available: false, reason: `node /status returned HTTP ${r.status} (add the /status endpoint to the node)` };
+		const j = (await r.json()) as any;
+		const peers = j.Peer ? Object.values(j.Peer) : [];
+		return {
+			available: true,
+			backendState: j.BackendState,
+			version: j.Version,
+			hostname: j.Self?.HostName,
+			tailscaleIPs: j.Self?.TailscaleIPs,
+			online: j.Self?.Online,
+			exitNode: j.ExitNodeStatus?.ID ?? null,
+			peers: peers.length,
+			peersOnline: peers.filter((p: any) => p?.Online).length,
+		};
+	} catch (e) {
+		return { available: false, reason: String((e as Error).message ?? e) };
+	}
+}
+
+async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
+	const config = {
+		kagiKey: Boolean(env.KAGI_API_KEY),
+		allowlist: Boolean(env.ALLOWED_GITHUB_LOGIN?.trim()),
+		githubClient: Boolean(env.GITHUB_CLIENT_ID),
 	};
 
-	if (url.searchParams.get("deep") === "1") {
-		try {
-			const r = await fetch("https://mcp.kagi.com/mcp", {
+	// Residential (through the proxy) vs datacenter (direct) egress + tunnel latency.
+	const t0 = Date.now();
+	const [proxied, direct, status] = await Promise.all([
+		withTimeout(ipInfo((u) => smartFetch(env, u, {})), 9000, null),
+		withTimeout(ipInfo((u) => fetch(u)), 9000, null),
+		withTimeout(nodeStatus(env), 9000, { available: false, reason: "timeout" } as Record<string, unknown>),
+	]);
+	const tunnelMs = Date.now() - t0;
+
+	const configured = isTailscaleConfigured(env);
+	const routing = configured && proxyEnabled(env) && proxied && direct && proxied.ip !== direct.ip;
+
+	const tailscale = {
+		configured,
+		routing, // true = requests are actually exiting via the residential IP (not falling back to direct)
+		tunnel_ms: tunnelMs,
+		residential: proxied,
+		datacenter: direct,
+		node: status,
+	};
+
+	// Kagi upstream reachability.
+	let upstream: Record<string, unknown>;
+	try {
+		const r = await withTimeout(
+			fetch("https://mcp.kagi.com/mcp", {
 				method: "POST",
-				headers: {
-					Accept: "application/json, text/event-stream",
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${env.KAGI_API_KEY ?? ""}`,
-				},
-				body: JSON.stringify({
-					jsonrpc: "2.0",
-					id: 1,
-					method: "initialize",
-					params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "health", version: "1" } },
-				}),
-			});
-			body.upstream = { reachable: r.ok, status: r.status };
-		} catch (_err) {
-			return json({ ...body, status: "degraded", upstream: { reachable: false, status: 0 } }, 503);
-		}
+				headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json", Authorization: `Bearer ${env.KAGI_API_KEY ?? ""}` },
+				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "health", version: "1" } } }),
+			}),
+			8000,
+			null as unknown as Response,
+		);
+		upstream = { reachable: Boolean(r?.ok), status: r?.status ?? 0 };
+	} catch {
+		upstream = { reachable: false, status: 0 };
 	}
 
-	return json(body);
+	const ok = config.kagiKey && config.githubClient && upstream.reachable;
+	return { status: ok ? "ok" : "degraded", config, tailscale, upstream };
+}
+
+function renderHealthHtml(h: any): string {
+	const dot = (v: boolean) => `<span class="dot ${v ? "on" : "off"}"></span>`;
+	const ts = h.tailscale ?? {};
+	const res = ts.residential;
+	const dc = ts.datacenter;
+	const node = ts.node ?? {};
+	const loc = (o: any) => (o ? `${[o.city, o.region, o.country].filter(Boolean).join(", ")}` : "—");
+	return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>sux · health</title>
+<style>
+ :root{color-scheme:dark light}
+ body{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;max-width:720px;margin:2rem auto;padding:0 1rem;background:#0b0e14;color:#c9d1d9}
+ h1{font-size:1.3rem;margin:0 0 .2rem} .sub{color:#6e7681;margin-bottom:1.5rem}
+ .card{background:#11161f;border:1px solid #21262d;border-radius:10px;padding:1rem 1.2rem;margin:0 0 1rem}
+ .card h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;color:#8b949e;margin:0 0 .8rem}
+ .row{display:flex;justify-content:space-between;gap:1rem;padding:.25rem 0;border-bottom:1px solid #1b212b}
+ .row:last-child{border:0} .k{color:#8b949e} .v{text-align:right;word-break:break-word}
+ .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.4rem;vertical-align:middle}
+ .dot.on{background:#3fb950;box-shadow:0 0 6px #3fb95088} .dot.off{background:#f85149}
+ .pill{font-size:.7rem;padding:.1rem .5rem;border-radius:99px;border:1px solid #30363d;color:#8b949e}
+ .big{font-size:1.1rem} a{color:#58a6ff}
+</style>
+<h1>${dot(h.status === "ok")} sux · <span class="pill">${h.status}</span></h1>
+<div class="sub">residential-proxied edge engine · <a href="?format=json">json</a></div>
+
+<div class="card"><h2>config</h2>
+ <div class="row"><span class="k">Kagi API key</span><span class="v">${dot(h.config.kagiKey)}</span></div>
+ <div class="row"><span class="k">GitHub OAuth</span><span class="v">${dot(h.config.githubClient)}</span></div>
+ <div class="row"><span class="k">Login allowlist</span><span class="v">${dot(h.config.allowlist)}</span></div>
+ <div class="row"><span class="k">Kagi upstream</span><span class="v">${dot(h.upstream.reachable)} ${h.upstream.status}</span></div>
+</div>
+
+<div class="card"><h2>tailscale · residential egress</h2>
+ <div class="row"><span class="k">Proxy configured</span><span class="v">${dot(ts.configured)}</span></div>
+ <div class="row"><span class="k">Routing residentially</span><span class="v">${dot(ts.routing)} ${ts.routing ? "live" : "falling back to direct"}</span></div>
+ <div class="row"><span class="k">Tunnel round-trip</span><span class="v">${ts.tunnel_ms} ms</span></div>
+ <div class="row"><span class="k">Residential exit (wrapped)</span><span class="v big">${res ? res.ip : "—"}<br><span class="k">${loc(res)}${res?.org ? " · " + res.org : ""}</span></span></div>
+ <div class="row"><span class="k">Datacenter exit (bare)</span><span class="v">${dc ? dc.ip : "—"}<br><span class="k">${loc(dc)}${dc?.org ? " · " + dc.org : ""}</span></span></div>
+</div>
+
+<div class="card"><h2>tailscale · node <code>tailscaled status</code></h2>
+ ${
+		node.available
+			? `<div class="row"><span class="k">Backend</span><span class="v">${dot(node.backendState === "Running")} ${node.backendState}</span></div>
+ <div class="row"><span class="k">Hostname</span><span class="v">${node.hostname ?? "—"}</span></div>
+ <div class="row"><span class="k">Tailscale IPs</span><span class="v">${(node.tailscaleIPs ?? []).join(", ") || "—"}</span></div>
+ <div class="row"><span class="k">Online</span><span class="v">${dot(Boolean(node.online))}</span></div>
+ <div class="row"><span class="k">Peers</span><span class="v">${node.peersOnline}/${node.peers} online</span></div>
+ <div class="row"><span class="k">Version</span><span class="v">${node.version ?? "—"}</span></div>`
+			: `<div class="row"><span class="k">Status</span><span class="v">unavailable</span></div>
+ <div class="row"><span class="k">Reason</span><span class="v">${node.reason ?? "—"}</span></div>`
+	}
+</div>`;
+}
+
+async function handleHealth(url: URL, env: HandlerEnv): Promise<Response> {
+	const h = await gatherHealth(env);
+	if (url.searchParams.get("format") === "json") return json(h, h.status === "ok" ? 200 : 503);
+	return html(renderHealthHtml(h), h.status === "ok" ? 200 : 503);
 }
 
 async function handleAuthorizeGet(request: Request, env: HandlerEnv): Promise<Response> {

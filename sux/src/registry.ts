@@ -1,10 +1,18 @@
 import type { TailscaleEnv } from "./proxy";
 
+// Minimal Workers AI binding surface (summarize/translate/classify/embed/ocr).
+// `env.AI` is declared in sux/wrangler.jsonc but absent from the core-generated
+// Env type, so we declare just the `run` shape the functions use.
+export type AiBinding = {
+	run: (model: string, inputs: Record<string, unknown>, options?: Record<string, unknown>) => Promise<any>;
+};
+
 export type RtEnv = Env &
 	TailscaleEnv & {
 		KAGI_API_KEY: string;
 		ALLOWED_GITHUB_LOGIN: string;
 		DEBUG_MCP?: string;
+		AI?: AiBinding;
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 	};
 
