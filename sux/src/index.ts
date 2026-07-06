@@ -79,7 +79,9 @@ const rtServer = {
 			// noCache results (e.g. upstream 4xx/5xx bodies) are returned but never cached.
 			const cacheable = key && !result.isError && !result.noCache;
 			delete result.noCache; // internal flag — not part of the MCP response
-			if (cacheable) await env.OAUTH_KV.put(key, JSON.stringify(result), { expirationTtl: CACHE_TTL_SECONDS });
+			// Cache write happens off the response path (same pattern as recordCall) —
+			// a KV put costs tens of ms and the caller shouldn't wait for it.
+			if (cacheable) ctx.waitUntil(env.OAUTH_KV.put(key, JSON.stringify(result), { expirationTtl: CACHE_TTL_SECONDS }).catch(() => {}));
 			return sseResponse({ jsonrpc: "2.0", id, result });
 		}
 		return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
