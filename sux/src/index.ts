@@ -4,6 +4,8 @@ import { isAllowedLogin } from "./utils";
 import { cacheKey, CACHE_TTL_SECONDS, parseJsonRpc, sseResponse } from "./mcp-util";
 import { findFn, type RtEnv, toolList } from "./registry";
 import { FUNCTIONS } from "./fns";
+import { recordCall } from "./metrics";
+import { handleObservability } from "./observability";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
 
@@ -47,10 +49,14 @@ const rtServer = {
 			const fn = findFn(FUNCTIONS, name);
 			if (!fn) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
 
+			const started = Date.now();
 			const key = fn.cacheable ? await cacheKey(name, args) : null;
 			if (key) {
 				const cached = await env.OAUTH_KV.get(key);
-				if (cached) return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(cached) });
+				if (cached) {
+					recordCall(env, ctx, { tool: name, ms: Date.now() - started, cache: true });
+					return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(cached) });
+				}
 			}
 			let result;
 			try {
@@ -58,6 +64,7 @@ const rtServer = {
 			} catch (e) {
 				result = { content: [{ type: "text" as const, text: `Tool '${name}' failed: ${String((e as Error).message ?? e)}` }], isError: true };
 			}
+			recordCall(env, ctx, { tool: name, ms: Date.now() - started, error: Boolean(result.isError) });
 			if (key && !result.isError) await env.OAUTH_KV.put(key, JSON.stringify(result), { expirationTtl: CACHE_TTL_SECONDS });
 			return sseResponse({ jsonrpc: "2.0", id, result });
 		}
@@ -79,6 +86,10 @@ const oauthProvider = new OAuthProvider({
 // those become clean JSON errors: 400 for client mistakes, 500 otherwise.
 export default {
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
+		// Public, unauthenticated observability routes (health/metrics/dashboard)
+		// are served before the OAuth provider claims every path.
+		const obs = await handleObservability(new URL(request.url), request, env);
+		if (obs) return obs;
 		try {
 			return await oauthProvider.fetch(request, env as any, ctx);
 		} catch (e) {

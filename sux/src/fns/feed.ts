@@ -1,45 +1,70 @@
 import { type Fn, fail, ok } from "../registry";
-import { smartFetch } from "../proxy";
+import { fetchText, isHttpUrl } from "./_util";
 
-const tag = (xml: string, name: string) =>
-	xml.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)<\/${name}>`, "i"))?.[1]?.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim();
+/** Decode the handful of entities that turn up in feed text. */
+function decodeEntities(s: string): string {
+	return s
+		.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+		.replace(/&nbsp;/gi, " ")
+		.replace(/&amp;/gi, "&")
+		.replace(/&lt;/gi, "<")
+		.replace(/&gt;/gi, ">")
+		.replace(/&quot;/gi, '"')
+		.replace(/&#0*39;|&apos;/gi, "'")
+		.replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+		.replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)));
+}
+
+/** First inner text of <name>…</name> within `xml`, entity-decoded. */
+function tag(xml: string, name: string): string | null {
+	const m = xml.match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, "i"));
+	return m ? decodeEntities(m[1]).trim() : null;
+}
 
 export const feed: Fn = {
 	name: "feed",
-	description: "Parse an RSS or Atom feed into normalized items { title, link, published, summary }. Pass a feed url or raw xml.",
+	description:
+		"Parse an RSS or Atom feed into normalized items { title, link, published, summary }. Provide `url` (fetched via residential proxy) or raw `xml`. Auto-detects RSS (<item>) vs Atom (<entry>). Returns JSON { kind:'rss'|'atom', title, count, items } capped at `limit` items (default 50). Basic HTML entities are decoded and summaries have tags stripped.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		properties: {
-			url: { type: "string" },
-			xml: { type: "string" },
-			limit: { type: "integer", default: 30, minimum: 1, maximum: 200 },
+			url: { type: "string", description: "Absolute http(s) URL of the feed." },
+			xml: { type: "string", description: "Raw feed XML (used instead of fetching `url`)." },
+			limit: { type: "integer", default: 50, minimum: 1, maximum: 200, description: "Max items to return." },
 		},
 	},
 	cacheable: true,
 	run: async (env, args) => {
 		let xml = String(args?.xml ?? "");
 		if (!xml && args?.url) {
-			if (!/^https?:\/\//i.test(String(args.url))) return fail("url must be absolute http(s).");
-			xml = await (await smartFetch(env, String(args.url), {})).text();
+			if (!isHttpUrl(args.url)) return fail("url must be an absolute http(s) URL.");
+			xml = (await fetchText(env, String(args.url))).text;
 		}
 		if (!xml) return fail("Provide `xml` or `url`.");
-		const limit = Number(args?.limit) || 30;
+		const limit = Math.min(Number(args?.limit) || 50, 200);
 
 		const isAtom = /<feed[\s>]/i.test(xml) && !/<rss[\s>]/i.test(xml);
-		const blocks = isAtom ? [...xml.matchAll(/<entry[\s\S]*?<\/entry>/gi)] : [...xml.matchAll(/<item[\s\S]*?<\/item>/gi)];
+		const blocks = isAtom ? [...xml.matchAll(/<entry\b[\s\S]*?<\/entry>/gi)] : [...xml.matchAll(/<item\b[\s\S]*?<\/item>/gi)];
+
 		const items = blocks.slice(0, limit).map((m) => {
 			const b = m[0];
-			let link = tag(b, "link");
-			if (isAtom) link = b.match(/<link[^>]+href=["']([^"']+)["']/i)?.[1] ?? link;
+			// Atom links live in a href attribute; RSS links are element text.
+			let link = isAtom ? b.match(/<link\b[^>]*\bhref=["']([^"']+)["']/i)?.[1] ?? null : tag(b, "link");
+			const summaryRaw = tag(b, "description") ?? tag(b, "summary") ?? tag(b, "content") ?? "";
+			const summary = summaryRaw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 500) || null;
 			return {
-				title: tag(b, "title") ?? null,
-				link: link ?? null,
+				title: tag(b, "title"),
+				link,
 				published: tag(b, "pubDate") ?? tag(b, "published") ?? tag(b, "updated") ?? null,
-				summary: (tag(b, "description") ?? tag(b, "summary") ?? "")?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 500) || null,
+				summary,
 			};
 		});
-		const feedTitle = tag(xml.replace(/<(item|entry)[\s\S]*/i, ""), "title");
-		return ok(JSON.stringify({ feed: feedTitle ?? null, type: isAtom ? "atom" : "rss", count: items.length, items }, null, 2));
+
+		// Feed-level title = first <title> before any item/entry block.
+		const head = xml.replace(/<(item|entry)\b[\s\S]*/i, "");
+		return ok(
+			JSON.stringify({ kind: isAtom ? "atom" : "rss", title: tag(head, "title"), count: items.length, items }, null, 2),
+		);
 	},
 };

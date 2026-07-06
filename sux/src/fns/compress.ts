@@ -1,54 +1,78 @@
+import zlib from "node:zlib";
 import { type Fn, fail, ok } from "../registry";
+import { fromB64, toB64 } from "./_util";
 
-const NATIVE = new Set(["gzip", "deflate", "deflate-raw"]);
+// Lossless compression at MAXIMUM ratio by default (Bosman: "highest compression,
+// zstd"). Uses node:zlib (available under nodejs_compat) for real level control —
+// gzip/deflate at level 9, brotli at quality 11, zstd at level 19 when the runtime
+// supports it (Node ≥22.15 / newer workerd). Bidirectional; base64 for binary.
+const Z = zlib as any;
+const zstdOk = typeof Z.zstdCompressSync === "function";
 
-function toBase64(bytes: Uint8Array): string {
-	let s = "";
-	const CHUNK = 0x8000;
-	for (let i = 0; i < bytes.length; i += CHUNK) s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-	return btoa(s);
+type Codec = "brotli" | "zstd" | "gzip" | "deflate" | "deflate-raw";
+const CODECS: Codec[] = ["brotli", "zstd", "gzip", "deflate", "deflate-raw"];
+
+function compressBytes(codec: Codec, buf: Uint8Array): Uint8Array {
+	switch (codec) {
+		case "gzip":
+			return Z.gzipSync(buf, { level: 9 });
+		case "deflate":
+			return Z.deflateSync(buf, { level: 9 });
+		case "deflate-raw":
+			return Z.deflateRawSync(buf, { level: 9 });
+		case "brotli":
+			return Z.brotliCompressSync(buf, { params: { [Z.constants.BROTLI_PARAM_QUALITY]: 11 } });
+		case "zstd":
+			return Z.zstdCompressSync(buf, { params: { [Z.constants.ZSTD_c_compressionLevel]: 19 } });
+	}
 }
-function fromBase64(b64: string): Uint8Array {
-	const bin = atob(b64);
-	const out = new Uint8Array(bin.length);
-	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-	return out;
-}
-async function pipe(input: Uint8Array, ts: TransformStream): Promise<Uint8Array> {
-	const stream = new Blob([input]).stream().pipeThrough(ts);
-	return new Uint8Array(await new Response(stream).arrayBuffer());
+
+function decompressBytes(codec: Codec, buf: Uint8Array): Uint8Array {
+	switch (codec) {
+		case "gzip":
+			return Z.gunzipSync(buf);
+		case "deflate":
+			return Z.inflateSync(buf);
+		case "deflate-raw":
+			return Z.inflateRawSync(buf);
+		case "brotli":
+			return Z.brotliDecompressSync(buf);
+		case "zstd":
+			return Z.zstdDecompressSync(buf);
+	}
 }
 
 export const compress: Fn = {
 	name: "compress",
 	description:
-		"Compress or decompress data losslessly. codec: gzip | deflate | deflate-raw (native; zstd/brotli/7z coming via WASM). direction: compress (default) | decompress. Compress takes text and returns { in_bytes, out_bytes, saved_pct, base64 }; decompress takes base64 and returns the original text.",
+		"Compress or decompress data losslessly at the highest ratio. codec: brotli (default, best for text) | zstd | gzip | deflate | deflate-raw — all at maximum level. direction: compress (default) | decompress. Compress takes text and returns { codec, in_bytes, out_bytes, saved_pct, base64 }; decompress takes base64 and returns the original text.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
-		required: ["data", "codec"],
+		required: ["data"],
 		properties: {
 			data: { type: "string", description: "Text (compress) or base64 (decompress)." },
-			codec: { type: "string", enum: ["gzip", "deflate", "deflate-raw", "zstd", "brotli", "7z"] },
+			codec: { type: "string", enum: CODECS, default: "brotli", description: "brotli (best text ratio) | zstd | gzip | deflate | deflate-raw. All run at max level." },
 			direction: { type: "string", enum: ["compress", "decompress"], default: "compress" },
 		},
 	},
 	cacheable: true,
 	run: async (_env, args) => {
-		const codec = String(args?.codec ?? "");
-		const decompress = args?.direction === "decompress";
-		if (!NATIVE.has(codec)) {
-			return fail(`codec '${codec}' not yet supported — native: gzip, deflate, deflate-raw. (zstd/brotli/7z via WASM soon.)`);
+		const codec = String(args?.codec ?? "brotli") as Codec;
+		if (!CODECS.includes(codec)) return fail(`Unknown codec '${codec}'. Use: ${CODECS.join(", ")}.`);
+		if (codec === "zstd" && !zstdOk) {
+			return fail("zstd is not available in this runtime (needs Node ≥22.15 / newer workerd). Use brotli for the best ratio, or gzip.");
 		}
+		const decompress = args?.direction === "decompress";
 		try {
 			if (decompress) {
-				const out = await pipe(fromBase64(String(args?.data ?? "")), new DecompressionStream(codec as any));
+				const out = decompressBytes(codec, fromB64(String(args?.data ?? "")));
 				return ok(new TextDecoder().decode(out));
 			}
 			const input = new TextEncoder().encode(String(args?.data ?? ""));
-			const out = await pipe(input, new CompressionStream(codec as any));
+			const out = compressBytes(codec, input);
 			const saved = input.length ? Number((((input.length - out.length) / input.length) * 100).toFixed(1)) : 0;
-			return ok(JSON.stringify({ codec, in_bytes: input.length, out_bytes: out.length, saved_pct: saved, base64: toBase64(out) }));
+			return ok(JSON.stringify({ codec, in_bytes: input.length, out_bytes: out.length, saved_pct: saved, base64: toB64(new Uint8Array(out)) }));
 		} catch (e) {
 			return fail(`${decompress ? "decompress" : "compress"} failed: ${String((e as Error).message ?? e)}`);
 		}

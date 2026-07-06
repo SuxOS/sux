@@ -1,73 +1,63 @@
 import { type Fn, fail, ok } from "../registry";
-import { smartFetch } from "../proxy";
+import { fetchText, isHttpUrl } from "./_util";
 
 export const grep: Fn = {
 	name: "grep",
 	description:
-		"Filter lines by regex. source: raw text OR an http(s) url (fetched via residential proxy first). flags: regex flags (default 'i'). context: N lines of surrounding context. invert: keep non-matching lines. count: return only the match count. Returns matching lines with 1-based line numbers.",
+		"Regex search over text, line by line. Provide a `pattern` plus either raw `text` or a `url` (fetched via residential proxy first). ignore_case (default false) adds the 'i' flag. context (default 0) includes N lines before and after each match. max (default 200) caps returned matches. Returns JSON { count, matches:[{ line, text, context? }] }; invalid regex fails with the error.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
-		required: ["source", "pattern"],
+		required: ["pattern"],
 		properties: {
-			source: { type: "string", description: "Text to search, or an absolute http(s) URL to fetch and search." },
 			pattern: { type: "string", description: "JavaScript regular expression." },
-			flags: { type: "string", default: "i", description: "Regex flags, e.g. 'i', 'im'. 'g' is implied." },
-			context: { type: "integer", default: 0, minimum: 0, maximum: 20 },
-			invert: { type: "boolean", default: false },
-			count: { type: "boolean", default: false },
-			max: { type: "integer", default: 200, description: "Cap on returned matches." },
+			text: { type: "string", description: "Text to search (used instead of fetching `url`)." },
+			url: { type: "string", description: "Absolute http(s) URL to fetch and search." },
+			ignore_case: { type: "boolean", default: false, description: "Case-insensitive matching." },
+			context: { type: "integer", default: 0, minimum: 0, maximum: 20, description: "Lines of surrounding context per match." },
+			max: { type: "integer", default: 200, minimum: 1, maximum: 5000, description: "Max matches to return." },
 		},
 	},
 	cacheable: true,
 	run: async (env, args) => {
-		const source = String(args?.source ?? "");
-		if (!source) return fail("Provide `source` (text or url).");
 		const pattern = String(args?.pattern ?? "");
 		if (!pattern) return fail("Provide a regex `pattern`.");
 
-		let flags = String(args?.flags ?? "i").replace(/g/g, "");
 		let re: RegExp;
 		try {
-			re = new RegExp(pattern, flags);
+			re = new RegExp(pattern, args?.ignore_case === true ? "i" : "");
 		} catch (e) {
 			return fail(`Invalid regex: ${String((e as Error).message ?? e)}`);
 		}
 
-		let text = source;
-		if (/^https?:\/\//i.test(source)) {
+		let text = typeof args?.text === "string" ? args.text : "";
+		if (!text && args?.url) {
+			if (!isHttpUrl(args.url)) return fail("url must be an absolute http(s) URL.");
 			try {
-				text = await (await smartFetch(env, source, {})).text();
+				text = (await fetchText(env, String(args.url))).text;
 			} catch (e) {
 				return fail(`Fetch failed: ${String((e as Error).message ?? e)}`);
 			}
 		}
+		if (!text) return fail("Provide `text` or `url`.");
 
-		const lines = text.split(/\r?\n/);
-		const invert = args?.invert === true;
 		const context = Math.min(Number(args?.context) || 0, 20);
-		const max = Number(args?.max) || 200;
+		const max = Math.min(Number(args?.max) || 200, 5000);
+		const lines = text.split(/\r?\n/);
 
-		const hitIdx: number[] = [];
+		const matches: Array<{ line: number; text: string; context?: string[] }> = [];
+		let total = 0;
 		for (let i = 0; i < lines.length; i++) {
-			if (re.test(lines[i]) !== invert) hitIdx.push(i);
+			if (!re.test(lines[i])) continue;
+			total++;
+			if (matches.length >= max) continue;
+			const hit: { line: number; text: string; context?: string[] } = { line: i + 1, text: lines[i] };
+			if (context > 0) {
+				hit.context = lines.slice(Math.max(0, i - context), Math.min(lines.length, i + context + 1));
+			}
+			matches.push(hit);
 		}
 
-		if (args?.count === true) return ok(String(hitIdx.length));
-		if (!hitIdx.length) return ok("(no matches)");
-
-		const keep = new Set<number>();
-		for (const i of hitIdx.slice(0, max)) {
-			for (let j = Math.max(0, i - context); j <= Math.min(lines.length - 1, i + context); j++) keep.add(j);
-		}
-		const out: string[] = [];
-		let prev = -1;
-		for (const i of [...keep].sort((a, b) => a - b)) {
-			if (prev !== -1 && i > prev + 1) out.push("--");
-			out.push(`${i + 1}:${lines[i]}`);
-			prev = i;
-		}
-		const truncated = hitIdx.length > max ? `\n… ${hitIdx.length - max} more matches (raise \`max\`)` : "";
-		return ok(out.join("\n") + truncated);
+		return ok(JSON.stringify({ count: total, matches }, null, 2));
 	},
 };

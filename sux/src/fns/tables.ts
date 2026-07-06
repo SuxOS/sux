@@ -1,46 +1,41 @@
 import { type Fn, fail, ok } from "../registry";
-import { smartFetch } from "../proxy";
+import { loadHtml, stripHtml } from "./_util";
 
+/** Split a <tr> fragment into cleaned cell strings. */
 function cells(rowHtml: string): string[] {
-	return [...rowHtml.matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map((m) =>
-		m[1].replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/\s+/g, " ").trim(),
-	);
+	return [...rowHtml.matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)].map((m) => stripHtml(m[1]));
 }
 
 export const tables: Fn = {
 	name: "tables",
-	description: "Extract HTML tables into structured data. format: json (default, array of row objects keyed by header) | csv. index: pick a single table (0-based); omit for all.",
+	description:
+		"Extract HTML tables into structured data. format: json (default, rows as objects keyed by the header row) | csv. index: pick a single 0-based table; omit for all.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		properties: {
-			url: { type: "string", description: "URL to fetch — or pass `html`." },
-			html: { type: "string" },
-			format: { type: "string", enum: ["json", "csv"], default: "json" },
-			index: { type: "integer", description: "0-based table index; omit for all tables." },
+			url: { type: "string", description: "URL to fetch (via proxy) — or pass `html`." },
+			html: { type: "string", description: "Raw HTML to parse instead of fetching a url." },
+			format: { type: "string", enum: ["json", "csv"], default: "json", description: "Output format." },
+			index: { type: "integer", description: "0-based index of a single table; omit for all tables." },
 		},
 	},
 	cacheable: true,
 	run: async (env, args) => {
-		let html = String(args?.html ?? "");
-		if (!html && args?.url) {
-			if (!/^https?:\/\//i.test(String(args.url))) return fail("url must be absolute http(s).");
-			html = await (await smartFetch(env, String(args.url), {})).text();
-		}
-		if (!html) return fail("Provide `html` or `url`.");
+		const loaded = await loadHtml(env, args);
+		if ("error" in loaded) return fail(loaded.error);
 
-		const tableHtmls = [...html.matchAll(/<table[\s\S]*?<\/table>/gi)].map((m) => m[0]);
+		const tableHtmls = [...loaded.html.matchAll(/<table[\s\S]*?<\/table>/gi)].map((m) => m[0]);
 		if (!tableHtmls.length) return ok("(no tables found)");
-		const pick = args?.index != null ? [tableHtmls[Number(args.index)]].filter(Boolean) : tableHtmls;
-		if (!pick.length) return fail(`No table at index ${args?.index} (found ${tableHtmls.length}).`);
+
+		const single = args?.index != null;
+		const pick = single ? [tableHtmls[Number(args.index)]].filter(Boolean) : tableHtmls;
+		if (!pick.length) return fail(`No table at index ${args.index} (found ${tableHtmls.length}).`);
 
 		const parsed = pick.map((t) => {
-			const rows = [...t.matchAll(/<tr[\s\S]*?<\/tr>/gi)].map((m) => cells(m[0]));
-			const nonEmpty = rows.filter((r) => r.length);
-			if (!nonEmpty.length) return { headers: [], rows: [] };
-			const headers = nonEmpty[0];
-			const dataRows = nonEmpty.slice(1);
-			return { headers, rows: dataRows };
+			const rows = [...t.matchAll(/<tr[\s\S]*?<\/tr>/gi)].map((m) => cells(m[0])).filter((r) => r.length);
+			if (!rows.length) return { headers: [] as string[], rows: [] as string[][] };
+			return { headers: rows[0], rows: rows.slice(1) };
 		});
 
 		if (args?.format === "csv") {
@@ -50,7 +45,10 @@ export const tables: Fn = {
 				.join("\n\n");
 			return ok(out);
 		}
-		const out = parsed.map((p) => p.rows.map((r) => Object.fromEntries(p.headers.map((h, i) => [h || `col${i}`, r[i] ?? ""]))));
-		return ok(JSON.stringify(args?.index != null ? out[0] : out, null, 2));
+
+		const asObjects = parsed.map((p) =>
+			p.rows.map((r) => Object.fromEntries(p.headers.map((h, i) => [h || `col${i}`, r[i] ?? ""]))),
+		);
+		return ok(JSON.stringify(single ? asObjects[0] : asObjects, null, 2));
 	},
 };

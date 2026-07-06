@@ -1,90 +1,114 @@
 import { type Fn, fail, ok } from "../registry";
+import { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 
-const enc = new TextEncoder();
-const dec = new TextDecoder();
-const b64 = (b: Uint8Array) => { let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000)); return btoa(s); };
-const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const b64 = (b: Uint8Array): string => {
+	let s = "";
+	for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+	return btoa(s);
+};
+const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s.trim()), (c) => c.charCodeAt(0));
 
-function tarPack(files: Array<{ name: string; content: Uint8Array }>): Uint8Array {
-	const blocks: Uint8Array[] = [];
-	for (const f of files) {
-		const header = new Uint8Array(512);
-		const nameBytes = enc.encode(f.name).subarray(0, 100);
-		header.set(nameBytes, 0);
-		const put = (str: string, off: number, len: number) => header.set(enc.encode(str.padEnd(len, "\0").slice(0, len)), off);
-		put("0000644", 100, 8);
-		put("0000000", 108, 8);
-		put("0000000", 116, 8);
-		put(f.content.length.toString(8).padStart(11, "0") + "\0", 124, 12);
-		put("00000000000\0", 136, 12);
-		header[156] = 0x30;
-		put("ustar\0", 257, 6);
-		put("00", 263, 2);
+const MAX_TEXT = 100_000; // don't inline megabytes of decoded text per entry
 
-		for (let i = 148; i < 156; i++) header[i] = 0x20;
-		let sum = 0;
-		for (const byte of header) sum += byte;
-		put(sum.toString(8).padStart(6, "0") + "\0 ", 148, 8);
-		blocks.push(header, f.content, new Uint8Array((512 - (f.content.length % 512)) % 512));
+/** Heuristic: does this byte run decode cleanly as UTF-8 without binary control noise? */
+function looksUtf8(bytes: Uint8Array): boolean {
+	if (bytes.length === 0) return true;
+	// A non-fatal decode maps invalid UTF-8 sequences to U+FFFD; treat any such
+	// replacement char, NUL, or other C0 control byte (tab/newline/CR excepted)
+	// as a sign the payload is binary and should not be inlined as text.
+	const text = new TextDecoder().decode(bytes);
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charCodeAt(i);
+		if (c === 0xfffd) return false;
+		if (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) return false;
 	}
-	blocks.push(new Uint8Array(1024));
-	const total = blocks.reduce((n, b) => n + b.length, 0);
-	const out = new Uint8Array(total);
-	let off = 0;
-	for (const b of blocks) { out.set(b, off); off += b.length; }
-	return out;
+	return true;
 }
 
-function tarUnpack(data: Uint8Array): Array<{ name: string; size: number; content: string }> {
-	const files: Array<{ name: string; size: number; content: string }> = [];
-	let off = 0;
-	while (off + 512 <= data.length) {
-		const header = data.subarray(off, off + 512);
-		if (header.every((b) => b === 0)) break;
-		const name = dec.decode(header.subarray(0, 100)).replace(/\0.*$/, "");
-		const size = parseInt(dec.decode(header.subarray(124, 136)).replace(/\0.*$/, "").trim() || "0", 8);
-		off += 512;
-		if (name) files.push({ name, size, content: b64(data.subarray(off, off + size)) });
-		off += Math.ceil(size / 512) * 512;
+function toBytes(f: { name?: unknown; content?: unknown; base64?: unknown }): Uint8Array {
+	if (typeof f?.base64 === "string" && f.base64) return unb64(f.base64);
+	if (typeof f?.content === "string") return strToU8(f.content);
+	return new Uint8Array(0);
+}
+
+function decodeEntry(name: string, data: Uint8Array): { name: string; bytes: number; text?: string; truncated?: boolean } {
+	const e: { name: string; bytes: number; text?: string; truncated?: boolean } = { name, bytes: data.length };
+	if (looksUtf8(data)) {
+		const text = strFromU8(data);
+		if (text.length > MAX_TEXT) {
+			e.text = text.slice(0, MAX_TEXT);
+			e.truncated = true;
+		} else {
+			e.text = text;
+		}
 	}
-	return files;
+	return e;
 }
 
 export const archive: Fn = {
 	name: "archive",
-	description: "Bundle files into a TAR or list a TAR's contents. op: pack (give `files`: [{name, content_base64}] → base64 tar) | unpack (give `data`: base64 tar → [{name, size, content_base64}]). For .tar.gz, chain with `compress`. ZIP is coming (needs WASM).",
+	description:
+		"Pack files into an archive or unpack one, using fflate (pure JS). op: pack | unpack (required). format: zip (default) | gzip. pack: give `files` as [{ name, content (text) | base64 }] — zip bundles them all, gzip compresses one file's bytes; returns { format, bytes, base64 }. unpack: give `base64` (+ format) — zip lists every entry, gzip yields one; returns { entries: [{ name, bytes, text? }] } with text decoded when it looks like UTF-8. Chain with `compress` for other codecs.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["op"],
 		properties: {
-			op: { type: "string", enum: ["pack", "unpack"] },
-			format: { type: "string", enum: ["tar", "zip"], default: "tar" },
+			op: { type: "string", enum: ["pack", "unpack"], description: "pack builds an archive; unpack reads one." },
+			format: { type: "string", enum: ["zip", "gzip"], default: "zip", description: "Archive format. zip = multi-file container, gzip = single stream." },
 			files: {
 				type: "array",
-				items: { type: "object", required: ["name", "content_base64"], properties: { name: { type: "string" }, content_base64: { type: "string" } } },
+				description: "For pack. Each item: { name, and one of content (UTF-8 text) or base64 (raw bytes) }.",
+				items: {
+					type: "object",
+					additionalProperties: false,
+					required: ["name"],
+					properties: {
+						name: { type: "string", description: "Entry name / path inside the archive." },
+						content: { type: "string", description: "UTF-8 text payload." },
+						base64: { type: "string", description: "Raw bytes as base64 (takes precedence over content)." },
+					},
+				},
 			},
-			data: { type: "string", description: "base64 archive (unpack)." },
+			base64: { type: "string", description: "For unpack. The archive bytes as base64." },
 		},
 	},
-	cacheable: false,
+	cacheable: true,
 	run: async (_env, args) => {
-		if (String(args?.format ?? "tar") === "zip") return fail("ZIP not wired yet (needs WASM deflate + central directory). Use format='tar' (+ compress for gzip).");
+		const op = String(args?.op ?? "");
+		const format = String(args?.format ?? "zip");
+		if (format !== "zip" && format !== "gzip") return fail("format must be 'zip' or 'gzip'.");
 		try {
-			if (args?.op === "pack") {
-				const files = Array.isArray(args?.files) ? args.files : [];
-				if (!files.length) return fail("pack needs `files`: [{name, content_base64}].");
-				const tar = tarPack(files.map((f: any) => ({ name: String(f.name), content: unb64(String(f.content_base64)) })));
-				return ok(JSON.stringify({ format: "tar", bytes: tar.length, base64: b64(tar) }));
+			if (op === "pack") {
+				const files = Array.isArray(args?.files) ? (args.files as any[]) : [];
+				if (!files.length) return fail("pack needs `files`: [{ name, content | base64 }].");
+				for (const f of files) if (!f?.name || typeof f.name !== "string") return fail("every file needs a string `name`.");
+				let out: Uint8Array;
+				if (format === "zip") {
+					const record: Record<string, Uint8Array> = {};
+					for (const f of files) record[String(f.name)] = toBytes(f);
+					out = zipSync(record, { level: 6 });
+				} else {
+					if (files.length !== 1) return fail(`gzip packs exactly one file — got ${files.length}. Use format='zip' for multiple.`);
+					out = gzipSync(toBytes(files[0]), { level: 6 });
+				}
+				return ok(JSON.stringify({ format, bytes: out.length, base64: b64(out) }, null, 2));
 			}
-			if (args?.op === "unpack") {
-				if (!args?.data) return fail("unpack needs `data` (base64 tar).");
-				const entries = tarUnpack(unb64(String(args.data)));
-				return ok(JSON.stringify({ format: "tar", count: entries.length, files: entries.map((e) => ({ name: e.name, size: e.size, content_base64: e.content })) }, null, 2));
+			if (op === "unpack") {
+				if (typeof args?.base64 !== "string" || !args.base64) return fail("unpack needs `base64` (the archive bytes).");
+				const bytes = unb64(String(args.base64));
+				const entries: Array<{ name: string; bytes: number; text?: string; truncated?: boolean }> = [];
+				if (format === "zip") {
+					const files = unzipSync(bytes);
+					for (const [name, data] of Object.entries(files)) entries.push(decodeEntry(name, data));
+				} else {
+					entries.push(decodeEntry("data", gunzipSync(bytes)));
+				}
+				return ok(JSON.stringify({ format, entries }, null, 2));
 			}
-			return fail("op must be pack | unpack.");
+			return fail("op must be 'pack' or 'unpack'.");
 		} catch (e) {
-			return fail(`archive failed: ${String((e as Error).message ?? e)}`);
+			return fail(`archive ${op} failed: ${String((e as Error).message ?? e)}`);
 		}
 	},
 };
