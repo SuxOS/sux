@@ -76,6 +76,34 @@ export function isDirectHost(url: string): boolean {
 
 export type Route = "auto" | "proxy" | "direct";
 
+// Transient failures worth one more shot: gateway/unavailable/timeout statuses.
+// A 4xx or a plain 500 is a settled answer — retrying just wastes the budget.
+const TRANSIENT_STATUS = new Set([502, 503, 504]);
+
+/** True when a resolved response is a transient upstream failure (502/503/504). */
+function isTransientStatus(status: number): boolean {
+	return TRANSIENT_STATUS.has(status);
+}
+
+/**
+ * Run `fn` once, and on a transient failure — a thrown network/timeout error OR
+ * a 502/503/504 response — retry it EXACTLY once after a small fixed backoff.
+ * Scraping proxies hit transient blips constantly; a single retry materially
+ * lifts reliability without unbounded time cost. At most 2 attempts total; each
+ * attempt keeps its own 30s bound, so the worst case is ~60s + backoff.
+ */
+async function withRetry(fn: () => Promise<Response>): Promise<Response> {
+	try {
+		const resp = await fn();
+		if (!isTransientStatus(resp.status)) return resp;
+	} catch (e) {
+		// Thrown error (network/timeout) is transient — fall through to the retry.
+		void e;
+	}
+	await new Promise((r) => setTimeout(r, 250));
+	return fn();
+}
+
 // Route accounting: smartFetch tallies which path each fetch actually took into
 // a small per-isolate buffer that recordCall (metrics.ts) drains into the
 // KV-backed metrics and the structured `sux` log line on every tool call — the
@@ -189,7 +217,11 @@ export async function smartFetch(
 	const callerHeaders = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
 	const headers = { ...ghAuth, ...callerHeaders };
 	// Same 30s bound as the proxy path — a hung origin must not hang the Worker.
-	return fetch(url, { method: init.method, headers, body: init.body, signal: AbortSignal.timeout(30_000) });
+	// One bounded retry on transient failure (network/timeout throw or 502/503/504):
+	// a flaky site or a momentary hiccup shouldn't fail the whole tool call. Each
+	// attempt gets a fresh 30s signal; the retry is an ADDITIONAL layer over the
+	// proxy→direct fallback above, not a replacement for it.
+	return withRetry(() => fetch(url, { method: init.method, headers, body: init.body, signal: AbortSignal.timeout(30_000) }));
 }
 
 /**

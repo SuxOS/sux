@@ -184,6 +184,68 @@ describe("route tally", () => {
 	});
 });
 
+describe("smartFetch transient retry (direct path)", () => {
+	it("retries once on a 503, then returns the 200 (2 attempts)", async () => {
+		let n = 0;
+		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => {
+			n++;
+			return n === 1 ? new Response("busy", { status: 503 }) : new Response("ok", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/", {}, "direct");
+		expect(resp.status).toBe(200);
+		expect(await resp.text()).toBe("ok");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("returns a persistent 503 after exactly 2 attempts (no infinite loop)", async () => {
+		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => new Response("still busy", { status: 503 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/", {}, "direct");
+		expect(resp.status).toBe(503);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("does NOT retry a 404 — returns it immediately (1 attempt)", async () => {
+		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => new Response("nope", { status: 404 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/", {}, "direct");
+		expect(resp.status).toBe(404);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does NOT retry a plain 500 — returns it immediately (1 attempt)", async () => {
+		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => new Response("oops", { status: 500 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/", {}, "direct");
+		expect(resp.status).toBe(500);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("retries a thrown network error, then returns the success (2 attempts)", async () => {
+		let n = 0;
+		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => {
+			n++;
+			if (n === 1) throw new Error("network down");
+			return new Response("recovered", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/", {}, "direct");
+		expect(resp.status).toBe(200);
+		expect(await resp.text()).toBe("recovered");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("propagates a persistent thrown error after 2 attempts", async () => {
+		const fetchMock = vi.fn(async (_u: string | URL, _init?: RequestInit) => {
+			throw new Error("network down");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(smartFetch({}, "https://example.com/", {}, "direct")).rejects.toThrow(/network down/);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe("hmacHex", () => {
 	it("matches the known HMAC-SHA256 test vector", async () => {
 		// RFC-style vector: key "key", msg "The quick brown fox jumps over the lazy dog"
