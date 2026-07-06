@@ -1,3 +1,4 @@
+import type { BrowserWorker } from "@cloudflare/puppeteer";
 import type { TailscaleEnv } from "./proxy";
 
 // Minimal Workers AI binding surface (summarize/translate/classify/embed/ocr).
@@ -41,6 +42,10 @@ export type RtEnv = Env &
 		SERPAPI_KEY?: string;
 		AI?: AiBinding;
 		IMAGES?: ImagesBinding;
+		// Cloudflare Browser Rendering binding surface (render). Declared in
+		// wrangler as `"browser": { "binding": "BROWSER" }`; absent in
+		// local/test runs — the `render` fn fails gracefully when unbound.
+		BROWSER?: BrowserWorker;
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 	};
 

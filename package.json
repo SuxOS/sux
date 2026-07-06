@@ -18,6 +18,7 @@
     "gen:index": "node sux/scripts/gen-index.mjs"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.1.0",
     "@cloudflare/workers-oauth-provider": "^0.8.1",
     "fflate": "^0.8.3",
     "pdf-lib": "^1.17.1"

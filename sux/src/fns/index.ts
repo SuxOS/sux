@@ -50,6 +50,7 @@ import { json } from "./json";
 import { markdown } from "./markdown";
 import { pdf } from "./pdf";
 import { pipe } from "./pipe";
+import { render } from "./render";
 import { shop } from "./shop";
 import { store } from "./store";
 import { webSearch } from "./web_search";
@@ -103,6 +104,7 @@ export const FUNCTIONS: Fn[] = [
 	markdown,
 	pdf,
 	pipe,
+	render,
 	shop,
 	store,
 	webSearch,
