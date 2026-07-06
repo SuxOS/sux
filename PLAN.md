@@ -174,6 +174,74 @@ zillow/redfin · flights/hotels · jobs · social · reviews.
 > real $ (paid APIs, Browser-Run volume), legal/ToS gray areas (bulk download,
 > auth-walled data), or destructive/irreversible actions.
 
+## 50 functions (build queue) — ✅ done · 🔨 next · ⬜ queued
+Each is one `Fn` file under `sux/src/fns/`. Bidirectional verbs marked ↔.
+
+**Net / transport**
+1. ✅ `protocol(url,method,headers,body,as)` — full HTTP request via proxy
+2. ⬜ `proxy(url,method,headers,body,geo)` — raw residential transport
+3. ✅ `scrape(url)` — fetch + cloud parse
+4. ⬜ `dns(name,type=A)` — A/AAAA/MX/TXT/CNAME
+5. ⬜ `whois(domain)`
+6. ⬜ `ip_geo(ip)`
+7. ⬜ `tls_info(host)` — cert / expiry / chain
+8. ⬜ `headers(url)` — HEAD: status/headers/latency
+9. ⬜ `redirects(url)` — full redirect chain
+10. ⬜ `robots(url)` — fetch + parse robots.txt
+
+**Extract / parse**
+11. ✅ `extract(url,what)` — links | jsonld | text
+12. ⬜ `readability(url)` — main article content
+13. ⬜ `tables(url)` — HTML tables → json/csv
+14. ⬜ `metadata(url)` — og/meta/title/favicon
+15. ⬜ `feed(url)` — RSS/Atom → items
+16. ⬜ `sitemap(url)` — sitemap urls
+17. ⬜ `gtin(url)` — barcodes, check-digit validated
+18. ⬜ `contacts(url)` — emails/phones
+19. ⬜ `select(html,css)` — CSS-selector query
+20. ⬜ `crawl(url,depth)` — bounded link crawl
+
+**Convert** ↔
+21. ⬜ `html_markdown` — html ↔ markdown
+22. ⬜ `html_to_pdf`
+23. ⬜ `pdf_to_text`
+24. ⬜ `pdf_to_images`
+25. ⬜ `csv_json` — csv ↔ json
+26. ⬜ `yaml_json` — yaml ↔ json
+27. ⬜ `xml_json` — xml ↔ json
+28. ⬜ `office_to_pdf` — docx/xlsx/pptx → pdf
+29. ⬜ `image_convert` — png/jpeg/webp/avif ↔
+30. ⬜ `subtitles` — srt ↔ vtt
+
+**Compress / optimize / encode** ↔
+31. 🔨 `compress(data,codec,dir)` — gzip/deflate/brotli/zstd ↔ **(next)**
+32. ⬜ `archive(op,files)` — zip/tar pack ↔ unpack
+33. ⬜ `optimize(bytes)` — lossless image/pdf/minify (F1)
+34. ⬜ `shrink(bytes,kind)` — pdf/image size reduction (lossy opt-in)
+35. ✅ `encode(text,codec,dir)` — base64/hex/url ↔
+36. ✅ `hash(text,algo)` — sha256/384/512/1
+37. ⬜ `qr(data,dir)` — text ↔ QR ↔
+38. ⬜ `jwt(token)` — decode/verify
+
+**AI / text** (Workers AI)
+39. ⬜ `summarize(text|url)`
+40. ⬜ `translate(text,to)`
+41. ⬜ `classify(text,labels)`
+42. ⬜ `embed(text)` — vector
+43. ⬜ `ocr(image|pdf)` — vision
+44. ⬜ `redact(text)` — PII
+45. ⬜ `diff(a,b)` — text/line diff
+46. ⬜ `entities(text)` — NER + dates/amounts
+
+**Query / APIs**
+47. ⬜ `search(query)` — web search (kagi)
+48. ✅ `local_shop(product,location)` — local shopping
+49. ⬜ `barcode_lookup(gtin)` — product + cross-store prices
+50. ⬜ `wayback(url,at)` — archived snapshot + history
+
+*(+ growing: `youtube` 🚧, `weather`, `quote`, `calc`, `units`, `currency`,
+`reddit`, `maps`, `amazon`, `zillow`, `pdf_merge`, `form_fill` — all greenlit.)*
+
 ## Phased roadmap
 - **P0 — Split (DONE):** core clean; research-tools scaffolded, deployable MCP server (local_shop + scrape working, KV cache, gate, proxy, dumb node).
 - **P1 — Deploy Service 2:** own secrets + GitHub OAuth callback.
