@@ -24,7 +24,6 @@ import { batch } from "./batch";
 import { batch_fetch } from "./batch_fetch";
 import { metadata } from "./metadata";
 import { tables } from "./tables";
-import { htmlMarkdown } from "./html_markdown";
 import { archive } from "./archive";
 import { encode } from "./encode";
 import { hash } from "./hash";
@@ -101,8 +100,10 @@ import { csv } from "./csv";
 import { egress } from "./egress";
 import { fillable } from "./fillable";
 import { grammar } from "./grammar";
+import { html } from "./html";
 import { textIndex } from "./text_index";
 import { json } from "./json";
+import { markdown } from "./markdown";
 import { pdf } from "./pdf";
 import { plaintext } from "./plaintext";
 import { shop } from "./shop";
@@ -134,7 +135,6 @@ export const FUNCTIONS: Fn[] = [
 	batch_fetch,
 	metadata,
 	tables,
-	htmlMarkdown,
 	archive,
 	encode,
 	hash,
@@ -211,8 +211,10 @@ export const FUNCTIONS: Fn[] = [
 	egress,
 	fillable,
 	grammar,
+	html,
 	textIndex,
 	json,
+	markdown,
 	pdf,
 	plaintext,
 	shop,
