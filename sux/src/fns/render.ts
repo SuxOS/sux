@@ -18,6 +18,69 @@ const MAX_OUTPUT_BYTES = 2_000_000;
 // (image/stylesheet/font/media are exactly what makes a screenshot look right).
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font", "stylesheet"]);
 
+// Stealth defaults applied to the page before navigation to blunt the most
+// obvious headless-Chromium tells. Kept minimal and inline (no stealth-plugin
+// dependency): a realistic desktop UA (no "HeadlessChrome"), a real desktop
+// viewport, a plausible accept-language, and a navigator.webdriver mask. The UA
+// matches the residential proxy's default header (node/openwrt/fetch.sh) so the
+// browser and the proxy present the same client.
+const STEALTH_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const STEALTH_VIEWPORT = { width: 1280, height: 800, deviceScaleFactor: 1 } as const;
+const STEALTH_ACCEPT_LANGUAGE = "en-US,en;q=0.9";
+
+// The slice of puppeteer's Page the stealth setup touches. Structurally typed and
+// every method optional so the test stub (and any CF Browser Rendering build that
+// lacks a given API) can omit it — each call is individually guarded anyway.
+type PageForStealth = {
+	setUserAgent?(ua: string): void | Promise<void>;
+	setViewport?(v: { width: number; height: number; deviceScaleFactor?: number }): void | Promise<void>;
+	setExtraHTTPHeaders?(headers: Record<string, string>): void | Promise<void>;
+	evaluateOnNewDocument?(fn: (...args: unknown[]) => unknown): void | Promise<void>;
+};
+
+/**
+ * Best-effort headless de-fingerprinting, applied BEFORE navigation. Each step is
+ * wrapped in its own try/catch: CF Browser Rendering may not support every API, so
+ * an unsupported/throwing call degrades silently rather than failing the render.
+ * Pairs with residential routing (which fixes the IP signal); this fixes the most
+ * obvious BROWSER signals. Deeper stealth isn't attempted (CF Browser Rendering
+ * limits it).
+ */
+async function applyStealth(page: PageForStealth): Promise<void> {
+	// Default headless UA contains "HeadlessChrome" — a dead giveaway. Present a
+	// realistic current desktop Chrome UA instead (matches the residential proxy's).
+	try {
+		if (typeof page.setUserAgent === "function") await page.setUserAgent(STEALTH_UA);
+	} catch {
+		// setUserAgent unsupported on this build — skip; the (headless) UA remains.
+	}
+	// Headless default viewport is a tell; use a real desktop size.
+	try {
+		if (typeof page.setViewport === "function") await page.setViewport({ ...STEALTH_VIEWPORT });
+	} catch {
+		// setViewport unsupported — skip; the default viewport remains.
+	}
+	// A plausible accept-language. Chromium folds this into outgoing request
+	// headers, so the interception handler's req.headers() forwards it residentially
+	// too — the browser and the proxy stay consistent without extra plumbing.
+	try {
+		if (typeof page.setExtraHTTPHeaders === "function") await page.setExtraHTTPHeaders({ "accept-language": STEALTH_ACCEPT_LANGUAGE });
+	} catch {
+		// setExtraHTTPHeaders unsupported — skip; Chromium's own accept-language stands.
+	}
+	// Mask navigator.webdriver (true under automation) so page scripts read it as
+	// undefined. evaluateOnNewDocument runs the script before any page script.
+	try {
+		if (typeof page.evaluateOnNewDocument === "function") {
+			await page.evaluateOnNewDocument(() => {
+				Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+			});
+		}
+	} catch {
+		// evaluateOnNewDocument unsupported — skip; navigator.webdriver stays as-is.
+	}
+}
+
 // Hop-by-hop / framing headers that describe how bytes were transported, not the
 // bytes themselves. smartFetch already decoded the body (proxy.ts drops these on
 // its own path), so re-emitting them to request.respond would mislead Chromium
@@ -105,7 +168,8 @@ export const render: Fn = {
 		"Give `url` (absolute http(s)); options: wait_until (load|domcontentloaded|networkidle0|networkidle2, default networkidle0), wait_ms (extra delay after load, ≤10000), as (html|text|screenshot|pdf, default html), timeout_ms (nav timeout, default 30000, ≤60000). " +
 		"as:screenshot captures a PNG (full_page to shoot the whole scroll height) and returns it as a content-addressed /s/<uuid> URL by default (delivery:base64 to inline). block_resources aborts image/font/stylesheet/media fetches before navigation to speed up html/text extraction (ignored for screenshots to keep them visually correct). " +
 		"as:pdf renders the page to a PDF, delivered the same way as a screenshot (content-addressed /s/<uuid> URL by default, delivery:base64 to inline); options format (A4|Letter|Legal|A3, default A4), landscape (default false), print_background (default true so CSS backgrounds render). " +
-		"residential (default true) routes the browser's requests through the Tailscale residential proxy so they egress from a home IP instead of the Cloudflare datacenter — the point of this fn, since datacenter IPs are blocked by bot managers like Akamai. Trade-off: slower, because every subresource is proxied one by one; set residential:false to fetch directly from the datacenter (faster, but blockable). With residential and block_resources both on, heavy assets are still aborted and everything else is residential-routed; with residential on and block_resources off, images are proxied too (fully residential, heavier).",
+		"residential (default true) routes the browser's requests through the Tailscale residential proxy so they egress from a home IP instead of the Cloudflare datacenter — the point of this fn, since datacenter IPs are blocked by bot managers like Akamai. Trade-off: slower, because every subresource is proxied one by one; set residential:false to fetch directly from the datacenter (faster, but blockable). With residential and block_resources both on, heavy assets are still aborted and everything else is residential-routed; with residential on and block_resources off, images are proxied too (fully residential, heavier). " +
+		"stealth (default true) applies a realistic desktop UA/viewport/accept-language and masks navigator.webdriver to reduce headless-browser fingerprinting so bot managers are less likely to flag the render; pairs with residential routing (which fixes the IP signal). Best-effort — CF Browser Rendering limits deeper stealth, and each step degrades silently if unsupported. Set false to keep the default headless signals.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -125,6 +189,12 @@ export const render: Fn = {
 				default: true,
 				description:
 					"Route the browser's requests through the Tailscale residential proxy so they egress from a home IP, bypassing datacenter-IP bot detection (Akamai etc.). Default true — this is render's main purpose. Slower (every subresource is proxied); set false to fetch directly from the datacenter.",
+			},
+			stealth: {
+				type: "boolean",
+				default: true,
+				description:
+					"Apply a realistic desktop UA/viewport/accept-language and mask navigator.webdriver to reduce headless-browser fingerprinting (bot managers like Akamai flag the default HeadlessChrome signals). Default true — pairs with residential routing. Best-effort (CF Browser Rendering limits deeper stealth); set false to keep default headless signals.",
 			},
 			delivery: { type: "string", enum: ["base64", "url"], default: "url", description: "Screenshot only: content-addressed /s/<uuid> URL (default, ~100 tokens) or inline base64." },
 			timeout_ms: { type: "integer", minimum: 1, maximum: 60000, default: 30000, description: "Navigation timeout in ms." },
@@ -153,11 +223,17 @@ export const render: Fn = {
 		// Default TRUE: bypassing datacenter-IP bot detection is this fn's whole
 		// point. Only an explicit false opts back into the direct datacenter path.
 		const residential = args?.residential !== false;
+		// Default TRUE: getting past bot detection is render's purpose, so reduce the
+		// most obvious headless-Chromium tells by default. Explicit false keeps them.
+		const stealth = args?.stealth !== false;
 
 		let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
 		try {
 			browser = await puppeteer.launch(env.BROWSER);
 			const page = await browser.newPage();
+			// Reduce headless-Chromium fingerprinting before navigation. Best-effort and
+			// self-guarding — an unsupported step degrades silently, never fails the render.
+			if (stealth) await applyStealth(page as unknown as PageForStealth);
 			// Interception is needed whenever we abort heavy assets (block_resources)
 			// OR route requests residentially. When neither is on, the browser fetches
 			// directly from the datacenter with no interception (today's behavior).

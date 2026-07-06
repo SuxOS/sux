@@ -11,6 +11,10 @@ const stubs = vi.hoisted(() => ({
 	pdf: vi.fn(async (_opts: any) => new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d])),
 	setRequestInterception: vi.fn(async (_on: boolean) => {}),
 	on: vi.fn((_evt: string, _handler: any) => {}),
+	setUserAgent: vi.fn(async (_ua: string) => {}),
+	setViewport: vi.fn(async (_v: any) => {}),
+	setExtraHTTPHeaders: vi.fn(async (_h: Record<string, string>) => {}),
+	evaluateOnNewDocument: vi.fn(async (_fn: any) => {}),
 	close: vi.fn(async () => {}),
 	newPage: vi.fn(),
 	launch: vi.fn(),
@@ -25,6 +29,10 @@ vi.mock("@cloudflare/puppeteer", () => {
 		pdf: stubs.pdf,
 		setRequestInterception: stubs.setRequestInterception,
 		on: stubs.on,
+		setUserAgent: stubs.setUserAgent,
+		setViewport: stubs.setViewport,
+		setExtraHTTPHeaders: stubs.setExtraHTTPHeaders,
+		evaluateOnNewDocument: stubs.evaluateOnNewDocument,
 	};
 	const browser = {
 		newPage: stubs.newPage.mockResolvedValue(page as any),
@@ -85,6 +93,10 @@ describe("render", () => {
 		stubs.pdf.mockClear().mockResolvedValue(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]));
 		stubs.setRequestInterception.mockClear().mockResolvedValue(undefined as any);
 		stubs.on.mockClear();
+		stubs.setUserAgent.mockClear().mockResolvedValue(undefined as any);
+		stubs.setViewport.mockClear().mockResolvedValue(undefined as any);
+		stubs.setExtraHTTPHeaders.mockClear().mockResolvedValue(undefined as any);
+		stubs.evaluateOnNewDocument.mockClear().mockResolvedValue(undefined as any);
 		stubs.close.mockClear().mockResolvedValue(undefined as any);
 		// Return a FRESH Response per call — a Response body can only be read once,
 		// so a shared instance would throw on the second intercepted request.
@@ -293,5 +305,44 @@ describe("render", () => {
 		// No interception installed at all when neither residential nor block_resources is on.
 		expect(stubs.setRequestInterception).not.toHaveBeenCalled();
 		expect(smartFetchMock).not.toHaveBeenCalled();
+	});
+
+	// --- stealth (default true) ---
+
+	it("stealth (default) sets a realistic UA (no Headless), a desktop viewport, accept-language, and the webdriver mask", async () => {
+		await render.run(BROWSER_ENV, { url: "https://example.com" });
+		// Realistic desktop Chrome UA — crucially without the "HeadlessChrome" tell.
+		expect(stubs.setUserAgent).toHaveBeenCalledTimes(1);
+		const ua = stubs.setUserAgent.mock.calls[0][0];
+		expect(ua).not.toMatch(/Headless/i);
+		expect(ua).toMatch(/Chrome\//);
+		// Real desktop viewport, not the headless default.
+		expect(stubs.setViewport).toHaveBeenCalledWith({ width: 1280, height: 800, deviceScaleFactor: 1 });
+		// Plausible accept-language.
+		expect(stubs.setExtraHTTPHeaders).toHaveBeenCalledWith({ "accept-language": "en-US,en;q=0.9" });
+		// navigator.webdriver mask installed before page scripts run.
+		expect(stubs.evaluateOnNewDocument).toHaveBeenCalledTimes(1);
+		expect(typeof stubs.evaluateOnNewDocument.mock.calls[0][0]).toBe("function");
+	});
+
+	it("stealth:false applies none of the fingerprint masking (today's headless behavior)", async () => {
+		const r = await render.run(BROWSER_ENV, { url: "https://example.com", stealth: false });
+		expect(r.isError).toBeFalsy();
+		expect(stubs.setUserAgent).not.toHaveBeenCalled();
+		expect(stubs.setViewport).not.toHaveBeenCalled();
+		expect(stubs.setExtraHTTPHeaders).not.toHaveBeenCalled();
+		expect(stubs.evaluateOnNewDocument).not.toHaveBeenCalled();
+	});
+
+	it("an unsupported/throwing stealth API degrades gracefully — the render still returns content", async () => {
+		// Simulate a CF Browser Rendering build where setUserAgent isn't supported.
+		stubs.setUserAgent.mockRejectedValueOnce(new Error("setUserAgent unsupported"));
+		const r = await render.run(BROWSER_ENV, { url: "https://example.com" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toBe("<html>rendered</html>");
+		// The remaining stealth steps still ran despite the earlier throw.
+		expect(stubs.setViewport).toHaveBeenCalled();
+		expect(stubs.setExtraHTTPHeaders).toHaveBeenCalled();
+		expect(stubs.evaluateOnNewDocument).toHaveBeenCalled();
 	});
 });
