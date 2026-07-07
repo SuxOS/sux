@@ -99,6 +99,37 @@ async function assertPublicTarget(url) {
 	return u;
 }
 
+const MAX_REDIRECTS = 8;
+
+/**
+ * SSRF-safe redirect follower. The entry URL is guarded by assertPublicTarget,
+ * but Node's built-in redirect:"follow" would then chase a 3xx Location into a
+ * private/LAN address WITHOUT re-running that guard — a public URL that
+ * 302-redirects to http://192.168.1.1/ or http://169.254.169.254/ (cloud
+ * metadata) would be fetched from INSIDE the home LAN, defeating the whole
+ * SSRF check. So when the caller wants redirects followed, do it manually:
+ * fetch each hop with redirect:"manual" and re-validate every Location through
+ * `assertTarget` (same public-host + resolved-address check as the entry URL)
+ * before fetching it. Callers that ask for redirect:"manual" (the Worker's
+ * `redirects` fn tracing a hop chain) never reach here — they get the single
+ * 3xx back unchanged. `fetchImpl`/`assertTarget` are injectable seams for tests.
+ */
+export async function fetchFollowingSafely(startUrl, init, { fetchImpl = fetch, assertTarget = assertPublicTarget, maxHops = MAX_REDIRECTS } = {}) {
+	let current = startUrl;
+	for (let hop = 0; ; hop++) {
+		const resp = await fetchImpl(current, { ...init, redirect: "manual" });
+		const location = resp.headers.get("location");
+		if (resp.status >= 300 && resp.status < 400 && location) {
+			if (hop >= maxHops) throw new Error("too many redirects");
+			const next = new URL(location, String(current)); // resolve a relative Location against the current hop
+			await assertTarget(next.href); // SSRF re-check EACH hop — refuses a redirect that lands on the LAN
+			current = next;
+			continue;
+		}
+		return resp;
+	}
+}
+
 function json(res, status, obj) {
 	const body = JSON.stringify(obj);
 	res.writeHead(status, { "content-type": "application/json" });
@@ -181,14 +212,16 @@ const server = createServer(async (req, res) => {
 	}
 
 	try {
-		const upstream = await fetch(target, {
+		const fetchInit = {
 			method: spec.method || "GET",
 			headers: { ...DEFAULT_HEADERS, ...(spec.headers || {}) },
 			body: spec.body,
-			// "manual" lets the Worker's `redirects` fn trace the hop chain; default follow.
-			redirect: spec.redirect === "manual" ? "manual" : "follow",
 			signal: AbortSignal.timeout(TIMEOUT_MS),
-		});
+		};
+		// "manual" lets the Worker's `redirects` fn trace the hop chain itself (single
+		// 3xx back, unfollowed). Otherwise follow redirects the SSRF-safe way:
+		// re-validate every hop's Location so a public URL can't 302 us into the LAN.
+		const upstream = spec.redirect === "manual" ? await fetch(target, { ...fetchInit, redirect: "manual" }) : await fetchFollowingSafely(target, fetchInit);
 
 		// Read up to MAX_BYTES so a huge page can't OOM the box.
 		const reader = upstream.body?.getReader();

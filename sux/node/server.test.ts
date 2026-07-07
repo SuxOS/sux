@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { encodeBody, hostAllowed, isPrivateIp, verifySignature } from "./server.mjs";
+import { encodeBody, fetchFollowingSafely, hostAllowed, isPrivateIp, verifySignature } from "./server.mjs";
 
 // Guards the residential-proxy binary-egress contract: the node must base64 the
 // upstream body and flag bodyEncoding:"base64" so arbitrary bytes survive the
@@ -86,5 +86,65 @@ describe("verifySignature (HMAC auth)", () => {
 	it("rejects non-hex signatures without throwing", () => {
 		const ts = String(Date.now());
 		expect(verifySignature(ts, "body", "nothex!!", secret)).toBe(false);
+	});
+});
+
+// The entry URL is SSRF-guarded, but the node used to follow redirects with
+// undici's redirect:"follow", which chases a 3xx Location WITHOUT re-checking —
+// so a public page that 302-redirects to http://192.168.1.1/ or the cloud
+// metadata IP would be fetched from inside the home LAN. fetchFollowingSafely
+// re-validates every hop; these pin that the guard runs on redirect targets too.
+describe("fetchFollowingSafely (SSRF-safe redirect follower)", () => {
+	// Stand-in for assertPublicTarget: throws for the known-private hosts, else OK.
+	const assertTarget = async (href: string) => {
+		const h = new URL(href).hostname;
+		if (h === "169.254.169.254" || h === "192.168.1.1") throw new Error(`target resolves to a private address (${h})`);
+		return new URL(href);
+	};
+
+	it("re-runs the SSRF guard on a redirect hop and refuses a redirect into the LAN", async () => {
+		let privateFetched = false;
+		const fetchImpl = async (url: Parameters<typeof fetch>[0]) => {
+			if (String(url).includes("169.254.169.254")) {
+				privateFetched = true; // must never happen — the guard runs BEFORE the hop is fetched
+				return new Response("SECRET", { status: 200 });
+			}
+			return new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data/" } });
+		};
+		await expect(fetchFollowingSafely("https://example.com/", {}, { fetchImpl, assertTarget })).rejects.toThrow(/private address/);
+		expect(privateFetched).toBe(false);
+	});
+
+	it("resolves a relative Location against the current hop before the SSRF re-check", async () => {
+		// A bare "/path" Location must resolve against the *redirecting* host, not be
+		// treated as opaque — the guard must see the real absolute target of the hop.
+		const seen: string[] = [];
+		const fetchImpl = async (url: Parameters<typeof fetch>[0]) => {
+			seen.push(String(url));
+			return String(url).endsWith("/next")
+				? new Response("OK", { status: 200 })
+				: new Response(null, { status: 302, headers: { location: "/next" } });
+		};
+		const resp = await fetchFollowingSafely("https://pub.example/start", {}, { fetchImpl, assertTarget: async (h) => new URL(h) });
+		expect(resp.status).toBe(200);
+		// The relative "/next" resolved to the redirecting host, not some bare path.
+		expect(seen).toEqual(["https://pub.example/start", "https://pub.example/next"]);
+	});
+
+	it("follows a redirect to another public host and returns the final response", async () => {
+		const pass = async (href: string) => new URL(href);
+		const fetchImpl = async (url: Parameters<typeof fetch>[0]) =>
+			String(url).includes("start.example")
+				? new Response(null, { status: 301, headers: { location: "https://final.example/ok" } })
+				: new Response("OK", { status: 200 });
+		const resp = await fetchFollowingSafely("https://start.example/", {}, { fetchImpl, assertTarget: pass });
+		expect(resp.status).toBe(200);
+		expect(await resp.text()).toBe("OK");
+	});
+
+	it("caps the redirect chain instead of looping forever", async () => {
+		const pass = async (href: string) => new URL(href);
+		const fetchImpl = async () => new Response(null, { status: 302, headers: { location: "https://loop.example/next" } });
+		await expect(fetchFollowingSafely("https://loop.example/", {}, { fetchImpl, assertTarget: pass, maxHops: 3 })).rejects.toThrow(/too many redirects/);
 	});
 });
