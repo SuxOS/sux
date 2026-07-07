@@ -11,13 +11,15 @@ function decodeEntities(s: string): string {
 	return s
 		.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
 		.replace(/&nbsp;/gi, " ")
-		.replace(/&amp;/gi, "&")
 		.replace(/&lt;/gi, "<")
 		.replace(/&gt;/gi, ">")
 		.replace(/&quot;/gi, '"')
 		.replace(/&#0*39;|&apos;/gi, "'")
 		.replace(/&#x([0-9a-f]+);/gi, (_, h) => codePoint(parseInt(h, 16)))
-		.replace(/&#(\d+);/g, (_, d) => codePoint(parseInt(d, 10)));
+		.replace(/&#(\d+);/g, (_, d) => codePoint(parseInt(d, 10)))
+		// `&amp;` must decode last so escaped entities like `&amp;lt;` become the
+		// literal text `&lt;` instead of being re-decoded into `<` markup.
+		.replace(/&amp;/gi, "&");
 }
 
 /** First inner text of <name>…</name> within `xml`, entity-decoded. */
