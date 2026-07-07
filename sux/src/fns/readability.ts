@@ -1,7 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { clamp, loadHtml, stripHtml } from "./_util";
 
-/** Count the text length carried by <p> tags inside a fragment (density signal). */
 function paragraphTextLen(fragment: string): number {
 	let len = 0;
 	for (const m of fragment.matchAll(/<p[\s>][\s\S]*?<\/p>/gi)) {
@@ -10,7 +9,6 @@ function paragraphTextLen(fragment: string): number {
 	return len;
 }
 
-/** Grab the innerHTML of the first <tag ...>…</tag> block, or "" if absent. */
 function firstBlock(html: string, tag: string): string {
 	return html.match(new RegExp(`<${tag}[\\s>][\\s\\S]*?<\\/${tag}>`, "i"))?.[0] ?? "";
 }
@@ -40,12 +38,10 @@ export const readability: Fn = {
 			html.match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:name|property)=["'](?:${name})["']`, "i"))?.[1];
 		const byline = (meta("author|article:author|og:article:author") ?? "").trim() || undefined;
 
-		// Drop boilerplate/non-content elements before picking a region.
 		const cleaned = html
 			.replace(/<!--[\s\S]*?-->/g, " ")
 			.replace(/<(script|style|nav|header|footer|aside|form|noscript|svg)[\s\S]*?<\/\1>/gi, " ");
 
-		// Prefer a semantic region; otherwise fall back to the densest generic block.
 		let region = firstBlock(cleaned, "article") || firstBlock(cleaned, "main");
 		if (!region) {
 			const blocks = [

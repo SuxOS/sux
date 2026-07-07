@@ -1,9 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
 
-// CrossRef Works API (api.crossref.org) — keyless, free scholarly metadata keyed
-// on DOIs. No residential proxy: a public bibliographic endpoint with no bot wall,
-// so a plain fetch is correct and cheaper.
-
 const API = "https://api.crossref.org/works";
 
 function normItem(d: any): Record<string, unknown> {

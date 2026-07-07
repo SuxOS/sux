@@ -1,25 +1,16 @@
-// Shared conversion core for the directional, output-named converters
-// (json/yaml/csv/xml/markdown). Each converter fn dispatches on the SOURCE type
-// (Julia-style multiple dispatch: `json(x)` parses whatever x is; `yaml(x)`
-// serialises x to YAML), and bidirectionality falls out of composing them
-// (`yaml(json(x))`). Pure, dependency-free.
-
 export type Format = "json" | "yaml" | "csv" | "xml";
 
-/** Best-effort source-format detection for `from: auto`. */
 export function detectFormat(s: string): Format {
 	const t = s.trim();
 	if (!t) return "json";
 	if (t.startsWith("<")) return "xml";
 	if (t.startsWith("{") || t.startsWith("[")) return "json";
-	// A YAML document usually has `key:` lines or `- ` sequences early on.
+
 	if (/^\s*[\w.-]+\s*:(\s|$)/m.test(t) || /^\s*-\s/m.test(t)) return "yaml";
-	// Otherwise, comma-separated columns across lines looks like CSV.
+
 	if (/^[^\n]*,[^\n]*\n/.test(t)) return "csv";
 	return "yaml";
 }
-
-// ---------- JSON <-> YAML (practical common subset) ----------
 
 function needsQuote(s: string): boolean {
 	if (s === "") return true;
@@ -149,8 +140,7 @@ export function parseYaml(text: string): unknown {
 			i++;
 			const key = m[1].trim();
 			if (m[2].trim() === "") {
-				// Zero-relative-indent sequences (kubernetes/GitHub-Actions style):
-				// a `- ` item at the key's own indent belongs to the key.
+
 				const next = lines[i];
 				const seqAtKeyIndent = next !== undefined && indentOf(next) === ind && /^\s*-(\s|$)/.test(next);
 				obj[key] = parseBlock(seqAtKeyIndent ? ind : ind + 1);
@@ -159,8 +149,6 @@ export function parseYaml(text: string): unknown {
 	}
 	return parseBlock(0);
 }
-
-// ---------- JSON <-> CSV (RFC4180-ish) ----------
 
 export function parseCsv(text: string, delim: string): string[][] {
 	const rows: string[][] = [];
@@ -208,7 +196,6 @@ export function parseCsv(text: string, delim: string): string[][] {
 	return rows.filter((r) => !(r.length === 1 && r[0] === ""));
 }
 
-/** CSV text -> array of row objects (first row = headers). */
 export function csvToRows(text: string, delim: string): Record<string, string>[] {
 	const rows = parseCsv(text, delim);
 	if (!rows.length) return [];
@@ -227,8 +214,6 @@ export function toCsv(arr: unknown[], delim: string): string {
 	for (const o of arr) lines.push(headers.map((h) => esc((o as Record<string, unknown>)?.[h])).join(delim));
 	return lines.join("\n");
 }
-
-// ---------- JSON <-> XML ----------
 
 function decodeEntities(s: string): string {
 	return s
@@ -330,8 +315,6 @@ export function toXml(obj: unknown, name?: string): string {
 	return name ? `<${name}>${esc}</${name}>` : esc;
 }
 
-/** Parse any supported source string into a JS value (Julia-style: json() calls
- * this dispatching on the detected/declared source format). */
 export function parseSource(data: string, from: Format, opts?: { delimiter?: string }): unknown {
 	switch (from) {
 		case "json":

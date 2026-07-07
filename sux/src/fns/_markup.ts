@@ -1,7 +1,3 @@
-// Shared HTML <-> Markdown conversion for the directional markdown()/html()
-// converters (common subset: headings, links, bold/em, lists, inline code, code
-// blocks, blockquotes, paragraphs). Pure. Bidirectionality via composition.
-
 function decodeEntities(s: string): string {
 	return s
 		.replace(/&nbsp;/g, " ")

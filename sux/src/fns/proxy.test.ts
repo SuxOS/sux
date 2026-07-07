@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 
-// Mock the residential proxy so the test is offline & deterministic.
 vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(
 		async () =>
@@ -40,9 +39,9 @@ describe("proxy", () => {
 	it("marks upstream error pages noCache (they must not poison the cache)", async () => {
 		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("rate limited", { status: 429 }));
 		const r = await proxyFn.run({} as any, { url: "https://x.com/hot" });
-		expect(r.isError).toBeFalsy(); // raw transport still returns the body
+		expect(r.isError).toBeFalsy();
 		expect(r.noCache).toBe(true);
-		// 2xx responses stay cacheable.
+
 		const good = await proxyFn.run({} as any, { url: "https://x.com" });
 		expect(good.noCache).toBeUndefined();
 	});

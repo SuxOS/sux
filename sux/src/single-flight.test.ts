@@ -23,7 +23,7 @@ describe("singleFlight", () => {
 		const a = singleFlight(inflight, "k", thunk);
 		const b = singleFlight(inflight, "k", thunk);
 		const c = singleFlight(inflight, "k", thunk);
-		expect(runs).toBe(1); // only the leader ran
+		expect(runs).toBe(1);
 		d.resolve(42);
 		expect(await Promise.all([a, b, c])).toEqual([42, 42, 42]);
 	});
@@ -45,7 +45,7 @@ describe("singleFlight", () => {
 		const thunk = () => Promise.resolve(++runs);
 		expect(await singleFlight(inflight, "k", thunk)).toBe(1);
 		expect(inflight.has("k")).toBe(false);
-		expect(await singleFlight(inflight, "k", thunk)).toBe(2); // fresh run
+		expect(await singleFlight(inflight, "k", thunk)).toBe(2);
 	});
 
 	it("propagates a rejection to every awaiter and still clears the entry", async () => {
@@ -56,7 +56,7 @@ describe("singleFlight", () => {
 		d.reject(new Error("boom"));
 		await expect(a).rejects.toThrow("boom");
 		await expect(b).rejects.toThrow("boom");
-		await Promise.resolve(); // let the cleanup microtask run
+		await Promise.resolve();
 		expect(inflight.has("k")).toBe(false);
 	});
 });

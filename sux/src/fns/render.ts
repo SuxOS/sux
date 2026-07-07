@@ -5,32 +5,16 @@ import { clamp, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
 
 const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle0", "networkidle2"] as const;
 
-// Paper sizes offered for as:"pdf". Passed straight to page.pdf({ format }).
 const PDF_FORMATS = ["A4", "Letter", "Legal", "A3"] as const;
 
-// Output cap: a JS-heavy page can render to multiple MB of HTML/text. Returning
-// it wholesale would balloon context and risk the 128MB isolate, so clamp the
-// rendered content to a generous-but-bounded size (matches _util.clamp default).
 const MAX_OUTPUT_BYTES = 2_000_000;
 
-// Resource types worth aborting when block_resources is on — the heavy, non-text
-// fetches that html/text extraction never needs. Kept off screenshots by default
-// (image/stylesheet/font/media are exactly what makes a screenshot look right).
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font", "stylesheet"]);
 
-// Stealth defaults applied to the page before navigation to blunt the most
-// obvious headless-Chromium tells. Kept minimal and inline (no stealth-plugin
-// dependency): a realistic desktop UA (no "HeadlessChrome"), a real desktop
-// viewport, a plausible accept-language, and a navigator.webdriver mask. The UA
-// matches the residential proxy's default header (node/openwrt/fetch.sh) so the
-// browser and the proxy present the same client.
 const STEALTH_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const STEALTH_VIEWPORT = { width: 1280, height: 800, deviceScaleFactor: 1 } as const;
 const STEALTH_ACCEPT_LANGUAGE = "en-US,en;q=0.9";
 
-// The slice of puppeteer's Page the stealth setup touches. Structurally typed and
-// every method optional so the test stub (and any CF Browser Rendering build that
-// lacks a given API) can omit it — each call is individually guarded anyway.
 type PageForStealth = {
 	setUserAgent?(ua: string): void | Promise<void>;
 	setViewport?(v: { width: number; height: number; deviceScaleFactor?: number }): void | Promise<void>;
@@ -38,38 +22,26 @@ type PageForStealth = {
 	evaluateOnNewDocument?(fn: (...args: unknown[]) => unknown): void | Promise<void>;
 };
 
-/**
- * Best-effort headless de-fingerprinting, applied BEFORE navigation. Each step is
- * wrapped in its own try/catch: CF Browser Rendering may not support every API, so
- * an unsupported/throwing call degrades silently rather than failing the render.
- * Pairs with residential routing (which fixes the IP signal); this fixes the most
- * obvious BROWSER signals. Deeper stealth isn't attempted (CF Browser Rendering
- * limits it).
- */
 async function applyStealth(page: PageForStealth): Promise<void> {
-	// Default headless UA contains "HeadlessChrome" — a dead giveaway. Present a
-	// realistic current desktop Chrome UA instead (matches the residential proxy's).
+
 	try {
 		if (typeof page.setUserAgent === "function") await page.setUserAgent(STEALTH_UA);
 	} catch {
 		// setUserAgent unsupported on this build — skip; the (headless) UA remains.
 	}
-	// Headless default viewport is a tell; use a real desktop size.
+
 	try {
 		if (typeof page.setViewport === "function") await page.setViewport({ ...STEALTH_VIEWPORT });
 	} catch {
 		// setViewport unsupported — skip; the default viewport remains.
 	}
-	// A plausible accept-language. Chromium folds this into outgoing request
-	// headers, so the interception handler's req.headers() forwards it residentially
-	// too — the browser and the proxy stay consistent without extra plumbing.
+
 	try {
 		if (typeof page.setExtraHTTPHeaders === "function") await page.setExtraHTTPHeaders({ "accept-language": STEALTH_ACCEPT_LANGUAGE });
 	} catch {
 		// setExtraHTTPHeaders unsupported — skip; Chromium's own accept-language stands.
 	}
-	// Mask navigator.webdriver (true under automation) so page scripts read it as
-	// undefined. evaluateOnNewDocument runs the script before any page script.
+
 	try {
 		if (typeof page.evaluateOnNewDocument === "function") {
 			await page.evaluateOnNewDocument(() => {
@@ -81,14 +53,8 @@ async function applyStealth(page: PageForStealth): Promise<void> {
 	}
 }
 
-// Hop-by-hop / framing headers that describe how bytes were transported, not the
-// bytes themselves. smartFetch already decoded the body (proxy.ts drops these on
-// its own path), so re-emitting them to request.respond would mislead Chromium
-// into re-decoding an already-decoded body. Mirror proxiedToResponse's drops.
 const STRIP_RESPONSE_HEADERS = new Set(["content-encoding", "content-length", "transfer-encoding"]);
 
-// The slice of puppeteer's HTTPRequest the interception handler touches. Kept
-// minimal (and structurally typed) so the test can supply a plain object.
 type RequestForInterception = {
 	resourceType(): string;
 	url(): string;
@@ -100,24 +66,12 @@ type RequestForInterception = {
 	respond(r: { status: number; headers: Record<string, string>; contentType?: string; body: Uint8Array }): void | Promise<void>;
 };
 
-/**
- * Handle one intercepted browser request. Interception requires EXACTLY one of
- * abort/respond/continue per request, so every path here resolves the request:
- *   - block_resources on + heavy asset (image/font/stylesheet/media) → abort()
- *     (unchanged: skip the asset entirely).
- *   - residential on → smartFetch the URL through the Tailscale proxy, then
- *     fulfil the browser request with the residentially-fetched bytes so the
- *     page sees home-IP content. Framing headers are stripped (smartFetch already
- *     decoded the body). ANY error here degrades to continue() — the browser
- *     fetches it directly rather than the whole render failing.
- *   - otherwise → continue() (browser fetches directly / datacenter).
- */
 async function handleRequest(
 	env: Parameters<typeof smartFetch>[0],
 	req: RequestForInterception,
 	opts: { residential: boolean; blockResources: boolean },
 ): Promise<void> {
-	// Abort heavy assets first — same behavior whether or not residential is on.
+
 	if (opts.blockResources && BLOCKED_RESOURCE_TYPES.has(req.resourceType())) {
 		try {
 			await req.abort();
@@ -127,7 +81,7 @@ async function handleRequest(
 		return;
 	}
 	if (!opts.residential) {
-		// Not routing residentially: let the browser fetch it directly (datacenter).
+
 		try {
 			await req.continue();
 		} catch {
@@ -135,9 +89,7 @@ async function handleRequest(
 		}
 		return;
 	}
-	// Residential route: fetch the subresource through the Tailscale proxy and
-	// hand the bytes back to Chromium. On any failure fall back to a direct
-	// browser fetch so one bad subresource never fails the whole render.
+
 	try {
 		const r = await smartFetch(env, req.url(), { method: req.method(), headers: req.headers(), body: req.postData() });
 		const bytes = new Uint8Array(await r.arrayBuffer());
@@ -146,13 +98,12 @@ async function handleRequest(
 		r.headers.forEach((value, key) => {
 			const lower = key.toLowerCase();
 			if (lower === "content-type") contentType = value;
-			if (STRIP_RESPONSE_HEADERS.has(lower)) return; // already-decoded framing headers
+			if (STRIP_RESPONSE_HEADERS.has(lower)) return;
 			headers[key] = value;
 		});
 		await req.respond({ status: r.status, headers, contentType, body: bytes });
 	} catch {
-		// smartFetch threw, arrayBuffer failed, or respond raced a teardown — let
-		// the browser try directly rather than leaving the request un-handled.
+
 		try {
 			await req.continue();
 		} catch {
@@ -161,15 +112,9 @@ async function handleRequest(
 	}
 }
 
-// Cap on the AbortSignal for the Mac render call. The service egresses
-// residentially and solves active JS challenges, so it is legitimately slower
-// than CF Browser Rendering — give it the nav budget plus a margin, but keep the
-// Worker bounded so a hung node can never hang the tool call indefinitely.
 const MAC_TIMEOUT_MARGIN_MS = 10_000;
 const MAC_TIMEOUT_CAP_MS = 70_000;
 
-// The render args forwarded to the Mac service (pass-through). Resolved from the
-// same values the cf path uses so the two backends behave identically on input.
 type MacRenderPayload = {
 	url: string;
 	as: string;
@@ -180,9 +125,6 @@ type MacRenderPayload = {
 	timeout_ms: number;
 };
 
-// The Mac service response envelope. For as html/text, `body` is the text; for
-// as screenshot/pdf, bodyEncoding is "base64" and `body` is base64 of the bytes.
-// On error the node returns `{ error }`.
 type MacRenderResponse = {
 	status?: number;
 	content_type?: string;
@@ -191,15 +133,6 @@ type MacRenderResponse = {
 	error?: string;
 };
 
-/**
- * Route a render to the Mac patchright service (backend:"mac"): a residential,
- * patched-Chromium node exposed via Tailscale Funnel that solves active JS bot
- * challenges (Akamai sensor) CF Browser Rendering can't. Signed with the SAME
- * HMAC scheme as fetchViaTailscale (hmacHex over `${ts}\n${payload}`, ts+sig on
- * the query string so uhttpd-style hosts that drop POST headers still verify).
- * html/text → ok(body) (clamped like the cf path); screenshot/pdf → base64 body
- * decoded to bytes and delivered via the shared CAS path (honoring `delivery`).
- */
 async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: string | undefined): Promise<ToolResult> {
 	if (!env.MAC_RENDER_URL || !env.MAC_RENDER_SECRET) {
 		return fail("Mac render backend not configured (MAC_RENDER_URL/MAC_RENDER_SECRET).");
@@ -207,8 +140,7 @@ async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: str
 	const body = JSON.stringify(payload);
 	const ts = String(Date.now());
 	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${body}`);
-	// ts+sig ride the query string (same rationale as fetchViaTailscale: some CGI
-	// hosts drop custom POST headers, but QUERY_STRING is always delivered).
+
 	const endpoint = new URL("/render", env.MAC_RENDER_URL).href;
 	const signedEndpoint = `${endpoint}?ts=${ts}&sig=${sig}`;
 	const timeout = Math.min(payload.timeout_ms + MAC_TIMEOUT_MARGIN_MS, MAC_TIMEOUT_CAP_MS);
@@ -234,13 +166,12 @@ async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: str
 	}
 	const text = typeof data.body === "string" ? data.body : "";
 	if (payload.as === "screenshot" || payload.as === "pdf") {
-		// Binary output: decode the base64 body and deliver via the SAME CAS path
-		// the cf branch uses, honoring `delivery` (default /s/<uuid> ref, base64 to inline).
+
 		const bytes = fromB64(text);
 		const contentType = data.content_type ?? (payload.as === "pdf" ? "application/pdf" : "image/png");
 		return deliverBytes(env, bytes, contentType, delivery ?? "url", () => inlineB64(bytes, contentType));
 	}
-	// html/text: body is the text — clamp it exactly like the cf path.
+
 	return ok(clamp(text, MAX_OUTPUT_BYTES));
 }
 
@@ -305,21 +236,15 @@ export const render: Fn = {
 		const fullPage = args?.full_page === true;
 		const format = (PDF_FORMATS as readonly string[]).includes(args?.format) ? args.format : "A4";
 		const landscape = args?.landscape === true;
-		// Default TRUE so CSS backgrounds render in the PDF; explicit false opts out.
+
 		const printBackground = args?.print_background !== false;
-		// Blocking image/media/font/stylesheet fetches would strip a screenshot (or a
-		// PDF's backgrounds) of exactly what makes it look right — honor it only for
-		// text/html extraction.
+
 		const blockResources = args?.block_resources === true && as !== "screenshot" && as !== "pdf";
-		// Default TRUE: bypassing datacenter-IP bot detection is this fn's whole
-		// point. Only an explicit false opts back into the direct datacenter path.
+
 		const residential = args?.residential !== false;
-		// Default TRUE: getting past bot detection is render's purpose, so reduce the
-		// most obvious headless-Chromium tells by default. Explicit false keeps them.
+
 		const stealth = args?.stealth !== false;
-		// Backend selects the engine: "mac" routes to the residential patched-browser
-		// service (solves active JS challenges cf can't); "cf" (default) is the CF
-		// Browser Rendering path below, entirely unchanged.
+
 		const backend = args?.backend === "mac" ? "mac" : "cf";
 		if (backend === "mac") {
 			return renderViaMac(
@@ -335,12 +260,9 @@ export const render: Fn = {
 		try {
 			browser = await puppeteer.launch(env.BROWSER);
 			const page = await browser.newPage();
-			// Reduce headless-Chromium fingerprinting before navigation. Best-effort and
-			// self-guarding — an unsupported step degrades silently, never fails the render.
+
 			if (stealth) await applyStealth(page as unknown as PageForStealth);
-			// Interception is needed whenever we abort heavy assets (block_resources)
-			// OR route requests residentially. When neither is on, the browser fetches
-			// directly from the datacenter with no interception (today's behavior).
+
 			if (residential || blockResources) {
 				await page.setRequestInterception(true);
 				page.on("request", (req: RequestForInterception) => {
@@ -352,20 +274,16 @@ export const render: Fn = {
 			if (as === "screenshot") {
 				const shot = await page.screenshot({ fullPage });
 				const bytes = shot instanceof Uint8Array ? shot : new Uint8Array(shot as ArrayBuffer);
-				// Screenshot is binary — deliver via the shared CAS helper (default a
-				// /s/<uuid> ref, like qr/pdf/image_convert). The store's own size cap
-				// bounds it, not the 2MB text clamp.
+
 				return deliverBytes(env, bytes, "image/png", args?.delivery ?? "url", () => inlineB64(bytes, "image/png"));
 			}
 			if (as === "pdf") {
 				const doc = await page.pdf({ format, landscape, printBackground });
 				const bytes = doc instanceof Uint8Array ? doc : new Uint8Array(doc as ArrayBuffer);
-				// PDF is binary — deliver via the same CAS path as screenshots (default a
-				// /s/<uuid> ref); the store's own size cap bounds it, not the text clamp.
+
 				return deliverBytes(env, bytes, "application/pdf", args?.delivery ?? "url", () => inlineB64(bytes, "application/pdf"));
 			}
-			// The evaluate callback runs in the browser page (has `document`), not
-			// the Worker — reach it via globalThis so the Worker lib (no DOM) checks.
+
 			const content =
 				as === "text"
 					? await page.evaluate(() => (globalThis as unknown as { document: { body: { innerText: string } } }).document.body.innerText)
