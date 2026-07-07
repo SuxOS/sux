@@ -1,5 +1,5 @@
 import puppeteer from "@cloudflare/puppeteer";
-import { hmacHex, smartFetch } from "../proxy";
+import { hmacHex, isBlockedTarget, smartFetch } from "../proxy";
 import { type Fn, type RtEnv, type ToolResult, fail, ok } from "../registry";
 import { clamp, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
 
@@ -235,6 +235,13 @@ export const render: Fn = {
 	run: async (env, args) => {
 		const url = String(args?.url ?? "");
 		if (!isHttpUrl(url)) return fail("Provide an absolute http(s) url.");
+		// SSRF guard: refuse private/loopback/link-local/CGNAT/metadata targets before
+		// they reach a renderer. The mac backend forwards `url` to a residential node
+		// that sits INSIDE the home LAN (router admin UI, other devices) and does no
+		// guarding of its own — the same exposure smartFetch/fetchViaTailscale already
+		// block. Applied to the cf backend too (defense in depth; render only ever
+		// wants public pages), so no renderer can be pointed at an internal address.
+		if (isBlockedTarget(url)) return fail("Refusing to render a private/loopback/link-local/metadata address.");
 
 		const waitUntil = (WAIT_UNTIL as readonly string[]).includes(args?.wait_until) ? args.wait_until : "networkidle0";
 		const timeout = Math.min(Math.max(Number(args?.timeout_ms) || 30000, 1), 60000);

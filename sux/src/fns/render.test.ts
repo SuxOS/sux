@@ -48,7 +48,12 @@ const smartFetchMock = vi.hoisted(() => vi.fn());
 // hmacHex is used by the mac backend to sign the render request. Stub it to a
 // deterministic 64-hex-char digest so the signed-endpoint assertion is stable.
 const hmacHexMock = vi.hoisted(() => vi.fn(async (_secret: string, _msg: string) => "a".repeat(64)));
-vi.mock("../proxy", () => ({ smartFetch: smartFetchMock, hmacHex: hmacHexMock }));
+// isBlockedTarget is the SSRF guard render applies to `url`; use the REAL impl so
+// the guard's actual private/loopback/metadata logic is exercised, not a stub.
+vi.mock("../proxy", async (importActual) => {
+	const actual = await importActual<typeof import("../proxy")>();
+	return { smartFetch: smartFetchMock, hmacHex: hmacHexMock, isBlockedTarget: actual.isBlockedTarget };
+});
 
 import { render } from "./render";
 
@@ -138,6 +143,27 @@ describe("render", () => {
 		const r = await render.run(BROWSER_ENV, { url: "ftp://example.com/x" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/absolute http/);
+	});
+
+	it("SSRF: refuses private/loopback/link-local/metadata targets before rendering (never navigates)", async () => {
+		// http(s)-scheme private/internal literals pass isHttpUrl but must be blocked
+		// by the SSRF guard — the cf browser never navigates and no browser launches.
+		stubs.launch.mockClear(); // launch isn't cleared in beforeEach — reset before asserting on it
+		for (const url of [
+			"http://127.0.0.1/",
+			"http://192.168.1.1/",
+			"http://169.254.169.254/latest/meta-data/",
+			"http://100.64.0.1/",
+			"http://localhost/admin",
+			"http://[::1]/",
+			"http://[::ffff:127.0.0.1]/",
+		]) {
+			const r = await render.run(BROWSER_ENV, { url });
+			expect(r.isError, url).toBe(true);
+			expect(r.content[0].text, url).toMatch(/private\/loopback\/link-local\/metadata/);
+		}
+		expect(stubs.launch).not.toHaveBeenCalled();
+		expect(stubs.goto).not.toHaveBeenCalled();
 	});
 
 	it("closes the browser even when goto throws", async () => {
@@ -421,6 +447,18 @@ describe("render", () => {
 			expect(out.mime).toBe("image/png");
 			expect(out.size).toBe(4);
 			expect(typeof out.base64).toBe("string");
+		});
+
+		it("SSRF: never forwards a private/LAN target to the residential mac node", async () => {
+			// The mac node sits inside the home LAN and does no SSRF guarding of its own,
+			// so the worker-side guard is the only defense — a LAN literal must be
+			// refused before any signed /render request is POSTed to the node.
+			for (const url of ["http://192.168.1.1/", "http://169.254.169.254/latest/meta-data/", "http://[::ffff:10.0.0.1]/"]) {
+				const r = await render.run(MAC_ENV, { url, backend: "mac" });
+				expect(r.isError, url).toBe(true);
+				expect(r.content[0].text, url).toMatch(/private\/loopback\/link-local\/metadata/);
+			}
+			expect(fetchSpy).not.toHaveBeenCalled();
 		});
 
 		it("fails when MAC_RENDER_URL/MAC_RENDER_SECRET are absent (no fetch attempted)", async () => {
