@@ -110,6 +110,16 @@ describe("web_search", () => {
 		expect(text.indexOf("example.com/a")).toBeLessThan(text.indexOf("example.org/b"));
 	});
 
+	it("surfaces a single engine's error instead of masking it as 'no results'", async () => {
+		const kagi = await import("../kagi");
+		(kagi.kagiTool as any).mockRejectedValueOnce(new Error("HTTP 401"));
+		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "x", engine: "kagi" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("Engine 'kagi' failed");
+		expect(r.content[0].text).toContain("HTTP 401");
+		expect(r.content[0].text).not.toMatch(/No results/);
+	});
+
 	it("summarize falls back to the plain list when AI is absent", async () => {
 		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", summarize: true });
 		expect(r.content[0].text).toMatch(/summary skipped/);

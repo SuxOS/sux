@@ -207,8 +207,18 @@ export const webSearch: Fn = {
 		const settled = await Promise.allSettled(engines.map((name) => ENGINES[name].run(env, q, limit, route)));
 		const lists = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
 		const ranAll = engine === "all";
+		// Don't swallow engine errors: log every rejection so a silently-dead engine
+		// is traceable, and surface the reason for a single named engine (an expired
+		// key or a downed backend errors, it doesn't just "return no results").
+		const reason = (s: PromiseSettledResult<Hit[]>): string => String(((s as PromiseRejectedResult).reason as Error)?.message ?? (s as PromiseRejectedResult).reason);
+		settled.forEach((s, i) => {
+			if (s.status === "rejected") console.warn(`web_search engine '${engines[i]}' failed: ${reason(s)}`);
+		});
 		const hits = ranAll ? merge(lists, limit) : lists[0] ?? [];
-		if (!hits.length) return fail(`No results for "${q}"${ranAll ? ` across: ${engines.join(", ")}` : ""}.`);
+		if (!hits.length) {
+			if (!ranAll && settled[0]?.status === "rejected") return fail(`Engine '${engine}' failed: ${reason(settled[0])}`);
+			return fail(`No results for "${q}"${ranAll ? ` across: ${engines.join(", ")}` : ""}.`);
+		}
 
 		const body = fmt(hits);
 		const header = ranAll ? `Merged ${hits.length} results from: ${engines.join(", ")}\n\n` : "";
