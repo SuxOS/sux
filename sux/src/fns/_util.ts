@@ -15,6 +15,28 @@ export function clamp(s: string, maxBytes = 100_000): string {
 	return s.length > maxBytes ? `${s.slice(0, maxBytes)}\n… [truncated at ${maxBytes} bytes]` : s;
 }
 
+/**
+ * Run `fn` over `items` with bounded concurrency, preserving input order in the
+ * result. Index-claiming worker pool (was hand-rolled identically in batch and
+ * batch_fetch). `fn` should handle its own per-item errors — a throw rejects the
+ * whole pool.
+ */
+export async function pool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	const workers = Math.min(Math.max(1, concurrency), Math.max(1, items.length));
+	await Promise.all(
+		Array.from({ length: workers }, async () => {
+			for (;;) {
+				const i = next++;
+				if (i >= items.length) return;
+				results[i] = await fn(items[i], i);
+			}
+		}),
+	);
+	return results;
+}
+
 /** base64 of raw bytes (chunked so large inputs don't blow the call stack). */
 export function toB64(bytes: Uint8Array): string {
 	let s = "";

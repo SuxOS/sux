@@ -26,6 +26,7 @@ import {
 	loadBytes,
 	loadHtml,
 	noCacheOn4xx,
+	pool,
 	putBlob,
 	setFetchDedup,
 	storeBase,
@@ -330,5 +331,26 @@ describe("in-isolate fetch dedup cache", () => {
 			setFetchDedup(null);
 			clearFetchCache();
 		}
+	});
+});
+
+describe("pool (bounded concurrency)", () => {
+	it("preserves input order and runs every item", async () => {
+		const out = await pool([1, 2, 3, 4, 5], 2, async (n) => n * 10);
+		expect(out).toEqual([10, 20, 30, 40, 50]);
+	});
+	it("never exceeds the concurrency cap", async () => {
+		let active = 0, peak = 0;
+		await pool(Array.from({ length: 12 }, (_, i) => i), 3, async () => {
+			active++; peak = Math.max(peak, active);
+			await new Promise((r) => setTimeout(r, 5));
+			active--;
+			return 0;
+		});
+		expect(peak).toBeLessThanOrEqual(3);
+	});
+	it("handles an empty list and rejects if fn throws", async () => {
+		expect(await pool([], 4, async () => 1)).toEqual([]);
+		await expect(pool([1], 1, async () => { throw new Error("boom"); })).rejects.toThrow("boom");
 	});
 });

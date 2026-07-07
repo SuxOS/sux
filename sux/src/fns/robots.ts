@@ -19,7 +19,13 @@ export const robots: Fn = {
 		if (!/^https?:\/\//i.test(raw)) return fail("url must be absolute http(s).");
 		const origin = new URL(raw).origin;
 		const resp = await smartFetch(env, `${origin}/robots.txt`, {});
-		if (!resp.ok) return ok(JSON.stringify({ origin, status: resp.status, note: "no robots.txt (nothing disallowed)" }));
+		if (!resp.ok) {
+			const r = ok(JSON.stringify({ origin, status: resp.status, note: "no robots.txt (nothing disallowed)" }));
+			// A 4xx (404/403) is a real "no robots" answer worth caching; a 5xx/429 is
+			// a transient upstream failure — don't cache it as "no robots" for an hour.
+			if (resp.status >= 500 || resp.status === 429) r.noCache = true;
+			return r;
+		}
 		const txt = await resp.text();
 
 		const groups: Array<{ agents: string[]; allow: string[]; disallow: string[]; crawl_delay?: number }> = [];

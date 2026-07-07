@@ -1,6 +1,7 @@
 import { hasAI, llm } from "../ai";
 import { normalizeArgs, normalizeText } from "../normalize";
 import { type Fn, fail, ok } from "../registry";
+import { pool } from "./_util";
 
 // Map-reduce: MAP one sux tool over many argument sets, then optionally REDUCE
 // the successful results into one value. FUNCTIONS is imported dynamically
@@ -181,31 +182,20 @@ export const batch: Fn = {
 		}
 		const target: Fn = found;
 
-		const results: ItemResult[] = new Array(calls.length);
-		let next = 0;
-		async function worker(): Promise<void> {
-			for (;;) {
-				const i = next++;
-				if (i >= calls.length) return;
-				const callArgs = calls[i];
-				if (callArgs == null || typeof callArgs !== "object" || Array.isArray(callArgs)) {
-					results[i] = { ok: false, error: "call args must be an object." };
-					continue;
-				}
-				try {
-					// Per-call boundary parity with index.ts: non-raw targets get
-					// normalized args in and normalized text out; raw ones stay byte-exact.
-					const r = await target.run(env, target.raw ? callArgs : normalizeArgs(callArgs));
-					const text = r.content?.[0]?.text ?? "";
-					results[i] = r.isError ? { ok: false, error: text } : { ok: true, text: target.raw ? text : normalizeText(text) };
-				} catch (e) {
-					results[i] = { ok: false, error: String((e as Error)?.message ?? e) };
-				}
+		const results: ItemResult[] = await pool(calls, CONCURRENCY, async (callArgs): Promise<ItemResult> => {
+			if (callArgs == null || typeof callArgs !== "object" || Array.isArray(callArgs)) {
+				return { ok: false, error: "call args must be an object." };
 			}
-		}
-
-		const pool = Math.min(CONCURRENCY, Math.max(1, calls.length));
-		await Promise.all(Array.from({ length: pool }, () => worker()));
+			try {
+				// Per-call boundary parity with index.ts: non-raw targets get
+				// normalized args in and normalized text out; raw ones stay byte-exact.
+				const r = await target.run(env, target.raw ? callArgs : normalizeArgs(callArgs));
+				const text = r.content?.[0]?.text ?? "";
+				return r.isError ? { ok: false, error: text } : { ok: true, text: target.raw ? text : normalizeText(text) };
+			} catch (e) {
+				return { ok: false, error: String((e as Error)?.message ?? e) };
+			}
+		});
 
 		// TOOL-based reduce (overrides the text reduces): run a reducer once over the
 		// mapped ok outputs, with {{items}} = their texts (and {{items.path}} plucking

@@ -1,5 +1,5 @@
 import { type Fn, type RtEnv, fail, ok } from "../registry";
-import { type BlobRef, fetchText, getBlob, isHttpUrl, noCacheOn4xx, putBlob, storeRefUuid } from "./_util";
+import { type BlobRef, fetchText, getBlob, isHttpUrl, noCacheOn4xx, pool, putBlob, storeRefUuid } from "./_util";
 import { smartFetch } from "../proxy";
 
 // Fetch many URLs concurrently through the residential proxy (direct fallback).
@@ -95,40 +95,23 @@ export const batch_fetch: Fn = {
 		if (!Number.isInteger(maxBytes) || maxBytes < 1) return fail("`max_bytes` must be a positive integer.");
 		if (as === "url" && !env.R2) return fail('`as: "url"` needs the R2 store (bucket binding missing).');
 
-		const results: UrlResult[] = new Array(urls.length);
-		let next = 0;
-		async function worker(): Promise<void> {
-			for (;;) {
-				const i = next++;
-				if (i >= urls.length) return;
-				const raw = urls[i];
-				const url = typeof raw === "string" ? raw : "";
-				if (!isHttpUrl(url)) {
-					results[i] = { url, error: "not an absolute http(s) URL." };
-					continue;
+		const results: UrlResult[] = await pool(urls, CONCURRENCY, async (raw): Promise<UrlResult> => {
+			const url = typeof raw === "string" ? raw : "";
+			if (!isHttpUrl(url)) return { url, error: "not an absolute http(s) URL." };
+			try {
+				if (as === "url") {
+					const r = await fetchBytes(env, url, method);
+					// Oversize isolated to this URL — report it, don't store, don't fail the batch.
+					if (r.bytes.length > MAX_STORE_BYTES) return { url, status: r.status, bytes: r.bytes.length, oversize: true };
+					const ref: BlobRef = await putBlob(env, r.bytes, r.contentType);
+					return { url, status: r.status, bytes: r.bytes.length, ref: ref.url };
 				}
-				try {
-					if (as === "url") {
-						const r = await fetchBytes(env, url, method);
-						if (r.bytes.length > MAX_STORE_BYTES) {
-							// Oversize isolated to this URL — report it, don't store, don't fail the batch.
-							results[i] = { url, status: r.status, bytes: r.bytes.length, oversize: true };
-							continue;
-						}
-						const ref: BlobRef = await putBlob(env, r.bytes, r.contentType);
-						results[i] = { url, status: r.status, bytes: r.bytes.length, ref: ref.url };
-					} else {
-						const r = await fetchText(env, url, { method, maxBytes });
-						results[i] = { url, status: r.status, bytes: r.text.length, text: r.text };
-					}
-				} catch (e) {
-					results[i] = { url, error: String((e as Error)?.message ?? e) };
-				}
+				const r = await fetchText(env, url, { method, maxBytes });
+				return { url, status: r.status, bytes: r.text.length, text: r.text };
+			} catch (e) {
+				return { url, error: String((e as Error)?.message ?? e) };
 			}
-		}
-
-		const pool = Math.min(CONCURRENCY, urls.length);
-		await Promise.all(Array.from({ length: pool }, () => worker()));
+		});
 
 		// Worst status across the batch decides cacheability — a per-URL `error`
 		// (network blip) counts as a 5xx so one bad URL never poisons the cache.
