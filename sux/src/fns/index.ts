@@ -30,6 +30,8 @@ import { translate } from "./translate";
 import { classify } from "./classify";
 import { ocr } from "./ocr";
 import { pubmed } from "./pubmed";
+import { clinical_trials } from "./clinical_trials";
+import { youtube } from "./youtube";
 import { wayback } from "./wayback";
 import { geo_fetch } from "./geo_fetch";
 import { redirects } from "./redirects";
@@ -42,28 +44,40 @@ import { kv_list } from "./kv_list";
 import { kv_delete } from "./kv_delete";
 import { issue } from "./issue";
 import { imageConvert } from "./image_convert";
+import { alphavantage } from "./alphavantage";
 import { arxiv } from "./arxiv";
 import { bestbuy } from "./bestbuy";
+import { coingecko } from "./coingecko";
 import { costco } from "./costco";
+import { crossref } from "./crossref";
 import { csv } from "./csv";
 import { declutter } from "./declutter";
 import { ebay } from "./ebay";
+import { etsy } from "./etsy";
 import { fillable } from "./fillable";
 import { find_similar } from "./find_similar";
 import { fontcase } from "./fontcase";
+import { guardian } from "./guardian";
 import { homedepot } from "./homedepot";
 import { html } from "./html";
 import { json } from "./json";
 import { kroger } from "./kroger";
 import { markdown } from "./markdown";
+import { nyt } from "./nyt";
 import { openalex } from "./openalex";
 import { pdf } from "./pdf";
 import { pipe } from "./pipe";
+import { places } from "./places";
 import { render } from "./render";
+import { semantic_scholar } from "./semantic_scholar";
 import { shop } from "./shop";
+import { stackexchange } from "./stackexchange";
 import { store } from "./store";
+import { tavily } from "./tavily";
+import { tmdb } from "./tmdb";
 import { walmart } from "./walmart";
 import { webSearch } from "./web_search";
+import { wolfram } from "./wolfram";
 import { xml } from "./xml";
 import { yaml } from "./yaml";
 
@@ -94,6 +108,8 @@ export const FUNCTIONS: Fn[] = [
 	classify,
 	ocr,
 	pubmed,
+	clinical_trials,
+	youtube,
 	wayback,
 	geo_fetch,
 	redirects,
@@ -106,28 +122,40 @@ export const FUNCTIONS: Fn[] = [
 	kv_delete,
 	issue,
 	imageConvert,
+	alphavantage,
 	arxiv,
 	bestbuy,
+	coingecko,
 	costco,
+	crossref,
 	csv,
 	declutter,
 	ebay,
+	etsy,
 	fillable,
 	find_similar,
 	fontcase,
+	guardian,
 	homedepot,
 	html,
 	json,
 	kroger,
 	markdown,
+	nyt,
 	openalex,
 	pdf,
 	pipe,
+	places,
 	render,
+	semantic_scholar,
 	shop,
+	stackexchange,
 	store,
+	tavily,
+	tmdb,
 	walmart,
 	webSearch,
+	wolfram,
 	xml,
 	yaml,
 ];

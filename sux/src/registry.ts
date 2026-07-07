@@ -37,6 +37,15 @@ export type RtEnv = Env &
 		// ncbi.nlm.nih.gov/account. Absent → the pubmed fn still works at the lower
 		// anonymous rate limit; set → higher rate limit.
 		NCBI_API_KEY?: string;
+		// Semantic Scholar Academic Graph (api.semanticscholar.org) API key —
+		// optional, free at semanticscholar.org/product/api. Absent → the
+		// semantic_scholar fn still works at the shared anonymous rate limit; set →
+		// higher rate limit via the x-api-key header.
+		S2_API_KEY?: string;
+		// Stack Exchange API (api.stackexchange.com) key — optional, free at
+		// stackapps.com/apps/oauth/register. Absent → the stackexchange fn works at
+		// the lower anonymous quota; set → higher daily quota via &key=.
+		STACKEXCHANGE_KEY?: string;
 		R2?: R2Bucket;
 		// Optional search-provider keys (secrets). Absent → that engine reports it
 		// needs configuring; ddg works without any key. Amazon/Walmart/etc. route
@@ -58,6 +67,27 @@ export type RtEnv = Env &
 		// developer.ebay.com. Absent → the ebay fn reports it needs configuring.
 		EBAY_CLIENT_ID?: string;
 		EBAY_CLIENT_SECRET?: string;
+		// Alpha Vantage stock/market data (alphavantage.co) — free key at
+		// alphavantage.co/support/#api-key. Absent → the alphavantage fn reports it
+		// needs configuring.
+		ALPHAVANTAGE_KEY?: string;
+		// Tavily LLM-oriented search (api.tavily.com) — free 1k/mo at tavily.com.
+		// Absent → the tavily fn reports it needs configuring.
+		TAVILY_API_KEY?: string;
+		// Etsy Open API v3 (openapi.etsy.com) keystring — free at
+		// etsy.com/developers. Absent → the etsy fn reports it needs configuring.
+		ETSY_API_KEY?: string;
+		// Google Maps Platform / Places API (places.googleapis.com) — free credit at
+		// console.cloud.google.com. Absent → the places fn reports it needs configuring.
+		GOOGLE_MAPS_KEY?: string;
+		// Wolfram Alpha short-answer + LLM API (api.wolframalpha.com) app id — free at
+		// developer.wolframalpha.com. Absent → the wolfram fn reports it needs configuring.
+		WOLFRAM_APP_ID?: string;
+		// Media/news API keys — each free; the paired fn reports if unset.
+		YOUTUBE_API_KEY?: string;
+		TMDB_API_KEY?: string;
+		NYT_API_KEY?: string;
+		GUARDIAN_API_KEY?: string;
 		AI?: AiBinding;
 		IMAGES?: ImagesBinding;
 		// Cloudflare Browser Rendering binding surface (render). Declared in
