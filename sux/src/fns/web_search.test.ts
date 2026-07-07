@@ -32,6 +32,14 @@ describe("parseGoogleSerp", () => {
 		expect(hits.map((h) => h.url)).toEqual(["https://real.example/page", "https://foo.com/a"]);
 		expect(hits[0].title).toBe("Real Result");
 	});
+
+	it("drops YouTube's off-site redirect wrapper (path-based, not host-based)", () => {
+		const html = `
+			<a href="https://www.youtube.com/redirect?q=https://real-site.com"><h3>YT Redirect</h3></a>
+			<a href="https://foo.com/a"><h3>Foo</h3></a>`;
+		const hits = parseGoogleSerp(html, 10);
+		expect(hits.map((h) => h.url)).toEqual(["https://foo.com/a"]);
+	});
 });
 
 describe("parseDdg", () => {

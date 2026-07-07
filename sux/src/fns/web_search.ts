@@ -31,13 +31,17 @@ export function parseGoogleSerp(html: string, limit: number): Hit[] {
 	while ((m = re.exec(html)) && hits.length < limit) {
 		const url = unwrapGoogleUrl(m[1]);
 		if (!url) continue;
-		let host = "";
+		let u: URL;
 		try {
-			host = new URL(url).hostname;
+			u = new URL(url);
 		} catch {
 			continue;
 		}
-		if (!host || /(^|\.)(google\.[a-z.]+|gstatic\.com|googleusercontent\.com|youtube\.com\/redirect)$/i.test(host)) continue;
+		const host = u.hostname;
+		if (!host || /(^|\.)(google\.[a-z.]+|gstatic\.com|googleusercontent\.com)$/i.test(host)) continue;
+		// YouTube's off-site redirect wrapper (youtube.com/redirect?q=…) — the
+		// /redirect lives in the path, never the hostname, so match host + pathname.
+		if (/(^|\.)youtube\.com$/i.test(host) && u.pathname === "/redirect") continue;
 		const title = stripHtml(m[2]).trim();
 		if (!title) continue;
 		const key = normUrl(url);
