@@ -15,7 +15,9 @@
     "test:sux": "vitest run --config sux/vitest.config.ts",
     "test:watch": "vitest",
     "docs": "node sux/scripts/gen-docs.mjs",
-    "gen:index": "node sux/scripts/gen-index.mjs"
+    "gen:index": "node sux/scripts/gen-index.mjs",
+    "build:node": "node sux/node/build-deploy.mjs",
+    "check:node": "node sux/node/build-deploy.mjs --check"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.1.0",

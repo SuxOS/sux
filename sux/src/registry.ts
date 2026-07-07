@@ -33,6 +33,10 @@ export type RtEnv = Env &
 		KAGI_API_KEY: string;
 		ALLOWED_GITHUB_LOGIN: string;
 		DEBUG_MCP?: string;
+		// NCBI E-utilities (pubmed) API key — optional, free at
+		// ncbi.nlm.nih.gov/account. Absent → the pubmed fn still works at the lower
+		// anonymous rate limit; set → higher rate limit.
+		NCBI_API_KEY?: string;
 		R2?: R2Bucket;
 		// Optional search-provider keys (secrets). Absent → that engine reports it
 		// needs configuring; ddg works without any key. Amazon/Walmart/etc. route
@@ -40,10 +44,20 @@ export type RtEnv = Env &
 		BRAVE_API_KEY?: string;
 		BING_API_KEY?: string;
 		SERPAPI_KEY?: string;
+		// Exa neural search / findSimilar (api.exa.ai). Absent → find_similar reports
+		// it needs configuring. Key at exa.ai.
+		EXA_API_KEY?: string;
 		// Kroger Public API (api.kroger.com) OAuth client credentials — free at
 		// developer.kroger.com. Absent → the kroger fn reports it needs configuring.
 		KROGER_CLIENT_ID?: string;
 		KROGER_CLIENT_SECRET?: string;
+		// Best Buy Products API (api.bestbuy.com) — free key at developer.bestbuy.com.
+		// Absent → the bestbuy fn reports it needs configuring.
+		BESTBUY_API_KEY?: string;
+		// eBay Browse API (api.ebay.com) OAuth client credentials — free at
+		// developer.ebay.com. Absent → the ebay fn reports it needs configuring.
+		EBAY_CLIENT_ID?: string;
+		EBAY_CLIENT_SECRET?: string;
 		AI?: AiBinding;
 		IMAGES?: ImagesBinding;
 		// Cloudflare Browser Rendering binding surface (render). Declared in

@@ -29,6 +29,7 @@ import { redact } from "./redact";
 import { translate } from "./translate";
 import { classify } from "./classify";
 import { ocr } from "./ocr";
+import { pubmed } from "./pubmed";
 import { wayback } from "./wayback";
 import { geo_fetch } from "./geo_fetch";
 import { redirects } from "./redirects";
@@ -41,16 +42,21 @@ import { kv_list } from "./kv_list";
 import { kv_delete } from "./kv_delete";
 import { issue } from "./issue";
 import { imageConvert } from "./image_convert";
+import { arxiv } from "./arxiv";
+import { bestbuy } from "./bestbuy";
 import { costco } from "./costco";
 import { csv } from "./csv";
 import { declutter } from "./declutter";
+import { ebay } from "./ebay";
 import { fillable } from "./fillable";
+import { find_similar } from "./find_similar";
 import { fontcase } from "./fontcase";
 import { homedepot } from "./homedepot";
 import { html } from "./html";
 import { json } from "./json";
 import { kroger } from "./kroger";
 import { markdown } from "./markdown";
+import { openalex } from "./openalex";
 import { pdf } from "./pdf";
 import { pipe } from "./pipe";
 import { render } from "./render";
@@ -87,6 +93,7 @@ export const FUNCTIONS: Fn[] = [
 	translate,
 	classify,
 	ocr,
+	pubmed,
 	wayback,
 	geo_fetch,
 	redirects,
@@ -99,16 +106,21 @@ export const FUNCTIONS: Fn[] = [
 	kv_delete,
 	issue,
 	imageConvert,
+	arxiv,
+	bestbuy,
 	costco,
 	csv,
 	declutter,
+	ebay,
 	fillable,
+	find_similar,
 	fontcase,
 	homedepot,
 	html,
 	json,
 	kroger,
 	markdown,
+	openalex,
 	pdf,
 	pipe,
 	render,

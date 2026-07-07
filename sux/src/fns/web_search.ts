@@ -16,6 +16,15 @@ async function serpapiGoogle(env: any, q: string, limit: number, _route: Route):
 	return (j?.organic_results ?? []).slice(0, limit).map((r: any) => ({ title: r.title, url: r.link, snippet: r.snippet }));
 }
 
+async function brave(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
+	const resp = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=${limit}`, {
+		headers: { "X-Subscription-Token": env.BRAVE_API_KEY, Accept: "application/json" },
+	});
+	if (!resp.ok) throw new Error(`Brave HTTP ${resp.status}`);
+	const j = (await resp.json()) as any;
+	return (j?.web?.results ?? []).slice(0, limit).map((r: any) => ({ title: r.title, url: r.url, snippet: r.description }));
+}
+
 // Kagi (the flagship) — its hosted MCP returns markdown `### [title](url)` blocks.
 async function kagi(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
 	const r = await kagiTool(env, "kagi_search_fetch", { query: q, limit }, route);
@@ -34,6 +43,7 @@ async function kagi(env: any, q: string, limit: number, route: Route): Promise<H
 const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number, route: Route) => Promise<Hit[]> }> = {
 	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi },
 	google: { envKey: "SERPAPI_KEY", envName: "SERPAPI_KEY (SerpAPI, engine=google)", run: serpapiGoogle },
+	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave },
 };
 
 /** Engines usable right now: keyed ones only when their secret is set. */
@@ -76,15 +86,15 @@ export const webSearch: Fn = {
 	name: "web_search",
 	cost: 3,
 	description:
-		"Web search over Kagi and native Google (SerpAPI). `engine`: kagi (default), google, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"Both engines are key-gated (kagi → KAGI_API_KEY, google → SERPAPI_KEY) and used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Set proxy: true to route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down); Google/SerpAPI always egresses direct. Returns numbered results (title, url, snippet) — cite by number.",
+		"Web search over Kagi, native Google (SerpAPI), and Brave. `engine`: kagi (default), google, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
+		"Engines are key-gated (kagi → KAGI_API_KEY, google → SERPAPI_KEY, brave → BRAVE_API_KEY) and used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Set proxy: true to route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down); Google/SerpAPI/Brave always egress direct. Returns numbered results (title, url, snippet) — cite by number.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["query"],
 		properties: {
 			query: { type: "string", description: "Search query." },
-			engine: { type: "string", enum: ["kagi", "google", "all"], default: "kagi" },
+			engine: { type: "string", enum: ["kagi", "google", "brave", "all"], default: "kagi" },
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 			summarize: { type: "boolean", description: "Summarize the merged results with Workers AI.", default: false },
 			proxy: { type: "boolean", description: "Route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down).", default: false },
@@ -104,7 +114,7 @@ export const webSearch: Fn = {
 		let engines: string[];
 		if (engine === "all") {
 			engines = available(env);
-			if (!engines.length) return fail("No search engine is configured. Set KAGI_API_KEY and/or SERPAPI_KEY.");
+			if (!engines.length) return fail("No search engine is configured. Set KAGI_API_KEY, SERPAPI_KEY, and/or BRAVE_API_KEY.");
 		} else {
 			const spec = ENGINES[engine];
 			if (!spec) return fail(`Unknown engine '${engine}'. Options: ${Object.keys(ENGINES).join(", ")}, all.`);

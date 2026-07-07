@@ -15,6 +15,7 @@ export type RetailProduct = {
 	image?: string;
 	url?: string;
 	in_stock?: boolean;
+	condition?: string;
 };
 
 /** THE retail result envelope: the query context plus the normalized products. */

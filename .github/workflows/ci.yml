@@ -34,6 +34,13 @@ jobs:
       - name: Test
         run: npm test
 
+      # The installer (root@192.168.1.1) embeds node/server.mjs as a base64 blob;
+      # this fails if it has drifted from server.mjs (fix: npm run build:node).
+      # Guards against shipping a stale residential node — how the binary-egress
+      # bug hid: the blob and its source had silently diverged.
+      - name: Node deploy blob in sync
+        run: npm run check:node
+
       # Validates the Worker bundles & config are deployable without deploying.
       - name: Build (dry-run deploy)
         run: npx wrangler deploy --dry-run

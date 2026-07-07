@@ -42,6 +42,26 @@ describe("web_search", () => {
 		expect(fetchMock).toHaveBeenCalled();
 	});
 
+	it("calls Brave when the key is present", async () => {
+		const fetchMock = vi.fn(async (_u?: any, _i?: any) => new Response(JSON.stringify({ web: { results: [{ title: "B", url: "https://b.com", description: "brave desc" }] } }), { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await webSearch.run({ BRAVE_API_KEY: "k" } as any, { query: "x", engine: "brave" });
+		vi.unstubAllGlobals();
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toContain("1. B");
+		expect(r.content[0].text).toContain("https://b.com");
+		expect(r.content[0].text).toContain("brave desc");
+		const call = fetchMock.mock.calls[0];
+		expect(String(call[0])).toContain("api.search.brave.com");
+		expect((call[1] as any).headers["X-Subscription-Token"]).toBe("k");
+	});
+
+	it("gates brave without the key", async () => {
+		const r = await webSearch.run({} as any, { query: "x", engine: "brave" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/BRAVE_API_KEY/);
+	});
+
 	it("engine 'all' fans out over available engines and merges by consensus", async () => {
 		// kagi returns example.com/a + example.org/b; google (keyed) also returns example.com/a.
 		const fetchMock = vi.fn(async () => new Response(JSON.stringify({ organic_results: [{ title: "Kagi Result", link: "https://example.com/a", snippet: "google desc" }] }), { status: 200 }));
