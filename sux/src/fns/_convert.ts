@@ -220,7 +220,13 @@ export function toCsv(arr: unknown[], delim: string): string {
 	if (!arr.length) return "";
 	const headers = [...new Set(arr.flatMap((o) => (o && typeof o === "object" ? Object.keys(o as object) : [])))];
 	const esc = (v: unknown): string => {
-		const s = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+		let s = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+		// CSV formula injection: a string cell beginning with = + - @ (or a leading
+		// TAB/CR) is evaluated as a formula when the file is opened in Excel/Sheets/
+		// LibreOffice (DDE -> data exfiltration / command execution). Prefix such
+		// string values with a single quote so the spreadsheet treats them as text.
+		// Genuine numbers/booleans arrive non-string and are never neutralised.
+		if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
 		return new RegExp(`["${delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r\\n]`).test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 	};
 	const lines = [headers.join(delim)];
