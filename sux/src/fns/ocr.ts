@@ -4,6 +4,7 @@ import { fromB64, loadBytes } from "./_util";
 
 export const ocr: Fn = {
 	name: "ocr",
+	cost: 2,
 	description: "Extract text from an image with Workers AI vision. Give `url` (fetched via proxy) or `image` (base64). prompt customizes the instruction (default: transcribe all text).",
 	inputSchema: {
 		type: "object",

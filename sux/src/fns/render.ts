@@ -246,6 +246,7 @@ async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: str
 
 export const render: Fn = {
 	name: "render",
+	cost: 5,
 	description:
 		"Scrape a JavaScript-rendered page via headless Chromium (Cloudflare Browser Rendering). Executes JS, unlike `scrape` (which fetches raw HTML through the residential proxy). " +
 		"Give `url` (absolute http(s)); options: wait_until (load|domcontentloaded|networkidle0|networkidle2, default networkidle0), wait_ms (extra delay after load, ≤10000), as (html|text|screenshot|pdf, default html), timeout_ms (nav timeout, default 30000, ≤60000). " +
@@ -296,7 +297,6 @@ export const render: Fn = {
 	run: async (env, args) => {
 		const url = String(args?.url ?? "");
 		if (!isHttpUrl(url)) return fail("Provide an absolute http(s) url.");
-		if (!env.BROWSER) return fail("Browser Rendering is not configured (BROWSER binding).");
 
 		const waitUntil = (WAIT_UNTIL as readonly string[]).includes(args?.wait_until) ? args.wait_until : "networkidle0";
 		const timeout = Math.min(Math.max(Number(args?.timeout_ms) || 30000, 1), 60000);
@@ -317,6 +317,19 @@ export const render: Fn = {
 		// Default TRUE: getting past bot detection is render's purpose, so reduce the
 		// most obvious headless-Chromium tells by default. Explicit false keeps them.
 		const stealth = args?.stealth !== false;
+		// Backend selects the engine: "mac" routes to the residential patched-browser
+		// service (solves active JS challenges cf can't); "cf" (default) is the CF
+		// Browser Rendering path below, entirely unchanged.
+		const backend = args?.backend === "mac" ? "mac" : "cf";
+		if (backend === "mac") {
+			return renderViaMac(
+				env,
+				{ url, as, wait_until: waitUntil, wait_ms: waitMs, block_resources: blockResources, full_page: fullPage, timeout_ms: timeout },
+				args?.delivery,
+			);
+		}
+
+		if (!env.BROWSER) return fail("Browser Rendering is not configured (BROWSER binding).");
 
 		let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
 		try {

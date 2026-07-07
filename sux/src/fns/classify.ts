@@ -3,6 +3,7 @@ import { hasAI, llm } from "../ai";
 
 export const classify: Fn = {
 	name: "classify",
+	cost: 2,
 	description: "Zero-shot classify text into one of the provided `labels` using Workers AI. multi=true allows multiple applicable labels. Returns the chosen label(s) and a one-line rationale.",
 	inputSchema: {
 		type: "object",

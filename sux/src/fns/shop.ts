@@ -45,6 +45,7 @@ const fmt = (hits: ShopHit[]): string =>
 
 export const shop: Fn = {
 	name: "shop",
+	cost: 3,
 	description:
 		"Product search across retailers. `store`: gshop (Google Shopping), amazon, walmart, home_depot — all via SerpAPI (needs SERPAPI_KEY); " +
 		"and costco, kroger, fred_meyer, cvs, lowes, safeway, camelcamelcamel — recognized but not yet wired (each reports how to enable, e.g. with a private/native API key). " +

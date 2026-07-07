@@ -4,6 +4,7 @@ import { kagiTool } from "../kagi";
 
 export const summarize: Fn = {
 	name: "summarize",
+	cost: 2,
 	description:
 		"Summarize text or a web page. Dispatches on input: a `url` (with the Kagi gateway configured) goes to Kagi's Universal Summarizer — which handles long documents and YouTube natively; `text` (or no Kagi key) uses Workers AI. style: bullets (default) | paragraph | tldr. max_words caps the Workers-AI output length.",
 	inputSchema: {

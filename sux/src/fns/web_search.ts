@@ -74,6 +74,7 @@ function merge(lists: Hit[][], limit: number): Hit[] {
 
 export const webSearch: Fn = {
 	name: "web_search",
+	cost: 3,
 	description:
 		"Web search over Kagi and native Google (SerpAPI). `engine`: kagi (default), google, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
 		"Both engines are key-gated (kagi → KAGI_API_KEY, google → SERPAPI_KEY) and used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Set proxy: true to route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down); Google/SerpAPI always egresses direct. Returns numbered results (title, url, snippet) — cite by number.",

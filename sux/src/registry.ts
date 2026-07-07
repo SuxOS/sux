@@ -40,6 +40,10 @@ export type RtEnv = Env &
 		BRAVE_API_KEY?: string;
 		BING_API_KEY?: string;
 		SERPAPI_KEY?: string;
+		// Kroger Public API (api.kroger.com) OAuth client credentials — free at
+		// developer.kroger.com. Absent → the kroger fn reports it needs configuring.
+		KROGER_CLIENT_ID?: string;
+		KROGER_CLIENT_SECRET?: string;
 		AI?: AiBinding;
 		IMAGES?: ImagesBinding;
 		// Cloudflare Browser Rendering binding surface (render). Declared in
@@ -69,6 +73,10 @@ export type Fn = {
 	inputSchema: unknown;
 
 	cacheable?: boolean;
+	// Rate-limit weight: how many per-user limiter tokens a call consumes. Default
+	// 1. Set >1 on paid/heavy fns (Browser Rendering, Kagi/SerpAPI, Workers AI) so
+	// they throttle before free deterministic fns do. See rate-limit.ts.
+	cost?: number;
 	// Per-fn cache lifetime in seconds, used only when cacheable. Unset falls
 	// back to the global CACHE_TTL_SECONDS (~1h). Set short on volatile external
 	// data (search/shop/wayback) and long on pure deterministic transforms.

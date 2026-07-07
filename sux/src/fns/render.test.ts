@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // A shared, resettable set of stubs the mocked puppeteer.launch() yields, so
 // each test can assert what goto received and that close() ran. Declared via
@@ -45,7 +45,10 @@ vi.mock("@cloudflare/puppeteer", () => {
 // through. Mock it so tests can assert the handler calls it and forwards its
 // status/body to request.respond, and can simulate a throw for graceful fallback.
 const smartFetchMock = vi.hoisted(() => vi.fn());
-vi.mock("../proxy", () => ({ smartFetch: smartFetchMock }));
+// hmacHex is used by the mac backend to sign the render request. Stub it to a
+// deterministic 64-hex-char digest so the signed-endpoint assertion is stable.
+const hmacHexMock = vi.hoisted(() => vi.fn(async (_secret: string, _msg: string) => "a".repeat(64)));
+vi.mock("../proxy", () => ({ smartFetch: smartFetchMock, hmacHex: hmacHexMock }));
 
 import { render } from "./render";
 
@@ -344,5 +347,101 @@ describe("render", () => {
 		expect(stubs.setViewport).toHaveBeenCalled();
 		expect(stubs.setExtraHTTPHeaders).toHaveBeenCalled();
 		expect(stubs.evaluateOnNewDocument).toHaveBeenCalled();
+	});
+
+	// --- backend:"mac" (residential patchright service) ---
+
+	describe("backend:mac", () => {
+		// The Mac service is reached via global fetch (not puppeteer/smartFetch), so
+		// stub global fetch per test to a fake JSON envelope and inspect the request.
+		const MAC_ENV = { ...CAS_ENV, MAC_RENDER_URL: "https://mac.example.ts.net", MAC_RENDER_SECRET: "s3cr3t" } as any;
+		const b64 = (bytes: number[]) => btoa(String.fromCharCode(...bytes));
+		let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+		beforeEach(() => {
+			fetchSpy = vi.spyOn(globalThis, "fetch") as any;
+		});
+		afterEach(() => {
+			fetchSpy.mockRestore();
+		});
+
+		const macJson = (obj: unknown, status = 200) => new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
+
+		it("html: POSTs a signed payload to /render and returns the body", async () => {
+			fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/html", body: "<html>from-mac</html>" }));
+			const r = await render.run(MAC_ENV, { url: "https://homedepot.com/p/123", backend: "mac", as: "html", wait_ms: 500 });
+			expect(r.isError).toBeFalsy();
+			expect(r.content[0].text).toBe("<html>from-mac</html>");
+			// The puppeteer path was never touched — no navigation happened for this render.
+			expect(stubs.goto).not.toHaveBeenCalled();
+			// POSTed to the signed endpoint.
+			expect(fetchSpy).toHaveBeenCalledTimes(1);
+			const [endpoint, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+			expect(endpoint).toMatch(/^https:\/\/mac\.example\.ts\.net\/render\?ts=\d+&sig=[0-9a-f]{64}$/);
+			expect(init.method).toBe("POST");
+			// The payload is well-shaped pass-through of the render args.
+			const payload = JSON.parse(init.body as string);
+			expect(payload).toMatchObject({
+				url: "https://homedepot.com/p/123",
+				as: "html",
+				wait_until: "networkidle0",
+				wait_ms: 500,
+				block_resources: false,
+				full_page: false,
+				timeout_ms: 30000,
+			});
+		});
+
+		it("text: returns the body text", async () => {
+			fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "text/plain", body: "visible mac text" }));
+			const r = await render.run(MAC_ENV, { url: "https://walmart.com", backend: "mac", as: "text" });
+			expect(r.isError).toBeFalsy();
+			expect(r.content[0].text).toBe("visible mac text");
+			const payload = JSON.parse((fetchSpy.mock.calls[0] as any)[1].body);
+			expect(payload.as).toBe("text");
+		});
+
+		it("screenshot: decodes the base64 body and delivers a /s/<uuid> CAS ref", async () => {
+			const png = [0x89, 0x50, 0x4e, 0x47];
+			fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "image/png", bodyEncoding: "base64", body: b64(png) }));
+			const r = await render.run(MAC_ENV, { url: "https://homedepot.com", backend: "mac", as: "screenshot" });
+			expect(r.isError).toBeFalsy();
+			const ref = JSON.parse(r.content[0].text);
+			expect(ref.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
+			expect(ref.content_type).toBe("image/png");
+			expect(ref.size).toBe(4);
+		});
+
+		it("screenshot: inlines base64 with delivery:base64", async () => {
+			const png = [0x89, 0x50, 0x4e, 0x47];
+			fetchSpy.mockResolvedValueOnce(macJson({ status: 200, content_type: "image/png", bodyEncoding: "base64", body: b64(png) }));
+			const r = await render.run(MAC_ENV, { url: "https://homedepot.com", backend: "mac", as: "screenshot", delivery: "base64" });
+			expect(r.isError).toBeFalsy();
+			const out = JSON.parse(r.content[0].text);
+			expect(out.mime).toBe("image/png");
+			expect(out.size).toBe(4);
+			expect(typeof out.base64).toBe("string");
+		});
+
+		it("fails when MAC_RENDER_URL/MAC_RENDER_SECRET are absent (no fetch attempted)", async () => {
+			const r = await render.run(CAS_ENV, { url: "https://example.com", backend: "mac" });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/MAC_RENDER_URL\/MAC_RENDER_SECRET/);
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+
+		it("surfaces an {error} envelope from the service as a failure", async () => {
+			fetchSpy.mockResolvedValueOnce(macJson({ error: "challenge unsolved" }));
+			const r = await render.run(MAC_ENV, { url: "https://homedepot.com", backend: "mac" });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/challenge unsolved/);
+		});
+
+		it("surfaces a non-200 response as a failure", async () => {
+			fetchSpy.mockResolvedValueOnce(macJson({}, 502));
+			const r = await render.run(MAC_ENV, { url: "https://homedepot.com", backend: "mac" });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/HTTP 502/);
+		});
 	});
 });

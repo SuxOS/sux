@@ -47,6 +47,7 @@ import { fillable } from "./fillable";
 import { fontcase } from "./fontcase";
 import { html } from "./html";
 import { json } from "./json";
+import { kroger } from "./kroger";
 import { markdown } from "./markdown";
 import { pdf } from "./pdf";
 import { pipe } from "./pipe";
@@ -101,6 +102,7 @@ export const FUNCTIONS: Fn[] = [
 	fontcase,
 	html,
 	json,
+	kroger,
 	markdown,
 	pdf,
 	pipe,

@@ -3,6 +3,7 @@ import { hasAI, MODELS } from "../ai";
 
 export const translate: Fn = {
 	name: "translate",
+	cost: 2,
 	description: "Translate text with Workers AI (m2m100). to: target language code (e.g. es, fr, de, ja, zh). from: source code (optional; auto-detect otherwise).",
 	inputSchema: {
 		type: "object",
