@@ -46,6 +46,13 @@ export type RtEnv = Env &
 		// wrangler as `"browser": { "binding": "BROWSER" }`; absent in
 		// local/test runs — the `render` fn fails gracefully when unbound.
 		BROWSER?: BrowserWorker;
+		// Second render backend (render fn, backend:"mac"): a residential patched-
+		// browser (patchright) service on a Mac, exposed via Tailscale Funnel and
+		// HMAC-authed with the same scheme as the residential fetch proxy. Solves
+		// active JS bot challenges (Akamai) that CF Browser Rendering can't. Absent
+		// → backend:"mac" fails gracefully.
+		MAC_RENDER_URL?: string;
+		MAC_RENDER_SECRET?: string;
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 	};
 

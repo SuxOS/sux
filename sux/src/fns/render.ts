@@ -1,7 +1,7 @@
 import puppeteer from "@cloudflare/puppeteer";
-import { smartFetch } from "../proxy";
-import { type Fn, fail, ok } from "../registry";
-import { clamp, deliverBytes, inlineB64, isHttpUrl } from "./_util";
+import { hmacHex, smartFetch } from "../proxy";
+import { type Fn, type RtEnv, type ToolResult, fail, ok } from "../registry";
+import { clamp, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
 
 const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle0", "networkidle2"] as const;
 
@@ -161,6 +161,89 @@ async function handleRequest(
 	}
 }
 
+// Cap on the AbortSignal for the Mac render call. The service egresses
+// residentially and solves active JS challenges, so it is legitimately slower
+// than CF Browser Rendering — give it the nav budget plus a margin, but keep the
+// Worker bounded so a hung node can never hang the tool call indefinitely.
+const MAC_TIMEOUT_MARGIN_MS = 10_000;
+const MAC_TIMEOUT_CAP_MS = 70_000;
+
+// The render args forwarded to the Mac service (pass-through). Resolved from the
+// same values the cf path uses so the two backends behave identically on input.
+type MacRenderPayload = {
+	url: string;
+	as: string;
+	wait_until: string;
+	wait_ms: number;
+	block_resources: boolean;
+	full_page: boolean;
+	timeout_ms: number;
+};
+
+// The Mac service response envelope. For as html/text, `body` is the text; for
+// as screenshot/pdf, bodyEncoding is "base64" and `body` is base64 of the bytes.
+// On error the node returns `{ error }`.
+type MacRenderResponse = {
+	status?: number;
+	content_type?: string;
+	body?: string;
+	bodyEncoding?: "base64";
+	error?: string;
+};
+
+/**
+ * Route a render to the Mac patchright service (backend:"mac"): a residential,
+ * patched-Chromium node exposed via Tailscale Funnel that solves active JS bot
+ * challenges (Akamai sensor) CF Browser Rendering can't. Signed with the SAME
+ * HMAC scheme as fetchViaTailscale (hmacHex over `${ts}\n${payload}`, ts+sig on
+ * the query string so uhttpd-style hosts that drop POST headers still verify).
+ * html/text → ok(body) (clamped like the cf path); screenshot/pdf → base64 body
+ * decoded to bytes and delivered via the shared CAS path (honoring `delivery`).
+ */
+async function renderViaMac(env: RtEnv, payload: MacRenderPayload, delivery: string | undefined): Promise<ToolResult> {
+	if (!env.MAC_RENDER_URL || !env.MAC_RENDER_SECRET) {
+		return fail("Mac render backend not configured (MAC_RENDER_URL/MAC_RENDER_SECRET).");
+	}
+	const body = JSON.stringify(payload);
+	const ts = String(Date.now());
+	const sig = await hmacHex(env.MAC_RENDER_SECRET, `${ts}\n${body}`);
+	// ts+sig ride the query string (same rationale as fetchViaTailscale: some CGI
+	// hosts drop custom POST headers, but QUERY_STRING is always delivered).
+	const endpoint = new URL("/render", env.MAC_RENDER_URL).href;
+	const signedEndpoint = `${endpoint}?ts=${ts}&sig=${sig}`;
+	const timeout = Math.min(payload.timeout_ms + MAC_TIMEOUT_MARGIN_MS, MAC_TIMEOUT_CAP_MS);
+	let resp: Response;
+	try {
+		resp = await fetch(signedEndpoint, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-timestamp": ts, "x-signature": sig },
+			body,
+			signal: AbortSignal.timeout(timeout),
+		});
+	} catch (e) {
+		return fail(`mac render failed: ${String((e as Error).message ?? e)}`);
+	}
+	let data: MacRenderResponse;
+	try {
+		data = (await resp.json()) as MacRenderResponse;
+	} catch {
+		return fail(`mac render failed: unreadable response (HTTP ${resp.status}).`);
+	}
+	if (!resp.ok || data.error) {
+		return fail(`mac render failed: ${data.error ?? `HTTP ${resp.status}`}`);
+	}
+	const text = typeof data.body === "string" ? data.body : "";
+	if (payload.as === "screenshot" || payload.as === "pdf") {
+		// Binary output: decode the base64 body and deliver via the SAME CAS path
+		// the cf branch uses, honoring `delivery` (default /s/<uuid> ref, base64 to inline).
+		const bytes = fromB64(text);
+		const contentType = data.content_type ?? (payload.as === "pdf" ? "application/pdf" : "image/png");
+		return deliverBytes(env, bytes, contentType, delivery ?? "url", () => inlineB64(bytes, contentType));
+	}
+	// html/text: body is the text — clamp it exactly like the cf path.
+	return ok(clamp(text, MAX_OUTPUT_BYTES));
+}
+
 export const render: Fn = {
 	name: "render",
 	description:
@@ -169,7 +252,8 @@ export const render: Fn = {
 		"as:screenshot captures a PNG (full_page to shoot the whole scroll height) and returns it as a content-addressed /s/<uuid> URL by default (delivery:base64 to inline). block_resources aborts image/font/stylesheet/media fetches before navigation to speed up html/text extraction (ignored for screenshots to keep them visually correct). " +
 		"as:pdf renders the page to a PDF, delivered the same way as a screenshot (content-addressed /s/<uuid> URL by default, delivery:base64 to inline); options format (A4|Letter|Legal|A3, default A4), landscape (default false), print_background (default true so CSS backgrounds render). " +
 		"residential (default true) routes the browser's requests through the Tailscale residential proxy so they egress from a home IP instead of the Cloudflare datacenter — the point of this fn, since datacenter IPs are blocked by bot managers like Akamai. Trade-off: slower, because every subresource is proxied one by one; set residential:false to fetch directly from the datacenter (faster, but blockable). With residential and block_resources both on, heavy assets are still aborted and everything else is residential-routed; with residential on and block_resources off, images are proxied too (fully residential, heavier). " +
-		"stealth (default true) applies a realistic desktop UA/viewport/accept-language and masks navigator.webdriver to reduce headless-browser fingerprinting so bot managers are less likely to flag the render; pairs with residential routing (which fixes the IP signal). Best-effort — CF Browser Rendering limits deeper stealth, and each step degrades silently if unsupported. Set false to keep the default headless signals.",
+		"stealth (default true) applies a realistic desktop UA/viewport/accept-language and masks navigator.webdriver to reduce headless-browser fingerprinting so bot managers are less likely to flag the render; pairs with residential routing (which fixes the IP signal). Best-effort — CF Browser Rendering limits deeper stealth, and each step degrades silently if unsupported. Set false to keep the default headless signals. " +
+		"backend (cf|mac, default cf) selects the render engine: cf = Cloudflare Browser Rendering (fast, default); mac = a residential patched-browser (patchright) service that egresses from a home IP and SOLVES active JS bot challenges (Akamai sensor) cf can't — slower, use it only for sites that block cf (e.g. Home Depot, Walmart). The mac backend takes url/as/wait_until/wait_ms/block_resources/full_page/timeout_ms; residential/stealth are inherent to it (no separate CF interception), and screenshot/pdf are delivered via the same /s/<uuid> vs base64 `delivery` path.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -197,6 +281,13 @@ export const render: Fn = {
 					"Apply a realistic desktop UA/viewport/accept-language and mask navigator.webdriver to reduce headless-browser fingerprinting (bot managers like Akamai flag the default HeadlessChrome signals). Default true — pairs with residential routing. Best-effort (CF Browser Rendering limits deeper stealth); set false to keep default headless signals.",
 			},
 			delivery: { type: "string", enum: ["base64", "url"], default: "url", description: "Screenshot only: content-addressed /s/<uuid> URL (default, ~100 tokens) or inline base64." },
+			backend: {
+				type: "string",
+				enum: ["cf", "mac"],
+				default: "cf",
+				description:
+					"Render engine: cf = Cloudflare Browser Rendering (fast, default); mac = residential patched-browser service that solves active JS bot challenges (Akamai) — slower, use for sites that block cf (e.g. Home Depot, Walmart).",
+			},
 			timeout_ms: { type: "integer", minimum: 1, maximum: 60000, default: 30000, description: "Navigation timeout in ms." },
 		},
 	},
