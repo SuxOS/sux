@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-// Mock the proxy seam obsidian fetches GitHub through.
+// Mock the proxy seam the git backend fetches GitHub through. The remote backend
+// uses global fetch (a public Funnel URL), which each remote test stubs directly.
 const routes = vi.hoisted(() => ({ handler: null as null | ((url: string, init?: any) => Response) }));
 vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async (_env: any, url: string, init?: any) => routes.handler!(url, init)),
@@ -18,10 +19,10 @@ describe("obsidian (git backend)", () => {
 		expect(r.content[0].text).toMatch(/OBSIDIAN_VAULT_REPO/);
 	});
 
-	it("stubs the local backend with guidance", async () => {
+	it("points the local backend at remote", async () => {
 		const r = await obsidian.run(ENV, { action: "read", path: "x.md", backend: "local" });
 		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/tailnet/);
+		expect(r.content[0].text).toMatch(/backend:'remote'|Funnel/);
 	});
 
 	it("lists only .md notes from the git tree", async () => {
@@ -53,7 +54,7 @@ describe("obsidian (git backend)", () => {
 		};
 		const r = await obsidian.run(ENV, { action: "append", path: "log.md", content: "new line" });
 		expect(r.isError).toBeFalsy();
-		expect(putBody.sha).toBe("abc"); // updates the existing blob
+		expect(putBody.sha).toBe("abc");
 		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("old\n\nnew line\n");
 	});
 
@@ -70,5 +71,58 @@ describe("obsidian (git backend)", () => {
 		expect(r.isError).toBeFalsy();
 		expect(putBody.sha).toBeUndefined();
 		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("first\n");
+	});
+});
+
+describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
+	const REMOTE = { OBSIDIAN_REMOTE_URL: "https://vault.tailnet.ts.net/", OBSIDIAN_REMOTE_KEY: "sek" } as any;
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("reports when the remote URL/key aren't configured", async () => {
+		const r = await obsidian.run({} as any, { action: "list", backend: "remote" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/OBSIDIAN_REMOTE_URL/);
+	});
+
+	it("lists a directory via GET /vault/ with the bearer key", async () => {
+		const fetchMock = vi.fn(async (u: string | URL, init?: any) => {
+			expect(String(u)).toBe("https://vault.tailnet.ts.net/vault/");
+			expect(init.headers.Authorization).toBe("Bearer sek");
+			return new Response(JSON.stringify({ files: ["a.md", "sub/"] }), { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await obsidian.run(REMOTE, { action: "list", backend: "remote" });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ dir: "/", count: 2, files: ["a.md", "sub/"] });
+	});
+
+	it("reads a note as text", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			expect(String(u)).toBe("https://vault.tailnet.ts.net/vault/notes/x.md");
+			return new Response("# Hello", { status: 200 });
+		}));
+		const r = await obsidian.run(REMOTE, { action: "read", path: "notes/x.md", backend: "remote" });
+		expect(r.content[0].text).toBe("# Hello");
+	});
+
+	it("searches via POST /search/simple/", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			expect(String(u)).toContain("/search/simple/?query=todo");
+			expect(init.method).toBe("POST");
+			return new Response(JSON.stringify([{ filename: "a.md", score: 3 }]), { status: 200 });
+		}));
+		const r = await obsidian.run(REMOTE, { action: "search", query: "todo", backend: "remote" });
+		expect(JSON.parse(r.content[0].text).hits[0]).toEqual({ path: "a.md", score: 3 });
+	});
+
+	it("appends by POSTing markdown to the note path", async () => {
+		const fetchMock = vi.fn(async (u: string | URL, init?: any) => {
+			expect(init.method).toBe("POST");
+			expect(init.body).toBe("new line");
+			expect(init.headers["Content-Type"]).toBe("text/markdown");
+			return new Response(null, { status: 204 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await obsidian.run(REMOTE, { action: "append", path: "log.md", content: "new line", backend: "remote" });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, path: "log.md" });
 	});
 });

@@ -44,6 +44,9 @@ export type RtEnv = Env &
 		OBSIDIAN_VAULT_REPO?: string;
 		OBSIDIAN_VAULT_BRANCH?: string;
 		OBSIDIAN_VAULT_DIR?: string;
+		// Remote Obsidian backend: the Funnel'd Local REST API URL + its bearer key.
+		OBSIDIAN_REMOTE_URL?: string;
+		OBSIDIAN_REMOTE_KEY?: string;
 
 		EXA_API_KEY?: string;
 
