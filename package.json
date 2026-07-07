@@ -17,7 +17,9 @@
     "docs": "node sux/scripts/gen-docs.mjs",
     "gen:index": "node sux/scripts/gen-index.mjs",
     "build:node": "node sux/node/build-deploy.mjs",
-    "check:node": "node sux/node/build-deploy.mjs --check"
+    "check:node": "node sux/node/build-deploy.mjs --check",
+    "bench:costs": "node sux/scripts/benchmark-costs.mjs",
+    "check:pricing": "node sux/scripts/check-pricing.mjs"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.1.0",
