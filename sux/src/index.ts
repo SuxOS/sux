@@ -4,6 +4,7 @@ import { cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } fr
 import { unpackFromCache } from "./cache-codec";
 import { findFn, type RtEnv, type ToolResult, toolList } from "./registry";
 import { singleFlight } from "./single-flight";
+import { weightedRateLimit } from "./rate-limit";
 import { FUNCTIONS } from "./fns";
 import { recordCall } from "./metrics";
 import { handleObservability } from "./observability";
@@ -127,6 +128,11 @@ const rtServer = {
 
 		const isBodyless = request.method === "GET" || request.method === "HEAD";
 		const rpc = parseJsonRpc(isBodyless ? undefined : await request.text());
+		// Weighted rate limit: expensive tools (render/Kagi/SerpAPI/Workers AI)
+		// consume extra tokens beyond the base 1 charged above, so a burst of paid
+		// calls drains the budget faster than free deterministic fns (see Fn.cost).
+		const limited = await weightedRateLimit(env, login!, rpc);
+		if (limited) return limited;
 		return handleRpc(env, ctx, rpc);
 	},
 };
