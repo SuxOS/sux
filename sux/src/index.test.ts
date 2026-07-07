@@ -111,6 +111,52 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(second.result.content[0].text).toBe("FROM_CACHE"); // served from KV, run() not re-executed
 	});
 
+	it("a coalesced burst of identical cacheable calls schedules exactly one cache write", async () => {
+		// Gate every KV read so all N concurrent callers park BEFORE any reaches
+		// singleFlight — guaranteeing they coalesce onto one leader. Count only the
+		// cache: writes (metrics writes go to sux:metrics:* shards).
+		const store = new Map<string, string>();
+		let waiting = 0;
+		let releaseGet!: () => void;
+		const gate = new Promise<void>((r) => (releaseGet = r));
+		let cachePuts = 0;
+		const kv = {
+			get: async (key: string) => {
+				waiting++;
+				await gate;
+				return store.get(key) ?? null;
+			},
+			put: async (key: string, value: string) => {
+				if (key.startsWith("cache:")) cachePuts++;
+				store.set(key, value);
+			},
+			delete: async (key: string) => void store.delete(key),
+		};
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv as unknown as ReturnType<typeof makeKv>["kv"]);
+		const rpc: JsonRpc = {
+			jsonrpc: "2.0",
+			id: 9,
+			method: "tools/call",
+			params: { name: "json", arguments: { data: '{"a":1}', from: "json" } },
+		};
+
+		const N = 4;
+		const calls = Array.from({ length: N }, () => callRpc(env, ctx, rpc));
+		// Wait until all N are parked at the gated read, then release them together.
+		while (waiting < N) await new Promise((r) => setTimeout(r, 0));
+		releaseGet();
+
+		const outs = await Promise.all(calls);
+		await Promise.all(deferred.splice(0));
+
+		// Every coalesced caller got the correct result …
+		for (const o of outs) expect(JSON.parse(o.result.content[0].text)).toEqual({ a: 1 });
+		// … but the close path ran once: a single KV write for the whole group, not N.
+		expect(cachePuts).toBe(1);
+		expect([...store.keys()].filter((k) => k.startsWith("cache:")).length).toBe(1);
+	});
+
 	it("fresh:true bypasses the cache READ but still rewrites the same entry", async () => {
 		const { kv, store } = makeKv();
 		const { ctx, deferred } = makeCtx();

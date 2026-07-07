@@ -18,9 +18,16 @@ import { normalizeArgs, normalizeText } from "./normalize";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
 
+// The cleaned result deferCacheWrite hands back (noCache stripped). This — not the
+// raw run result — is what a coalesced group shares, so every awaiter returns the
+// leader's single post-processed value.
+type CleanResult = ReturnType<typeof deferCacheWrite>;
+
 // Per-isolate in-flight map for single-flight coalescing (see single-flight.ts).
-// Keyed by the content-addressed cache key; entries clear when a run settles.
-const inflight = new Map<string, Promise<ToolResult>>();
+// Keyed by the content-addressed cache key; entries clear when a run settles. The
+// coalesced value is the fully finalized (normalized + optionally summarized +
+// cache-scheduled) result, so followers reuse it without redoing the close path.
+const inflight = new Map<string, Promise<CleanResult>>();
 
 // The real tools/call dispatch chain, split out from rtServer.fetch so it can be
 // exercised end-to-end in tests without constructing the module-scope
@@ -98,38 +105,58 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 				console.warn(`sux cache read failed for '${name}', recomputing: ${String((e as Error).message ?? e)}`);
 			}
 		}
-		let result: ToolResult;
+		// The close path for one successful run: normalize the text output, optionally
+		// summarize it, then schedule the (single) cache write and return the cleaned
+		// result. Folded into the single-flight leader below so a coalesced burst runs
+		// it EXACTLY once for the whole group — N awaiters share one normalize pass and
+		// one KV put instead of each re-normalizing the shared object and scheduling a
+		// byte-identical write.
+		const finalize = async (ran: ToolResult): Promise<CleanResult> => {
+			// Sane normalization on close: same folding/cleanup over text output.
+			if (!fn.raw && !ran.isError && Array.isArray(ran.content)) {
+				for (const part of ran.content) {
+					if (part?.type === "text" && typeof part.text === "string") part.text = normalizeText(part.text);
+				}
+			}
+			let out: ToolResult = ran;
+			// Summarize-before-return: compress the (normalized) text output with Workers
+			// AI when the caller asked and the result is worth it. Best-effort — on AI
+			// failure or when unavailable, the raw result is returned unchanged. The
+			// summarized result is what gets cached (under the ::summarize key namespace).
+			if (summarize && !fn.raw && !out.isError && Array.isArray(out.content) && hasAI(env)) {
+				const joined = out.content.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n");
+				if (joined.length >= SUMMARIZE_MIN_CHARS) {
+					try {
+						const s = await llm(env, "Summarize this tool result as concisely as possible while preserving key facts, names, numbers, dates, and URLs. Output only the summary — no preamble.", joined.slice(0, 24_000), 512);
+						if (s.trim()) out = { content: [{ type: "text", text: s.trim() }], ...(out.noCache ? { noCache: true } : {}) };
+					} catch (e) {
+						console.warn(`sux summarize failed for '${name}', returning raw: ${String((e as Error).message ?? e)}`);
+					}
+				}
+			}
+			// noCache/isError results are returned but never cached; deferCacheWrite
+			// hands back a cleaned clone (noCache stripped) without mutating the shared
+			// run result, so coalesced callers can't poison each other's cache decision.
+			// The KV write happens off the response path via ctx.waitUntil, and fn.ttl
+			// (when set) overrides the global cache lifetime for this fn.
+			return deferCacheWrite(env.OAUTH_KV, ctx, key, out, fn.ttl);
+		};
+
+		let result: CleanResult;
 		let err: string | undefined;
 		try {
 			// Coalesce concurrent same-key runs (cacheable fns only, keyed by the
 			// content-addressed cache key) so a burst of identical calls runs the
-			// expensive fn.run once; non-cacheable fns (no key) always run directly.
-			result = key ? await singleFlight(inflight, key, () => fn.run(env, args)) : await fn.run(env, args);
+			// expensive fn.run AND the shared close path (normalize + the single cache
+			// write) once; non-cacheable fns (no key) always run directly. Every
+			// coalesced awaiter shares the one cleaned result the leader produced.
+			result = key
+				? await singleFlight(inflight, key, async () => finalize(await fn.run(env, args)))
+				: await finalize(await fn.run(env, args));
 		} catch (e) {
 			err = String((e as Error).message ?? e);
 			console.error(`sux tool '${name}' threw: ${(e as Error)?.stack ?? err}`);
 			result = { content: [{ type: "text" as const, text: `Tool '${name}' failed: ${err}` }], isError: true };
-		}
-		// Sane normalization on close: same folding/cleanup over text output.
-		if (!fn.raw && !result.isError && Array.isArray(result.content)) {
-			for (const part of result.content) {
-				if (part?.type === "text" && typeof part.text === "string") part.text = normalizeText(part.text);
-			}
-		}
-		// Summarize-before-return: compress the (normalized) text output with Workers
-		// AI when the caller asked and the result is worth it. Best-effort — on AI
-		// failure or when unavailable, the raw result is returned unchanged. The
-		// summarized result is what gets cached (under the ::summarize key namespace).
-		if (summarize && !fn.raw && !result.isError && Array.isArray(result.content) && hasAI(env)) {
-			const joined = result.content.filter((p) => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n");
-			if (joined.length >= SUMMARIZE_MIN_CHARS) {
-				try {
-					const s = await llm(env, "Summarize this tool result as concisely as possible while preserving key facts, names, numbers, dates, and URLs. Output only the summary — no preamble.", joined.slice(0, 24_000), 512);
-					if (s.trim()) result = { content: [{ type: "text", text: s.trim() }], ...(result.noCache ? { noCache: true } : {}) };
-				} catch (e) {
-					console.warn(`sux summarize failed for '${name}', returning raw: ${String((e as Error).message ?? e)}`);
-				}
-			}
 		}
 		// Record WHY a call failed: from the caught exception, or the isError
 		// result's first text part for fns that return failures without throwing.
@@ -140,13 +167,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		const callEvent = { tool: name, ms: Date.now() - started, error: Boolean(result.isError), err };
 		recordCall(env, ctx, callEvent);
 		shipToLoki(env, ctx, callEvent);
-		// noCache/isError results are returned but never cached; deferCacheWrite
-		// hands back a cleaned clone (noCache stripped) without mutating the shared
-		// run result, so coalesced callers can't poison each other's cache decision.
-		// The KV write happens off the response path via ctx.waitUntil, and fn.ttl
-		// (when set) overrides the global cache lifetime for this fn.
-		const cleaned = deferCacheWrite(env.OAUTH_KV, ctx, key, result, fn.ttl);
-		return sseResponse({ jsonrpc: "2.0", id, result: cleaned });
+		return sseResponse({ jsonrpc: "2.0", id, result });
 	}
 	return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
 }
