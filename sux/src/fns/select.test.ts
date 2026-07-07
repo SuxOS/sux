@@ -42,6 +42,26 @@ describe("select", () => {
 	});
 });
 
+describe("select descendant combinator self-match", () => {
+	it("does not match a scope element as its own descendant", async () => {
+		// `.a .b` requires a `.b` inside a `.a`; a single element carrying both
+		// classes must NOT match (it has no matching ancestor).
+		const r = await select.run({} as any, { html: '<div class="a b">x</div>', selector: ".a .b" });
+		expect(r.content[0].text).toBe("[]");
+	});
+
+	it("still matches a genuine descendant", async () => {
+		const html = '<div class="a"><span class="b">y</span></div>';
+		const r = await select.run({} as any, { html, selector: ".a .b" });
+		expect(JSON.parse(r.content[0].text)).toEqual(["y"]);
+	});
+
+	it("does not self-match same-tag descendant selectors", async () => {
+		const r = await select.run({} as any, { html: "<div>only</div>", selector: "div div" });
+		expect(r.content[0].text).toBe("[]");
+	});
+});
+
 describe("select attr regex-injection safety", () => {
 	it("treats an attr name with regex metacharacters literally", async () => {
 		// Unescaped, `\bdata.x=` (. = any char) would match data1x first → "wrong".

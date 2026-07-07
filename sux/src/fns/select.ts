@@ -44,6 +44,14 @@ function elementMatches(el: string, s: Simple): boolean {
 	return true;
 }
 
+/** The content between an element's own open and close tags (its innerHTML). */
+function innerHtml(el: string): string {
+	const open = el.match(/^<[a-z0-9]+\b[^>]*>/i);
+	if (!open) return "";
+	const close = el.match(/<\/[a-z0-9]+\s*>$/i);
+	return el.slice(open[0].length, close ? el.length - close[0].length : el.length);
+}
+
 /** All top-level elements whose tag matches `tag` (or any tag), returning outer HTML. */
 function findByTag(html: string, tag: string | null): string[] {
 	const t = tag ?? "[a-z0-9]+";
@@ -93,7 +101,7 @@ function selectOne(html: string, selector: string): string[] {
 			}
 		}
 		results = next;
-		scopes = next; // descend into matched elements for the next step
+		scopes = next.map(innerHtml); // descend into matched elements' contents (not the elements themselves)
 	});
 	return results;
 }
