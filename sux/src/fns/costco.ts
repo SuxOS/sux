@@ -54,17 +54,47 @@ function extractPrice(slice: string): number | undefined {
 }
 
 /**
+ * Slice a balanced `[…]` array out of `s` starting at the `[` at index `open`.
+ * String- and escape-aware so brackets inside JSON string values don't count.
+ * Returns undefined if the array never closes.
+ */
+function balancedArray(s: string, open: number): string | undefined {
+	let depth = 0;
+	let inStr = false;
+	let esc = false;
+	for (let i = open; i < s.length; i++) {
+		const c = s[i];
+		if (inStr) {
+			if (esc) esc = false;
+			else if (c === "\\") esc = true;
+			else if (c === '"') inStr = false;
+			continue;
+		}
+		if (c === '"') inStr = true;
+		else if (c === "[") depth++;
+		else if (c === "]" && --depth === 0) return s.slice(open, i + 1);
+	}
+	return undefined;
+}
+
+/**
  * Attempt 1: embedded product JSON. Costco seeds the results into a script
  * (adobeProductList / dataLayer). Field names drift, so map defensively and only
  * return when we got at least one titled product; otherwise the caller falls
- * through to tile parsing.
+ * through to tile parsing. The array is captured by balancing brackets rather
+ * than a non-greedy regex — real product entries carry nested arrays (images,
+ * categories) whose inner `]` would otherwise truncate the match into invalid
+ * JSON and silently drop the whole primary extraction path.
  */
 function fromEmbeddedJson(html: string): RetailProduct[] {
-	const m = /adobeProductList"?\s*[:=]\s*(\[[\s\S]*?\])\s*[,;<}]/i.exec(html);
+	const m = /adobeProductList"?\s*[:=]\s*\[/i.exec(html);
 	if (!m) return [];
+	const open = m.index + m[0].length - 1;
+	const raw = balancedArray(html, open);
+	if (!raw) return [];
 	let arr: any[];
 	try {
-		arr = JSON.parse(m[1]);
+		arr = JSON.parse(raw);
 	} catch {
 		return [];
 	}

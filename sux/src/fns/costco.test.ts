@@ -94,6 +94,21 @@ describe("costco", () => {
 		expect(j.products[0]).toMatchObject({ id: "777", title: "JSON Widget", price: 42.5, url: "https://www.costco.com/json-widget.product.777.html" });
 	});
 
+	it("extracts embedded JSON even when products carry nested arrays", async () => {
+		// Real Costco entries carry nested arrays (images/categories); a non-greedy
+		// array regex truncates at the first inner ']' and drops this whole path.
+		const html = `<html><body><script>
+			window.adobeProductList = [{"productId":"1","name":"Nested Widget","images":["a","b"],"salePrice":9.99,"url":"/nested-widget.product.1.html"},{"productId":"2","name":"Second Widget","categories":["x","y"],"price":5}];
+		</script></body></html>`;
+		mockHtml(html);
+		const r = await costco.run({} as any, { action: "search", term: "widget" });
+		expect(r.isError).toBeFalsy();
+		const j = JSON.parse(r.content[0].text);
+		expect(j.count).toBe(2);
+		expect(j.products[0]).toMatchObject({ id: "1", title: "Nested Widget", price: 9.99 });
+		expect(j.products[1]).toMatchObject({ id: "2", title: "Second Widget", price: 5 });
+	});
+
 	it("fails as an Akamai block on a tiny/denied body", async () => {
 		mockHtml("Access Denied");
 		const r = await costco.run({} as any, { action: "search", term: "kirkland" });
