@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectFormat, parseXml, parseYaml, toXml, toYaml } from "./_convert";
+import { csvToRows, detectFormat, parseCsv, parseXml, parseYaml, toXml, toYaml } from "./_convert";
 
 describe("parseYaml (zero-indent sequences under a mapping key)", () => {
 	it("parses a sequence at the same indent as its key", () => {
@@ -109,5 +109,24 @@ describe("parseXml (`>` inside a quoted attribute value)", () => {
 
 	it("handles `>` inside a single-quoted attribute value", () => {
 		expect(parseXml("<tag attr='x>y'/>")).toEqual({ tag: { "@attr": "x>y" } });
+	});
+});
+
+describe("parseCsv (quoted-empty vs truly-blank rows)", () => {
+	it("keeps a row that is an explicitly quoted single empty field", () => {
+		// The blank-row filter must drop a bare `\n` line but keep `""`, which is a
+		// deliberately empty single-column field.
+		expect(parseCsv('a\n""\nb\n', ",")).toEqual([["a"], [""], ["b"]]);
+	});
+
+	it("still drops a truly blank line", () => {
+		expect(parseCsv("a\n\nb\n", ",")).toEqual([["a"], ["b"]]);
+	});
+});
+
+describe("csvToRows (duplicate header names)", () => {
+	it("suffixes repeated headers instead of collapsing them", () => {
+		// Two columns named `a` must not collapse to one; the second becomes `a_2`.
+		expect(csvToRows("a,a\n1,2\n", ",")).toEqual([{ a: "1", a_2: "2" }]);
 	});
 });

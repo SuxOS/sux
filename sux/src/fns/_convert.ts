@@ -209,6 +209,10 @@ export function parseYaml(text: string): unknown {
 
 export function parseCsv(text: string, delim: string): string[][] {
 	const rows: string[][] = [];
+	// Parallel to `rows`: true where the row had real syntax (a quote, delimiter,
+	// or content) so a quoted-empty line `""` is kept while a truly blank line is
+	// dropped by the trailing filter.
+	const nonBlank: boolean[] = [];
 	let row: string[] = [];
 	let field = "";
 	let inQ = false;
@@ -220,6 +224,7 @@ export function parseCsv(text: string, delim: string): string[][] {
 	const pushRow = () => {
 		pushField();
 		rows.push(row);
+		nonBlank.push(started);
 		row = [];
 		started = false;
 	};
@@ -250,14 +255,22 @@ export function parseCsv(text: string, delim: string): string[][] {
 		}
 	}
 	if (started || field.length || row.length) pushRow();
-	return rows.filter((r) => !(r.length === 1 && r[0] === ""));
+	return rows.filter((r, i) => !(r.length === 1 && r[0] === "" && !nonBlank[i]));
 }
 
 /** CSV text -> array of row objects (first row = headers). */
 export function csvToRows(text: string, delim: string): Record<string, string>[] {
 	const rows = parseCsv(text, delim);
 	if (!rows.length) return [];
-	const headers = rows[0];
+	// Dedupe duplicate header names so Object.fromEntries doesn't silently
+	// collapse repeated columns (last-column-wins). Repeats get an _N suffix:
+	// [a, a, a] -> [a, a_2, a_3].
+	const seen = new Map<string, number>();
+	const headers = rows[0].map((h) => {
+		const n = (seen.get(h) ?? 0) + 1;
+		seen.set(h, n);
+		return n === 1 ? h : `${h}_${n}`;
+	});
 	return rows.slice(1).map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ""])));
 }
 
