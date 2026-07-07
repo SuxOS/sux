@@ -64,6 +64,21 @@ const DEFAULT_HEADERS = {
 	"sec-fetch-site": "none",
 };
 
+/**
+ * Decode the IPv4 tail of an IPv4-mapped IPv6 literal (the part after `::ffff:`)
+ * to dotted-decimal. Accepts the dotted form (`127.0.0.1`) and the compressed
+ * two-group hex form the WHATWG URL parser emits (`7f00:1` = the high and low
+ * 16-bit halves). Returns null when the tail isn't a recognizable v4 encoding, so
+ * the caller treats it as non-private. Mirrors src/proxy.ts mappedV4ToDotted.
+ */
+function mappedV4ToDotted(tail) {
+	if (tail.includes(".")) return tail; // already dotted-decimal (e.g. ::ffff:127.0.0.1)
+	const groups = tail.split(":");
+	if (groups.length !== 2 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+	const [hi, lo] = groups.map((g) => Number.parseInt(g, 16));
+	return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+}
+
 /** Reject loopback / private / link-local / CGNAT / metadata targets (SSRF guard). */
 export function isPrivateIp(ip) {
 	if (ip.includes(":")) {
@@ -71,7 +86,14 @@ export function isPrivateIp(ip) {
 		// `::` is the v6 twin of 0.0.0.0 (blocked below): connect() to it reaches loopback on Linux.
 		const l = ip.toLowerCase();
 		if (l === "::" || l === "::1" || l.startsWith("fc") || l.startsWith("fd") || l.startsWith("fe8") || l.startsWith("fe9") || l.startsWith("fea") || l.startsWith("feb")) return true;
-		if (l.startsWith("::ffff:")) return isPrivateIp(l.slice(7));
+		// IPv4-mapped (::ffff:0:0/96) carries an embedded IPv4: evaluate it as that
+		// IPv4. The WHATWG URL parser rewrites the dotted tail to compressed HEX —
+		// ::ffff:127.0.0.1 becomes ::ffff:7f00:1 — so decode BOTH forms; the raw hex
+		// tail matched no IPv4 range and let a v4-mapped loopback slip past.
+		if (l.startsWith("::ffff:")) {
+			const dotted = mappedV4ToDotted(l.slice(7));
+			return dotted != null && isPrivateIp(dotted);
+		}
 		return false;
 	}
 	const p = ip.split(".").map(Number);
@@ -86,13 +108,23 @@ export function isPrivateIp(ip) {
 	);
 }
 
-async function assertPublicTarget(url) {
+/**
+ * @param {string} url
+ * @param {(host: string, opts: { all: true }) => Promise<Array<{ address: string }>>} [lookupImpl]
+ */
+export async function assertPublicTarget(url, lookupImpl = lookup) {
 	const u = new URL(url); // throws on garbage
 	if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("only http/https allowed");
 	if (!hostAllowed(u.hostname)) throw new Error(`host not in allowlist: ${u.hostname}`);
+	// The URL parser keeps IPv6 literals bracketed ([::1]); strip so isIP recognizes
+	// the literal and the private-range check actually runs on it. Without this,
+	// isIP("[::1]") is 0, the bracketed string falls through to a DNS lookup that
+	// only throws, so isPrivateIp never sees the address — a fragile fail-closed that
+	// (with the hex v4-mapped decode above) would otherwise let ::ffff:127.0.0.1
+	// through, and needlessly rejects legitimate public IPv6 literals.
+	const host = u.hostname.replace(/^\[|\]$/g, "");
 	// Resolve the hostname and check every returned address (blocks DNS-rebinding to internal hosts).
-	const host = u.hostname;
-	const addrs = isIP(host) ? [{ address: host }] : await lookup(host, { all: true });
+	const addrs = isIP(host) ? [{ address: host }] : await lookupImpl(host, { all: true });
 	for (const { address } of addrs) {
 		if (isPrivateIp(address)) throw new Error(`target resolves to a private address (${address})`);
 	}

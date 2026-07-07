@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { encodeBody, fetchFollowingSafely, hostAllowed, isPrivateIp, verifySignature } from "./server.mjs";
+import { assertPublicTarget, encodeBody, fetchFollowingSafely, hostAllowed, isPrivateIp, verifySignature } from "./server.mjs";
 
 // Guards the residential-proxy binary-egress contract: the node must base64 the
 // upstream body and flag bodyEncoding:"base64" so arbitrary bytes survive the
@@ -46,8 +46,60 @@ describe("isPrivateIp (SSRF guard)", () => {
 		for (const ip of ["::", "::1", "fc00::1", "fd12::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1"]) expect(isPrivateIp(ip)).toBe(true);
 		for (const ip of ["2606:4700:4700::1111", "2001:4860:4860::8888"]) expect(isPrivateIp(ip)).toBe(false);
 	});
+	it("catches the compressed HEX v4-mapped form the URL parser emits (::ffff:7f00:1 = 127.0.0.1)", () => {
+		// new URL("http://[::ffff:127.0.0.1]") serializes the tail to compressed hex,
+		// which matched no IPv4 range before the mappedV4ToDotted decode was added.
+		for (const ip of ["::ffff:7f00:1", "::ffff:a9fe:a9fe", "::ffff:c0a8:101", "::ffff:a00:1"]) expect(isPrivateIp(ip)).toBe(true);
+		expect(isPrivateIp("::ffff:808:808")).toBe(false); // 8.8.8.8 mapped — public
+	});
 	it("fails closed on malformed input (wrong shape / NaN octets)", () => {
 		for (const ip of ["not-an-ip", "1.2.3", "1.2.3.4.5", ""]) expect(isPrivateIp(ip)).toBe(true);
+	});
+});
+
+// assertPublicTarget is the node's entry-point SSRF gate: parse, scheme check,
+// allowlist, then resolve + reject any private/loopback/metadata address. IPv6
+// literals used to slip past isPrivateIp entirely — the URL parser keeps them
+// bracketed, isIP("[::1]") is 0, so the guard degenerated to a DNS lookup that
+// merely threw. These pin that the private-range check now actually runs on the
+// literal (and public IPv6 literals are accepted), with no DNS round-trip.
+describe("assertPublicTarget (entry SSRF gate)", () => {
+	// A lookup seam that must never be reached for IP literals (isIP short-circuits).
+	const noLookup = async () => {
+		throw new Error("lookup must not run for an IP literal");
+	};
+
+	it("rejects a non-http(s) scheme and unparseable garbage", async () => {
+		await expect(assertPublicTarget("file:///etc/passwd", noLookup)).rejects.toThrow(/only http\/https/);
+		await expect(assertPublicTarget("not a url", noLookup)).rejects.toThrow();
+	});
+
+	it("rejects IPv6-literal private targets without any DNS lookup (bracket-stripped)", async () => {
+		for (const url of ["http://[::1]/", "http://[fd00::1]/", "http://[fe80::1]/", "http://[::ffff:127.0.0.1]/", "http://[::ffff:169.254.169.254]/"]) {
+			await expect(assertPublicTarget(url, noLookup)).rejects.toThrow(/private address/);
+		}
+	});
+
+	it("rejects IPv4-literal private/metadata targets", async () => {
+		for (const url of ["http://127.0.0.1/", "http://169.254.169.254/latest/meta-data/", "http://192.168.1.1/", "http://10.0.0.1/"]) {
+			await expect(assertPublicTarget(url, noLookup)).rejects.toThrow(/private address/);
+		}
+	});
+
+	it("accepts a public IPv6 literal (previously rejected as unresolvable)", async () => {
+		const u = await assertPublicTarget("http://[2606:4700:4700::1111]/", noLookup);
+		expect(u.hostname).toBe("[2606:4700:4700::1111]");
+	});
+
+	it("re-checks every DNS-resolved address and rejects a host that resolves private (rebinding)", async () => {
+		const lookupPrivate = async () => [{ address: "203.0.113.10" }, { address: "10.1.2.3" }];
+		await expect(assertPublicTarget("http://rebind.example/", lookupPrivate)).rejects.toThrow(/private address \(10\.1\.2\.3\)/);
+	});
+
+	it("accepts a hostname that resolves to only public addresses", async () => {
+		const lookupPublic = async () => [{ address: "93.184.216.34" }, { address: "2606:4700::1" }];
+		const u = await assertPublicTarget("https://public.example/path", lookupPublic);
+		expect(u.href).toBe("https://public.example/path");
 	});
 });
 
