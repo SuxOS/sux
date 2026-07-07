@@ -21,10 +21,9 @@ emit() { printf 'Status: %s\r\n' "$1"; printf 'Content-Type: application/json\r\
 # on PATH so the wrapper finds its curl-impersonate binary sibling.
 IMP=""
 for d in /opt/curl-impersonate/bin /opt/curl-impersonate /usr/local/curl-impersonate/bin /usr/local/curl-impersonate /usr/local/bin /usr/bin /root/curl-impersonate/bin /root/curl-impersonate; do
-	for w in "$d"/curl_chrome*; do
-		[ -x "$w" ] && IMP="$w"
-	done
-	[ -n "$IMP" ] && { export PATH="$d:$PATH"; break; }
+	IMP=$(ls "$d"/curl_chrome* 2>/dev/null | sort -V | tail -1)
+	[ -n "$IMP" ] && [ -x "$IMP" ] && { export PATH="$d:$PATH"; break; }
+	IMP=""
 done
 
 qts=$(printf '%s' "${QUERY_STRING:-}" | tr '&' '\n' | sed -n 's/^ts=//p')
@@ -75,6 +74,6 @@ ct=$(grep -i '^content-type:' "$hdr" | tail -n1 | sed 's/^[Cc]ontent-[Tt]ype:[[:
 # Always base64 the body + flag bodyEncoding:"base64" so binary survives the
 # JSON transport and reaches the Worker's residential path (text and binary alike).
 rbytes=$(wc -c < "$resp" | tr -d ' ')
-b64=$(base64 < "$resp" | tr -d '\n')
+b64=$(openssl base64 -A < "$resp")
 emit 200 "$(jq -n --arg status "$code" --arg ct "$ct" --arg body "$b64" --arg bytes "$rbytes" \
 	'{status:($status|tonumber? // 0), statusText:"", headers:{"content-type":$ct}, bytes:($bytes|tonumber? // 0), truncated:false, bodyEncoding:"base64", body:$body}')"
