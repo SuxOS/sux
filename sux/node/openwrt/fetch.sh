@@ -40,6 +40,18 @@ len=$(wc -c < "$req" | tr -d ' ')
 calc=$( { printf '%s\n' "$TS"; cat "$req"; } | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.*=[[:space:]]*//' )
 [ -n "$SIG" ] && [ "$calc" = "$SIG" ] || { emit 401 '{"error":"unauthorized"}'; exit 0; }
 
+# Replay guard (defense-in-depth): the HMAC covers TS, but a captured (TS, body)
+# pair signs forever unless TS is also required to be recent — the ts+sig ride
+# the query string (proxy.ts) and can leak via logged Funnel URLs. Reject a
+# timestamp skewed more than 5 min from the node clock. TS is epoch-ms (the
+# Worker's Date.now()); compare in whole seconds (drop the 3 ms digits) so the
+# arithmetic stays 32-bit-safe on small OpenWRT targets.
+case "$TS" in ''|*[!0-9]*) emit 401 '{"error":"unauthorized"}'; exit 0 ;; esac
+ts_s=${TS%???}; [ -n "$ts_s" ] || ts_s=0
+now_s=$(date +%s)
+skew=$(( now_s - ts_s )); [ "$skew" -lt 0 ] && skew=$(( -skew ))
+[ "$skew" -le 300 ] || { emit 401 '{"error":"stale_timestamp"}'; exit 0; }
+
 url=$(jq -r '.url // empty' "$req")
 [ -n "$url" ] || { emit 400 '{"error":"missing_url"}'; exit 0; }
 case "$url" in http://*|https://*) : ;; *) emit 400 '{"error":"bad_scheme"}'; exit 0 ;; esac
