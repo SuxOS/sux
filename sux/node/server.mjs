@@ -13,6 +13,10 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileP = promisify(execFile);
 
 const PORT = Number(process.env.PORT || 8787);
 const SECRET = process.env.PROXY_SECRET; // REQUIRED — a strong random string
@@ -121,7 +125,24 @@ export function encodeBody(buf) {
 }
 
 const server = createServer(async (req, res) => {
-	if (req.method === "GET" && req.url === "/health") return json(res, 200, { status: "ok" });
+	if (req.method === "GET" && (req.url || "").split("?")[0] === "/health") return json(res, 200, { status: "ok" });
+
+	// HMAC-signed `tailscale status --json` passthrough — feeds the Worker health
+	// page's residential-egress card (github-handler.ts nodeStatus). GET, so ts+sig
+	// ride the query string (and headers); the signed message is `${ts}\n/status`.
+	if (req.method === "GET" && (req.url || "").split("?")[0] === "/status") {
+		const q = new URLSearchParams((req.url || "").split("?")[1] || "");
+		const ts = req.headers["x-timestamp"] || q.get("ts");
+		const sig = req.headers["x-signature"] || q.get("sig");
+		if (!verifySignature(ts, "/status", sig)) return json(res, 401, { error: "unauthorized" });
+		try {
+			const { stdout } = await execFileP("tailscale", ["status", "--json"], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
+			res.writeHead(200, { "content-type": "application/json" });
+			return res.end(stdout);
+		} catch (e) {
+			return json(res, 500, { error: "tailscale_status_failed", detail: String(e.message || e) });
+		}
+	}
 
 	if (req.method !== "POST" || (req.url || "").split("?")[0] !== "/fetch") {
 		return json(res, 404, { error: "not_found" });
