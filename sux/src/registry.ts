@@ -77,7 +77,7 @@ export type RtEnv = Env &
 		// absent → sux emits metrics locally only. See sux/src/grafana.ts.
 		GRAFANA_LOKI_URL?: string;
 		GRAFANA_LOKI_USER?: string;
-		GRAFANA_API_TOKEN?: string;
+		GRAFANA_LOKI_TOKEN?: string;
 
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 	};

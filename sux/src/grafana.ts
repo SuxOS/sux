@@ -5,7 +5,7 @@ import type { RtEnv } from "./registry";
 // forget. This is the Worker-friendly path to observability: a single authed
 // JSON POST per call, off the response path via ctx.waitUntil, so it never adds
 // latency and never fails a request. No-op unless all three secrets are set
-// (GRAFANA_LOKI_URL + GRAFANA_LOKI_USER + GRAFANA_API_TOKEN), so it's inert until
+// (GRAFANA_LOKI_URL + GRAFANA_LOKI_USER + GRAFANA_LOKI_TOKEN), so it's inert until
 // you configure it. From the shipped lines, Grafana derives rates/latencies/error
 // ratios via LogQL (e.g. `quantile_over_time` on the unwrapped `ms`).
 //
@@ -15,7 +15,7 @@ import type { RtEnv } from "./registry";
 export function shipToLoki(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): void }, e: CallEvent): void {
 	const url = env.GRAFANA_LOKI_URL;
 	const user = env.GRAFANA_LOKI_USER;
-	const token = env.GRAFANA_API_TOKEN;
+	const token = env.GRAFANA_LOKI_TOKEN;
 	if (!url || !user || !token) return;
 
 	const line = JSON.stringify({

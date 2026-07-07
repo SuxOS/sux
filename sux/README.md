@@ -456,13 +456,13 @@ under `.github/workflows/`):
 
 Every tool call is recorded by `recordCall` (structured Workers log + folded into
 KV metrics, exposed at `/metrics` in Prometheus format). When the three
-`GRAFANA_LOKI_*`/`GRAFANA_API_TOKEN` secrets are set, `sux/src/grafana.ts` also
+`GRAFANA_LOKI_*`/`GRAFANA_LOKI_TOKEN` secrets are set, `sux/src/grafana.ts` also
 ships each call event to **Grafana Cloud Loki** as a JSON line (labels
 `service="sux"`, `tool`, `level`) — fire-and-forget via `ctx.waitUntil`, so it
 adds no request latency and is inert until configured. Derive rate/latency/error
 panels in Grafana with LogQL (e.g. `quantile_over_time` on the unwrapped `ms`).
 Set it up: `npm run secret:sux GRAFANA_LOKI_URL` (the `…/loki/api/v1/push` URL),
-`GRAFANA_LOKI_USER` (numeric instance ID), `GRAFANA_API_TOKEN` (Access Policy
+`GRAFANA_LOKI_USER` (numeric instance ID), `GRAFANA_LOKI_TOKEN` (Access Policy
 token, `logs:write`).
 
 ---
