@@ -30,11 +30,12 @@ const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS || "")
 	.map((h) => h.trim().toLowerCase())
 	.filter(Boolean);
 
-/** Verify the HMAC-SHA256 of `${ts}\n${rawBody}` (timing-safe) + freshness. */
-function verifySignature(ts, rawBody, sigHex) {
-	if (!ts || !sigHex) return false;
+/** Verify the HMAC-SHA256 of `${ts}\n${rawBody}` (timing-safe) + freshness. The
+ * `secret` seam defaults to the env SECRET (prod) and is passed explicitly in tests. */
+export function verifySignature(ts, rawBody, sigHex, secret = SECRET) {
+	if (!ts || !sigHex || !secret) return false;
 	if (Math.abs(Date.now() - Number(ts)) > CLOCK_SKEW_MS) return false; // stale/replayed
-	const expected = createHmac("sha256", SECRET).update(`${ts}\n${rawBody}`).digest();
+	const expected = createHmac("sha256", secret).update(`${ts}\n${rawBody}`).digest();
 	let given;
 	try {
 		given = Buffer.from(sigHex, "hex");
@@ -44,10 +45,12 @@ function verifySignature(ts, rawBody, sigHex) {
 	return expected.length === given.length && timingSafeEqual(expected, given);
 }
 
-function hostAllowed(host) {
-	if (ALLOWED_HOSTS.length === 0) return true;
+/** Suffix-match host allowlist; empty allowlist = allow any public host. The
+ * `allowed` seam defaults to the env ALLOWED_HOSTS (prod), overridden in tests. */
+export function hostAllowed(host, allowed = ALLOWED_HOSTS) {
+	if (allowed.length === 0) return true;
 	host = host.toLowerCase();
-	return ALLOWED_HOSTS.some((h) => host === h || host.endsWith(`.${h}`));
+	return allowed.some((h) => host === h || host.endsWith(`.${h}`));
 }
 
 // Default browser-ish headers so targets don't insta-block a botty fingerprint.
@@ -62,7 +65,7 @@ const DEFAULT_HEADERS = {
 };
 
 /** Reject loopback / private / link-local / CGNAT / metadata targets (SSRF guard). */
-function isPrivateIp(ip) {
+export function isPrivateIp(ip) {
 	if (ip.includes(":")) {
 		// IPv6: loopback, unique-local (fc00::/7), link-local (fe80::/10), v4-mapped
 		const l = ip.toLowerCase();
