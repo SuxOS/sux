@@ -74,7 +74,7 @@ export const shop: Fn = {
 
 		try {
 			const url = `https://serpapi.com/search.json?engine=${spec.engine}&${spec.param}=${encodeURIComponent(q)}&api_key=${env.SERPAPI_KEY}`;
-			const resp = await fetch(url);
+			const resp = await fetch(url, { signal: AbortSignal.timeout(20_000) });
 			if (!resp.ok) return fail(`SerpAPI ${spec.engine} HTTP ${resp.status}`);
 			const j = await resp.json();
 			return ok(fmt(spec.pick(j).slice(0, limit)));

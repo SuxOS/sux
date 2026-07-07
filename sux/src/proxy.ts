@@ -190,7 +190,7 @@ export function willProxy(env: TailscaleEnv, url: string, route: Route = "auto")
 export async function smartFetch(
 	env: TailscaleEnv,
 	url: string,
-	init: { method?: string; headers?: Headers | Record<string, string>; body?: string } = {},
+	init: { method?: string; headers?: Headers | Record<string, string>; body?: string; redirect?: "follow" | "manual" | "error" } = {},
 	route: Route = "auto",
 ): Promise<Response> {
 	// GitHub auth applies regardless of route; caller-supplied headers win.
@@ -200,7 +200,7 @@ export async function smartFetch(
 		try {
 			const callerHeaders = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
 			const headers = { ...ghAuth, ...callerHeaders };
-			const p = await fetchViaTailscale(env, url, { method: init.method, headers, body: init.body });
+			const p = await fetchViaTailscale(env, url, { method: init.method, headers, body: init.body, redirect: init.redirect });
 			if (p.bodyEncoding === "base64" || isTextualContentType(new Headers(p.headers).get("content-type"))) {
 				tallyRoute("proxied");
 				return proxiedToResponse(p);
@@ -221,7 +221,7 @@ export async function smartFetch(
 	// a flaky site or a momentary hiccup shouldn't fail the whole tool call. Each
 	// attempt gets a fresh 30s signal; the retry is an ADDITIONAL layer over the
 	// proxy→direct fallback above, not a replacement for it.
-	return withRetry(() => fetch(url, { method: init.method, headers, body: init.body, signal: AbortSignal.timeout(30_000) }));
+	return withRetry(() => fetch(url, { method: init.method, headers, body: init.body, redirect: init.redirect, signal: AbortSignal.timeout(30_000) }));
 }
 
 /**
@@ -231,7 +231,7 @@ export async function smartFetch(
 export async function fetchViaTailscale(
 	env: TailscaleEnv,
 	url: string,
-	init?: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number },
+	init?: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; redirect?: "follow" | "manual" | "error" },
 ): Promise<ProxiedResponse> {
 	if (!isTailscaleConfigured(env)) {
 		throw new Error("Tailscale proxy not configured (TAILSCALE_PROXY_URL / TAILSCALE_PROXY_SECRET).");
@@ -241,7 +241,9 @@ export async function fetchViaTailscale(
 	// acceptBodyEncoding tells an upgraded proxy it may base64-encode the
 	// response body (signaled back via bodyEncoding:"base64") so binary survives
 	// the JSON transport; legacy proxies ignore it and return plain strings.
-	const payload = JSON.stringify({ url, method: init?.method, headers: init?.headers, body: init?.body, acceptBodyEncoding: "base64" });
+	// redirect:"manual" lets a caller (redirects) trace the hop chain instead of
+	// the node silently following; the node defaults to "follow" when it's absent.
+	const payload = JSON.stringify({ url, method: init?.method, headers: init?.headers, body: init?.body, redirect: init?.redirect, acceptBodyEncoding: "base64" });
 	// HMAC-sign (timestamp + payload) so the secret never crosses the wire and
 	// requests can't be replayed outside a short window.
 	const ts = String(Date.now());

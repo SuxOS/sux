@@ -1,8 +1,9 @@
 import { type Fn, fail, ok } from "../registry";
+import { smartFetch } from "../proxy";
 
 export const redirects: Fn = {
 	name: "redirects",
-	description: "Trace a URL's redirect chain hop by hop. Returns each status + Location and the final destination. Follows up to 20 redirects.",
+	description: "Trace a URL's redirect chain hop by hop. Returns each status + Location and the final destination. Follows up to 20 redirects. Routes through the residential proxy (direct fallback) so the trace originates from a residential IP.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -10,14 +11,16 @@ export const redirects: Fn = {
 		properties: { url: { type: "string", description: "Absolute http(s) URL." } },
 	},
 	cacheable: false,
-	run: async (_env, args) => {
+	run: async (env, args) => {
 		let url = String(args?.url ?? "");
 		if (!/^https?:\/\//i.test(url)) return fail("url must be absolute http(s).");
 		const chain: Array<{ status: number; url: string; location?: string }> = [];
 		for (let i = 0; i < 20; i++) {
 			let resp: Response;
 			try {
-				resp = await fetch(url, { method: "GET", redirect: "manual" });
+				// redirect:"manual" so each hop is observed, not followed; smartFetch
+				// bounds every attempt (30s) and falls back to direct if the node is down.
+				resp = await smartFetch(env, url, { method: "GET", redirect: "manual" });
 			} catch (e) {
 				return fail(`Fetch failed at ${url}: ${String((e as Error).message ?? e)}`);
 			}

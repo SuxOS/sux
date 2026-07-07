@@ -23,7 +23,7 @@ export const wayback: Fn = {
 		if (String(args?.mode ?? "snapshot") === "history") {
 			const limit = Number(args?.limit) || 50;
 			const cdx = `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}&output=json&collapse=digest&limit=${limit}&fl=timestamp,original,statuscode,digest`;
-			const resp = await fetch(cdx);
+			const resp = await fetch(cdx, { signal: AbortSignal.timeout(20_000) });
 			if (!resp.ok) return fail(`CDX query failed: HTTP ${resp.status}`);
 			const rows = (await resp.json()) as string[][];
 			if (rows.length <= 1) return ok(`(no captures for ${url})`);
@@ -38,7 +38,7 @@ export const wayback: Fn = {
 
 		const at = String(args?.at ?? "");
 		const api = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}${at ? `&timestamp=${encodeURIComponent(at)}` : ""}`;
-		const resp = await fetch(api);
+		const resp = await fetch(api, { signal: AbortSignal.timeout(20_000) });
 		if (!resp.ok) return fail(`Availability query failed: HTTP ${resp.status}`);
 		const j = (await resp.json()) as any;
 		const snap = j?.archived_snapshots?.closest;

@@ -160,7 +160,8 @@ const server = createServer(async (req, res) => {
 			method: spec.method || "GET",
 			headers: { ...DEFAULT_HEADERS, ...(spec.headers || {}) },
 			body: spec.body,
-			redirect: "follow",
+			// "manual" lets the Worker's `redirects` fn trace the hop chain; default follow.
+			redirect: spec.redirect === "manual" ? "manual" : "follow",
 			signal: AbortSignal.timeout(TIMEOUT_MS),
 		});
 
