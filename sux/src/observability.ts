@@ -56,10 +56,12 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		const { recent, ...summary } = m;
 		const r4 = (n: number) => Math.round(n * 10000) / 10000;
 		const tools = Object.fromEntries(
-			Object.entries(m.tools).map(([name, t]) => [
-				name,
-				{ ...t, error_rate: r4(t.calls ? t.errors / t.calls : 0), hit_rate: r4(t.calls ? t.cache_hits / t.calls : 0), avg_ms: t.calls ? Math.round(t.total_ms / t.calls) : 0 },
-			]),
+			Object.entries(m.tools).map(([name, t]) => {
+				// Drop last_error from the public view: raw upstream failure text can carry
+				// echoed input / proxy error-body fragments and must not leak to anonymous callers.
+				const { last_error, ...pub } = t;
+				return [name, { ...pub, error_rate: r4(t.calls ? t.errors / t.calls : 0), hit_rate: r4(t.calls ? t.cache_hits / t.calls : 0), avg_ms: t.calls ? Math.round(t.total_ms / t.calls) : 0 }];
+			}),
 		);
 		return json({ ...summary, tools, slo: sloReport(m) });
 	}
@@ -75,7 +77,9 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 			total: m.total,
 			cache_hits: m.cache_hits,
 			errors: m.errors,
-			recent: recent.slice(0, limit).map((e) => ({ ...e, at: new Date(e.at).toISOString() })),
+			// Omit `err` (raw tool failure text) from the unauthenticated log view; the
+			// boolean `error` flag stays so callers still see which calls failed.
+			recent: recent.slice(0, limit).map(({ err, ...e }) => ({ ...e, at: new Date(e.at).toISOString() })),
 		});
 	}
 

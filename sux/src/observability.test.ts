@@ -40,9 +40,24 @@ describe("observability", () => {
 		applyEvent(m, { tool: "dns", ms: 200, error: true, err: "upstream 500" });
 		env.store.set("sux:metrics", JSON.stringify(m));
 		const body = await getJson(env, "/metrics");
-		expect(body.tools.dns).toMatchObject({ calls: 3, error_rate: 0.3333, hit_rate: 0.3333, avg_ms: 200, last_error: "upstream 500" });
+		expect(body.tools.dns).toMatchObject({ calls: 3, error_rate: 0.3333, hit_rate: 0.3333, avg_ms: 200 });
+		// last_error must NOT leak to the unauthenticated /metrics view.
+		expect(body.tools.dns.last_error).toBeUndefined();
 		expect(body.slo).toBeDefined();
 		expect(body.recent).toBeUndefined();
+	});
+
+	it("scrubs raw err text from the unauthenticated /logs view", async () => {
+		const env = fakeEnv();
+		const m = emptyMetrics(0);
+		applyEvent(m, { tool: "dns", ms: 200, error: true, err: "upstream 500: http://10.0.0.1/secret leaked" });
+		env.store.set("sux:metrics", JSON.stringify(m));
+		const body = await getJson(env, "/logs");
+		expect(body.recent).toHaveLength(1);
+		// The boolean error flag stays, but the raw failure text is omitted.
+		expect(body.recent[0].error).toBe(true);
+		expect(body.recent[0].err).toBeUndefined();
+		expect(JSON.stringify(body)).not.toContain("leaked");
 	});
 
 	it("filters /feedback by ?tool= alongside ?type=", async () => {
