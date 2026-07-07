@@ -62,6 +62,22 @@ describe("select descendant combinator self-match", () => {
 	});
 });
 
+describe("select comma inside attribute value", () => {
+	it("does not split the selector on a comma inside [attr=\"...\"]", async () => {
+		// Naive `selector.split(",")` would break this into `meta[content="a` and
+		// `b"]`, both unparseable, silently returning [] despite a real match.
+		const html = '<meta name="k" content="a,b">';
+		const r = await select.run({} as any, { html, selector: 'meta[content="a,b"]', attr: "content" });
+		expect(JSON.parse(r.content[0].text)).toEqual(["a,b"]);
+	});
+
+	it("still treats a top-level comma as a selector-list union", async () => {
+		const html = '<meta name="k" content="a,b"><p>hi</p>';
+		const r = await select.run({} as any, { html, selector: 'meta[content="a,b"], p' });
+		expect(JSON.parse(r.content[0].text)).toEqual(["", "hi"]);
+	});
+});
+
 describe("select attr regex-injection safety", () => {
 	it("treats an attr name with regex metacharacters literally", async () => {
 		// Unescaped, `\bdata.x=` (. = any char) would match data1x first → "wrong".

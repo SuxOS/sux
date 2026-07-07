@@ -87,6 +87,32 @@ function findByTag(html: string, tag: string | null): string[] {
 	return out;
 }
 
+/** Split a selector list on commas that sit outside `[...]` and quotes, so a
+ * comma inside an attribute value (e.g. `meta[content="a,b"]`) stays intact. */
+function splitSelectorList(selector: string): string[] {
+	const out: string[] = [];
+	let depth = 0;
+	let quote: string | null = null;
+	let start = 0;
+	for (let i = 0; i < selector.length; i++) {
+		const ch = selector[i];
+		if (quote) {
+			if (ch === quote) quote = null;
+		} else if (ch === '"' || ch === "'") {
+			quote = ch;
+		} else if (ch === "[") {
+			depth++;
+		} else if (ch === "]") {
+			if (depth > 0) depth--;
+		} else if (ch === "," && depth === 0) {
+			out.push(selector.slice(start, i));
+			start = i + 1;
+		}
+	}
+	out.push(selector.slice(start));
+	return out.map((g) => g.trim()).filter(Boolean);
+}
+
 /** Evaluate one comma-free selector (space-separated descendant steps). */
 function selectOne(html: string, selector: string): string[] {
 	const steps = selector.trim().split(/\s+/).map(parseSimple);
@@ -135,7 +161,7 @@ export const select: Fn = {
 		const attr = args?.attr != null ? String(args.attr) : null;
 
 		// Comma list = union of each group's matches, de-duplicated by outer HTML.
-		const groups = selector.split(",").map((g) => g.trim()).filter(Boolean);
+		const groups = splitSelectorList(selector);
 		const seen = new Set<string>();
 		const els: string[] = [];
 		for (const g of groups) {
