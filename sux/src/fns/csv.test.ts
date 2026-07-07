@@ -37,6 +37,12 @@ describe("csv (JSON array -> CSV)", () => {
 	it("leaves genuine numeric (non-string) values untouched", async () => {
 		expect(await crun({ data: '[{"n":-5}]' })).toBe("n\n-5");
 	});
+
+	it("rejects scalar or mixed arrays instead of emitting blank rows", async () => {
+		expect((await csv.run({} as any, { data: '["a","b"]' })).isError).toBe(true);
+		expect((await csv.run({} as any, { data: '[{"a":1},"stray"]' })).isError).toBe(true);
+		expect((await csv.run({} as any, { data: "[1,2,3]" })).isError).toBe(true);
+	});
 });
 
 describe("json from csv (dispatch + round-trip)", () => {
