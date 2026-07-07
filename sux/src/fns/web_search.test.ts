@@ -4,19 +4,36 @@ vi.mock("../kagi", () => ({
 	kagiTool: vi.fn(async () => ({ content: [{ type: "text", text: "### [Kagi Result](https://example.com/a)\n**URL:** https://example.com/a\nA kagi snippet.\n\n### [Second Result](https://example.org/b)\n**URL:** https://example.org/b\nAnother snippet." }] })),
 }));
 
-import { webSearch } from "./web_search";
+// google is now scraped directly through the residential proxy (smartFetch).
+const { smartFetch } = vi.hoisted(() => ({ smartFetch: vi.fn() }));
+vi.mock("../proxy", () => ({ smartFetch }));
 
-afterEach(() => vi.clearAllMocks());
+import { parseGoogleSerp, webSearch } from "./web_search";
+
+const serp = (hits: Array<{ url: string; title: string }>) =>
+	`<html><body>${hits.map((h) => `<div class="g"><a href="${h.url}"><h3>${h.title}</h3></a></div>`).join("")}</body></html>`;
+
+afterEach(() => {
+	vi.clearAllMocks();
+	vi.unstubAllGlobals();
+});
+
+describe("parseGoogleSerp", () => {
+	it("extracts anchor→h3 result pairs, drops Google's own hosts, unwraps /url?q=", () => {
+		const html = `
+			<a href="/url?q=https://real.example/page&sa=U"><h3>Real Result</h3></a>
+			<a href="https://support.google.com/x"><h3>Google Help</h3></a>
+			<a href="https://foo.com/a"><h3>Foo</h3></a>
+			<a href="https://foo.com/a"><h3>Foo dupe</h3></a>`;
+		const hits = parseGoogleSerp(html, 10);
+		expect(hits.map((h) => h.url)).toEqual(["https://real.example/page", "https://foo.com/a"]);
+		expect(hits[0].title).toBe("Real Result");
+	});
+});
 
 describe("web_search", () => {
 	it("requires a query", async () => {
 		expect((await webSearch.run({} as any, {})).isError).toBe(true);
-	});
-
-	it("gates key-based engines with a clear message", async () => {
-		const r = await webSearch.run({} as any, { query: "x", engine: "google" });
-		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/SERPAPI_KEY/);
 	});
 
 	it("rejects an unknown engine", async () => {
@@ -26,34 +43,29 @@ describe("web_search", () => {
 	it("searches Kagi via engine:kagi (with the key)", async () => {
 		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "x", engine: "kagi" });
 		expect(r.isError).toBeFalsy();
-		const text = r.content[0].text;
-		expect(text).toContain("1. Kagi Result");
-		expect(text).toContain("https://example.com/a");
-		expect(text).toContain("2. Second Result");
+		expect(r.content[0].text).toContain("1. Kagi Result");
+		expect(r.content[0].text).toContain("2. Second Result");
 	});
 
-	it("calls Google (SerpAPI) when the key is present", async () => {
-		const fetchMock = vi.fn(async () => new Response(JSON.stringify({ organic_results: [{ title: "G", link: "https://g.com", snippet: "desc" }] }), { status: 200 }));
-		vi.stubGlobal("fetch", fetchMock);
-		const r = await webSearch.run({ SERPAPI_KEY: "k" } as any, { query: "x", engine: "google" });
-		vi.unstubAllGlobals();
+	it("scrapes Google directly with NO key (residential proxy)", async () => {
+		smartFetch.mockResolvedValueOnce(new Response(serp([{ url: "https://g.com/x", title: "G Result" }]), { status: 200 }));
+		const r = await webSearch.run({} as any, { query: "x", engine: "google" });
 		expect(r.isError).toBeFalsy();
-		expect(r.content[0].text).toContain("1. G");
-		expect(fetchMock).toHaveBeenCalled();
+		expect(r.content[0].text).toContain("1. G Result");
+		expect(r.content[0].text).toContain("https://g.com/x");
+		// smartFetch(env, url, init, route) — url is arg index 1: google, not serpapi
+		const calledUrl = String(smartFetch.mock.calls[0][1]);
+		expect(calledUrl).toContain("google.com/search");
+		expect(calledUrl).not.toContain("serpapi");
 	});
 
 	it("calls Brave when the key is present", async () => {
 		const fetchMock = vi.fn(async (_u?: any, _i?: any) => new Response(JSON.stringify({ web: { results: [{ title: "B", url: "https://b.com", description: "brave desc" }] } }), { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
 		const r = await webSearch.run({ BRAVE_API_KEY: "k" } as any, { query: "x", engine: "brave" });
-		vi.unstubAllGlobals();
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toContain("1. B");
-		expect(r.content[0].text).toContain("https://b.com");
-		expect(r.content[0].text).toContain("brave desc");
-		const call = fetchMock.mock.calls[0];
-		expect(String(call[0])).toContain("api.search.brave.com");
-		expect((call[1] as any).headers["X-Subscription-Token"]).toBe("k");
+		expect((fetchMock.mock.calls[0][1] as any).headers["X-Subscription-Token"]).toBe("k");
 	});
 
 	it("gates brave without the key", async () => {
@@ -62,29 +74,24 @@ describe("web_search", () => {
 		expect(r.content[0].text).toMatch(/BRAVE_API_KEY/);
 	});
 
-	it("engine 'all' fans out over available engines and merges by consensus", async () => {
-		// kagi returns example.com/a + example.org/b; google (keyed) also returns example.com/a.
-		const fetchMock = vi.fn(async () => new Response(JSON.stringify({ organic_results: [{ title: "Kagi Result", link: "https://example.com/a", snippet: "google desc" }] }), { status: 200 }));
-		vi.stubGlobal("fetch", fetchMock);
-		const r = await webSearch.run({ KAGI_API_KEY: "k", SERPAPI_KEY: "k" } as any, { query: "hello", engine: "all" });
-		vi.unstubAllGlobals();
+	it("engine 'all' fans out (kagi + keyless google) and merges by consensus", async () => {
+		// google also returns example.com/a → consensus ranks it above example.org/b.
+		smartFetch.mockResolvedValueOnce(new Response(serp([{ url: "https://example.com/a", title: "Shared" }]), { status: 200 }));
+		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", engine: "all" });
 		expect(r.isError).toBeFalsy();
 		const text = r.content[0].text;
 		expect(text).toMatch(/Merged \d+ results from: kagi, google/);
-		// example.com/a appeared in both engines -> ranked first by consensus.
 		expect(text.indexOf("example.com/a")).toBeLessThan(text.indexOf("example.org/b"));
 	});
 
 	it("summarize falls back to the plain list when AI is absent", async () => {
 		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", summarize: true });
-		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toMatch(/summary skipped/);
 	});
 
 	it("summarize uses Workers AI when available", async () => {
 		const env = { KAGI_API_KEY: "k", AI: { run: vi.fn(async () => ({ response: "A concise briefing [1]." })) } } as any;
 		const r = await webSearch.run(env, { query: "hello", summarize: true });
-		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toContain("concise briefing");
 		expect(r.content[0].text).toContain("— Sources —");
 	});

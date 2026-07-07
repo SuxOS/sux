@@ -35,7 +35,6 @@ export type RtEnv = Env &
 
 		BRAVE_API_KEY?: string;
 		BING_API_KEY?: string;
-		SERPAPI_KEY?: string;
 
 		// Facebook Graph API access token (facebook fn). (linkedin fn now scrapes via
 		// the render mac backend — Proxycurl shut down July 2025 — so it needs no key.)

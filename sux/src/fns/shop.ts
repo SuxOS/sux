@@ -1,86 +1,89 @@
 import { type Fn, fail, ok } from "../registry";
+import { smartFetch } from "../proxy";
+import { stripHtml } from "./_util";
 
-type ShopHit = { title: string; price?: string; source?: string; url?: string; rating?: string };
+type ShopHit = { title: string; price?: string; source?: string; url?: string };
 
-// SerpAPI-backed stores: engine + the query-parameter name + how to read results.
-const SERP: Record<string, { engine: string; param: string; pick: (j: any) => ShopHit[] }> = {
-	gshop: {
-		engine: "google_shopping",
-		param: "q",
-		pick: (j) => (j?.shopping_results ?? []).map((r: any) => ({ title: r.title, price: r.price, source: r.source, url: r.link, rating: r.rating ? `${r.rating}★ (${r.reviews ?? 0})` : undefined })),
-	},
-	amazon: {
-		engine: "amazon",
-		param: "k",
-		pick: (j) => (j?.organic_results ?? []).map((r: any) => ({ title: r.title, price: r.price ?? r.price_upper, url: r.link, rating: r.rating ? `${r.rating}★ (${r.reviews ?? 0})` : undefined })),
-	},
-	walmart: {
-		engine: "walmart",
-		param: "query",
-		pick: (j) => (j?.organic_results ?? []).map((r: any) => ({ title: r.title, price: r.primary_offer?.offer_price ? `$${r.primary_offer.offer_price}` : undefined, url: r.product_page_url ?? r.link, rating: r.rating ? `${r.rating}★` : undefined })),
-	},
-	home_depot: {
-		engine: "home_depot",
-		param: "q",
-		pick: (j) => (j?.products ?? []).map((r: any) => ({ title: r.title, price: r.price ? `$${r.price}` : undefined, url: r.link, rating: r.rating ? `${r.rating}★` : undefined })),
-	},
+// Retailers with a dedicated, robust sux fn — point there instead of scraping.
+const DEDICATED: Record<string, string> = {
+	walmart: "walmart",
+	home_depot: "homedepot",
+	homedepot: "homedepot",
+	bestbuy: "bestbuy",
+	best_buy: "bestbuy",
+	ebay: "ebay",
+	costco: "costco",
+	kroger: "kroger",
+	fred_meyer: "kroger",
 };
 
-// Stores with no wired provider yet (SerpAPI doesn't cover them / no public API).
-// Kept in the enum so the signature is stable; they report how to enable.
-const UNWIRED: Record<string, string> = {
-	costco: "Costco has no public product API and isn't on SerpAPI. Provide a scraper key or a third-party catalog API to enable.",
-	kroger: "Kroger has an official Products API (needs OAuth client credentials). Wire KROGER_* secrets to enable.",
-	fred_meyer: "Fred Meyer is a Kroger banner — same Kroger Products API path; wire KROGER_* secrets.",
-	cvs: "CVS has no public product-search API. Provide a scraper/third-party key to enable.",
-	lowes: "Lowe's isn't on SerpAPI and has no public API. Provide a scraper/third-party key to enable.",
-	safeway: "Safeway (Albertsons) has no public API. Provide a scraper/third-party key to enable.",
-	camelcamelcamel: "camelcamelcamel has no public API. For Amazon price history, provide a Keepa or Amazon PA-API key.",
-};
+const priceRe = /\$[\d,]+(?:\.\d{2})?/;
+const unwrap = (href: string): string | null => (href.startsWith("/url?") ? new URLSearchParams(href.slice(href.indexOf("?") + 1)).get("q") : /^https?:\/\//.test(href) ? href : null);
+
+/** Best-effort parse of a Google Shopping (tbm=shop) HTML page: product anchors
+ * with a nearby price. Google's markup churns, so this is heuristic — title +
+ * price + merchant host + link. Dedupes by title. */
+export function parseGoogleShopping(html: string, limit: number): ShopHit[] {
+	const hits: ShopHit[] = [];
+	const seen = new Set<string>();
+	const re = /<a [^>]*href="([^"]+)"[^>]*>([\s\S]{0,300}?)<\/a>([\s\S]{0,300}?)(\$[\d,]+(?:\.\d{2})?)/gi;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(html)) && hits.length < limit) {
+		const url = unwrap(m[1]);
+		if (!url) continue;
+		let host = "";
+		try {
+			host = new URL(url).hostname.replace(/^www\./, "");
+		} catch {
+			continue;
+		}
+		if (/google\.[a-z.]+$|gstatic\.com$/i.test(host)) continue;
+		const title = stripHtml(m[2]).trim();
+		if (title.length < 3) continue;
+		const key = title.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		hits.push({ title, price: m[4].match(priceRe)?.[0], source: host, url });
+	}
+	return hits;
+}
 
 const fmt = (hits: ShopHit[]): string =>
-	hits.length
-		? hits.map((h, i) => `${i + 1}. ${h.title}${h.price ? ` — ${h.price}` : ""}${h.rating ? ` — ${h.rating}` : ""}${h.source ? ` [${h.source}]` : ""}${h.url ? `\n   ${h.url}` : ""}`).join("\n\n")
-		: "(no results)";
+	hits.length ? hits.map((h, i) => `${i + 1}. ${h.title}${h.price ? ` — ${h.price}` : ""}${h.source ? ` [${h.source}]` : ""}${h.url ? `\n   ${h.url}` : ""}`).join("\n\n") : "(no results)";
 
 export const shop: Fn = {
 	name: "shop",
 	cost: 3,
 	description:
-		"Product search across retailers. `store`: gshop (Google Shopping), amazon, walmart, home_depot — all via SerpAPI (needs SERPAPI_KEY); " +
-		"and costco, kroger, fred_meyer, cvs, lowes, safeway, camelcamelcamel — recognized but not yet wired (each reports how to enable, e.g. with a private/native API key). " +
-		"Returns numbered products with price, rating, and link.",
+		"Product search via Google Shopping, scraped DIRECTLY through the residential proxy (no API key — the old SerpAPI path is gone). `query` is the product; returns numbered products with price, merchant, and link. For a specific big retailer, prefer its dedicated fn — walmart, homedepot, bestbuy, ebay, costco, kroger — which returns structured data; passing store:'walmart' etc. here just points you at that fn. Google Shopping markup churns, so results are best-effort.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["query"],
 		properties: {
 			query: { type: "string", description: "Product query." },
-			store: { type: "string", enum: ["gshop", "amazon", "walmart", "home_depot", "costco", "kroger", "fred_meyer", "cvs", "lowes", "safeway", "camelcamelcamel"], default: "gshop" },
+			store: { type: "string", description: "Optional: a retailer name to be redirected to its dedicated fn; default is Google Shopping across all merchants." },
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 		},
 	},
 	cacheable: true,
-	ttl: 300, // product prices/availability are live external state — keep fresh
+	ttl: 300, // prices/availability are live external state — keep fresh
 	run: async (env, args) => {
 		const q = String(args?.query ?? "").trim();
 		if (!q) return fail("query is required.");
-		const store = String(args?.store ?? "gshop");
+		const store = String(args?.store ?? "").trim().toLowerCase();
+		if (store && DEDICATED[store]) return fail(`For ${store}, use the dedicated \`${DEDICATED[store]}\` fn (structured, robust). \`shop\` (no store) searches Google Shopping across all merchants.`);
 		const limit = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 
-		if (UNWIRED[store]) return fail(`Store '${store}' isn't wired yet. ${UNWIRED[store]}`);
-		const spec = SERP[store];
-		if (!spec) return fail(`Unknown store '${store}'.`);
-		if (!env.SERPAPI_KEY) return fail(`Store '${store}' needs the SERPAPI_KEY secret (SerpAPI ${spec.engine} engine), which isn't configured.`);
-
 		try {
-			const url = `https://serpapi.com/search.json?engine=${spec.engine}&${spec.param}=${encodeURIComponent(q)}&api_key=${env.SERPAPI_KEY}`;
-			const resp = await fetch(url, { signal: AbortSignal.timeout(20_000) });
-			if (!resp.ok) return fail(`SerpAPI ${spec.engine} HTTP ${resp.status}`);
-			const j = await resp.json();
-			return ok(fmt(spec.pick(j).slice(0, limit)));
+			const url = `https://www.google.com/search?tbm=shop&q=${encodeURIComponent(q)}&hl=en&num=${Math.min(40, limit + 10)}`;
+			const resp = await smartFetch(env, url, { headers: { "Accept-Language": "en-US,en;q=0.9" } });
+			if (resp.status >= 400) return fail(`Google Shopping HTTP ${resp.status}`);
+			const hits = parseGoogleShopping(await resp.text(), limit);
+			if (!hits.length) return ok(`(no products parsed for "${q}" — Google Shopping markup may have changed; try a dedicated retailer fn)`);
+			return ok(fmt(hits));
 		} catch (e) {
-			return fail(`shop (${store}) failed: ${String((e as Error).message ?? e)}`);
+			return fail(`shop failed: ${String((e as Error).message ?? e)}`);
 		}
 	},
 };

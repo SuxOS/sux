@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { hasAI, llm } from "../ai";
 import { kagiTool } from "../kagi";
-import type { Route } from "../proxy";
+import { type Route, smartFetch } from "../proxy";
 import { stripHtml } from "./_util";
 
 export type Hit = { title: string; url: string; snippet?: string };
@@ -9,11 +9,53 @@ export type Hit = { title: string; url: string; snippet?: string };
 const fmt = (hits: Hit[]): string =>
 	hits.length ? hits.map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}${h.snippet ? `\n   ${h.snippet}` : ""}`).join("\n\n") : "(no results)";
 
-async function serpapiGoogle(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
-	const resp = await fetch(`https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(q)}&num=${limit}&api_key=${env.SERPAPI_KEY}`);
-	if (!resp.ok) throw new Error(`SerpAPI HTTP ${resp.status}`);
-	const j = (await resp.json()) as any;
-	return (j?.organic_results ?? []).slice(0, limit).map((r: any) => ({ title: r.title, url: r.link, snippet: r.snippet }));
+/** Real destination from a Google result anchor (direct link or /url?q= redirect). */
+function unwrapGoogleUrl(href: string): string | null {
+	if (href.startsWith("/url?") || href.startsWith("/url&")) {
+		try {
+			return new URLSearchParams(href.slice(href.indexOf("?") + 1)).get("q");
+		} catch {
+			return null;
+		}
+	}
+	return /^https?:\/\//.test(href) ? href : null;
+}
+
+/** Parse a Google SERP HTML page into result hits (anchor wrapping an <h3>),
+ * dropping Google's own hosts. Tolerant to markup churn — title + url only. */
+export function parseGoogleSerp(html: string, limit: number): Hit[] {
+	const hits: Hit[] = [];
+	const seen = new Set<string>();
+	const re = /<a [^>]*href="([^"]+)"[^>]*>(?:(?!<\/a>)[\s\S]){0,400}?<h3[^>]*>([\s\S]*?)<\/h3>/gi;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(html)) && hits.length < limit) {
+		const url = unwrapGoogleUrl(m[1]);
+		if (!url) continue;
+		let host = "";
+		try {
+			host = new URL(url).hostname;
+		} catch {
+			continue;
+		}
+		if (!host || /(^|\.)(google\.[a-z.]+|gstatic\.com|googleusercontent\.com|youtube\.com\/redirect)$/i.test(host)) continue;
+		const title = stripHtml(m[2]).trim();
+		if (!title) continue;
+		const key = normUrl(url);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		hits.push({ title, url });
+	}
+	return hits;
+}
+
+// Google, DIRECT — scrape the SERP through the residential proxy. A residential
+// IP defeats the datacenter-IP SERP block, so this needs no API key (the old
+// SerpAPI path is gone). google.com isn't a direct-host, so `auto` proxies it.
+async function googleDirect(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
+	const url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${Math.min(20, limit + 5)}&hl=en`;
+	const resp = await smartFetch(env, url, { headers: { "Accept-Language": "en-US,en;q=0.9" } }, route === "direct" ? "auto" : route);
+	if (resp.status >= 400) throw new Error(`Google HTTP ${resp.status}`);
+	return parseGoogleSerp(await resp.text(), limit);
 }
 
 async function brave(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
@@ -42,7 +84,7 @@ async function kagi(env: any, q: string, limit: number, route: Route): Promise<H
 
 const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number, route: Route) => Promise<Hit[]> }> = {
 	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi },
-	google: { envKey: "SERPAPI_KEY", envName: "SERPAPI_KEY (SerpAPI, engine=google)", run: serpapiGoogle },
+	google: { run: googleDirect }, // no key — scraped directly via the residential proxy
 	brave: { envKey: "BRAVE_API_KEY", envName: "BRAVE_API_KEY", run: brave },
 };
 
@@ -86,8 +128,8 @@ export const webSearch: Fn = {
 	name: "web_search",
 	cost: 3,
 	description:
-		"Web search over Kagi, native Google (SerpAPI), and Brave. `engine`: kagi (default), google, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"Engines are key-gated (kagi → KAGI_API_KEY, google → SERPAPI_KEY, brave → BRAVE_API_KEY) and used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Set proxy: true to route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down); Google/SerpAPI/Brave always egress direct. Returns numbered results (title, url, snippet) — cite by number.",
+		"Web search over Kagi, native Google, and Brave. `engine`: kagi (default), google, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
+		"google is scraped DIRECTLY through the residential proxy (a residential IP defeats the SERP block) — no key needed. kagi and brave are key-gated (KAGI_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Set proxy: true to route the Kagi query through the residential proxy too (google always egresses residentially). Returns numbered results (title, url, snippet) — cite by number.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -114,7 +156,7 @@ export const webSearch: Fn = {
 		let engines: string[];
 		if (engine === "all") {
 			engines = available(env);
-			if (!engines.length) return fail("No search engine is configured. Set KAGI_API_KEY, SERPAPI_KEY, and/or BRAVE_API_KEY.");
+			if (!engines.length) return fail("No search engine is configured. Set KAGI_API_KEY and/or BRAVE_API_KEY (google needs no key).");
 		} else {
 			const spec = ENGINES[engine];
 			if (!spec) return fail(`Unknown engine '${engine}'. Options: ${Object.keys(ENGINES).join(", ")}, all.`);
