@@ -23,6 +23,20 @@ describe("parseYaml (zero-indent sequences under a mapping key)", () => {
 	});
 });
 
+describe("parseYaml (leading-zero and oversized integers stay strings)", () => {
+	it("keeps a leading-zero token like a zip code as a string", () => {
+		expect(parseYaml("zip: 01234")).toEqual({ zip: "01234" });
+	});
+
+	it("still coerces plain integers, zero, and negatives", () => {
+		expect(parseYaml("a: 1234\nb: 0\nc: -42")).toEqual({ a: 1234, b: 0, c: -42 });
+	});
+
+	it("leaves integers beyond safe-integer range as strings to avoid precision loss", () => {
+		expect(parseYaml("id: 123456789012345678901")).toEqual({ id: "123456789012345678901" });
+	});
+});
+
 describe("toYaml (multiline strings)", () => {
 	it("quotes strings containing newlines so the output stays valid YAML", () => {
 		const y = toYaml({ note: "line1\nline2" });

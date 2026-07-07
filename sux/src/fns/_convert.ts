@@ -79,7 +79,13 @@ function parseScalar(raw: string): unknown {
 	if (s === "" || s === "~" || s === "null") return null;
 	if (s === "true") return true;
 	if (s === "false") return false;
-	if (/^-?\d+$/.test(s)) return parseInt(s, 10);
+	// Only coerce integers with no leading zeros (YAML 1.2 treats "01234" as a
+	// string, so zip codes / phone fragments keep their zeros) and that survive
+	// the round-trip through Number without losing precision.
+	if (/^-?(0|[1-9]\d*)$/.test(s)) {
+		const n = parseInt(s, 10);
+		if (Number.isSafeInteger(n)) return n;
+	}
 	if (/^-?\d*\.\d+$/.test(s)) return parseFloat(s);
 	if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
 		if (s[0] === '"') {
