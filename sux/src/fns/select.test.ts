@@ -41,3 +41,12 @@ describe("select", () => {
 		expect(bad.isError).toBe(true);
 	});
 });
+
+describe("select attr regex-injection safety", () => {
+	it("treats an attr name with regex metacharacters literally", async () => {
+		// Unescaped, `\bdata.x=` (. = any char) would match data1x first → "wrong".
+		const html = '<input data1x="wrong" data.x="right">';
+		const r = await select.run({} as any, { html, selector: "input", attr: "data.x" });
+		expect(JSON.parse(r.content[0].text)).toEqual(["right"]);
+	});
+});

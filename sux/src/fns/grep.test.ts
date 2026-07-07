@@ -47,3 +47,22 @@ describe("grep", () => {
 		expect(r.content[0].text).toMatch(/HTTP 429/);
 	});
 });
+
+describe("grep ReDoS guards", () => {
+	it("rejects nested-quantifier patterns (catastrophic backtracking)", async () => {
+		for (const p of ["(a+)+", "(a*)*", "(.*)+$"]) {
+			const r = await grep.run({} as any, { text: "aaaa", pattern: p });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/nested quantifiers/);
+		}
+	});
+	it("rejects an over-long pattern", async () => {
+		const r = await grep.run({} as any, { text: "x", pattern: "a".repeat(1001) });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/too long/);
+	});
+	it("still allows a normal group pattern", async () => {
+		const r = await grep.run({} as any, { text: "abcabc\nxyz", pattern: "(abc)+" });
+		expect(r.isError).toBeFalsy();
+	});
+});

@@ -40,3 +40,12 @@ describe("sitemap", () => {
 		expect(r.isError).toBe(true);
 	});
 });
+
+describe("sitemap error handling", () => {
+	it("returns an error (not an empty urlset) on a 4xx, so it isn't cached", async () => {
+		smartFetch.mockResolvedValueOnce(new Response("Not Found", { status: 404 }));
+		const r = await sitemap.run({} as any, { url: "https://ex.com/sitemap.xml" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/HTTP 404/);
+	});
+});

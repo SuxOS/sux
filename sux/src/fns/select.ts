@@ -1,6 +1,10 @@
 import { type Fn, fail, ok } from "../registry";
 import { loadHtml } from "./_util";
 
+/** Escape regex metacharacters so a user-supplied attribute name can't inject
+ * regex syntax (or throw) when interpolated into an attribute-matching pattern. */
+const escapeRegex = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 type Simple = {
 	tag: string | null;
 	id: string | null;
@@ -33,7 +37,7 @@ function elementMatches(el: string, s: Simple): boolean {
 		if (!s.classes.every((c) => have.has(c))) return false;
 	}
 	if (s.attr) {
-		const av = attrs.match(new RegExp(`\\b${s.attr}=["']([^"']*)["']`, "i"));
+		const av = attrs.match(new RegExp(`\\b${escapeRegex(s.attr)}=["']([^"']*)["']`, "i"));
 		if (!av) return false;
 		if (s.attrVal !== null && av[1] !== s.attrVal) return false;
 	}
@@ -140,7 +144,7 @@ export const select: Fn = {
 		for (const el of els) {
 			if (attr) {
 				const open = el.match(/^<[a-z0-9]+\b([^>]*)>/i);
-				const v = open?.[1].match(new RegExp(`\\b${attr}=["']([^"']*)["']`, "i"))?.[1];
+				const v = open?.[1].match(new RegExp(`\\b${escapeRegex(attr)}=["']([^"']*)["']`, "i"))?.[1];
 				if (v != null) out.push(v);
 			} else {
 				out.push(el.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim());

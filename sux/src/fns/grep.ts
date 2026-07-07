@@ -22,6 +22,15 @@ export const grep: Fn = {
 	run: async (env, args) => {
 		const pattern = String(args?.pattern ?? "");
 		if (!pattern) return fail("Provide a regex `pattern`.");
+		// ReDoS guardrails: cap the pattern size and reject the classic
+		// catastrophic-backtracking shape — a quantified group whose body itself
+		// contains a quantifier ((a+)+, (a*)*, (.*)+ …). Heuristic, not exhaustive;
+		// grep is OAuth-gated so this bounds self-inflicted stalls, and a rejected
+		// pattern can be rewritten without nested quantifiers.
+		if (pattern.length > 1000) return fail("Pattern too long (max 1000 chars).");
+		if (/\([^)]*[+*][^)]*\)\s*[+*]|\([^)]*[+*][^)]*\)\{/.test(pattern)) {
+			return fail("Pattern rejected: nested quantifiers ((x+)+, (x*)*, (.*)+ …) risk catastrophic backtracking. Rewrite without a quantifier applied to a group that already contains one.");
+		}
 
 		let re: RegExp;
 		try {
