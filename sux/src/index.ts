@@ -140,11 +140,13 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		const callEvent = { tool: name, ms: Date.now() - started, error: Boolean(result.isError), err };
 		recordCall(env, ctx, callEvent);
 		shipToLoki(env, ctx, callEvent);
-		// noCache/isError results are returned but never cached; the noCache flag is
-		// stripped and the KV write happens off the response path via ctx.waitUntil.
-		// fn.ttl (when set) overrides the global cache lifetime for this fn.
-		deferCacheWrite(env.OAUTH_KV, ctx, key, result, fn.ttl);
-		return sseResponse({ jsonrpc: "2.0", id, result });
+		// noCache/isError results are returned but never cached; deferCacheWrite
+		// hands back a cleaned clone (noCache stripped) without mutating the shared
+		// run result, so coalesced callers can't poison each other's cache decision.
+		// The KV write happens off the response path via ctx.waitUntil, and fn.ttl
+		// (when set) overrides the global cache lifetime for this fn.
+		const cleaned = deferCacheWrite(env.OAUTH_KV, ctx, key, result, fn.ttl);
+		return sseResponse({ jsonrpc: "2.0", id, result: cleaned });
 	}
 	return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } });
 }

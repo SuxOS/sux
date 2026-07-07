@@ -71,24 +71,35 @@ export async function cacheKey(toolName: string, args: unknown): Promise<string>
 // - error and noCache results (e.g. upstream 4xx/5xx bodies) are returned to the
 //   caller but never cached — caching those poisons repeat calls for an hour;
 // - the internal noCache flag is always stripped so it never leaks into the MCP
-//   response (and never into the stored value, since the delete precedes the put);
+//   response (and never into the stored value); the caller returns the cleaned
+//   result this fn hands back rather than the raw one it passed in;
 // - the write itself happens off the response path via ctx.waitUntil (same
 //   pattern as recordCall — a KV put costs tens of ms and the caller shouldn't
 //   wait for it), and a failed put is swallowed: caching is best-effort.
 // The optional ttl lets a fn override the global lifetime (registry Fn.ttl);
 // an unset/invalid ttl falls back to CACHE_TTL_SECONDS, so callers that don't
 // pass one keep the existing behavior.
+//
+// Cacheability is decided from — and noCache stripped into — a fresh object, so
+// the input `result` is never mutated. Under single-flight coalescing, one run
+// result is shared by every coalesced caller and each caller runs this write
+// path once; mutating that shared object (the old `delete result.noCache`) let
+// the first caller's strip flip a later caller's noCache check to cacheable and
+// poison an upstream 4xx/5xx body into the cache as a success. Cloning keeps the
+// decision identical for all callers and the flag out of both value and response.
 export function deferCacheWrite(
 	kv: { put: (key: string, value: string | ArrayBufferView | ArrayBuffer, opts: { expirationTtl: number }) => Promise<unknown> },
 	ctx: { waitUntil: (promise: Promise<unknown>) => void },
 	key: string | null,
 	result: { isError?: boolean; noCache?: boolean; [k: string]: unknown },
 	ttl?: number,
-): void {
+): { isError?: boolean; [k: string]: unknown } {
 	const cacheable = key && !result.isError && !result.noCache;
-	delete result.noCache;
+	const { noCache, ...clean } = result;
+	void noCache;
 	const expirationTtl = typeof ttl === "number" && ttl > 0 ? ttl : CACHE_TTL_SECONDS;
 	// packForCache transparently compresses large JSON payloads (zstd→brotli) and
 	// returns the plain string for small ones; index.ts reverses it on read.
-	if (cacheable) ctx.waitUntil(kv.put(key, packForCache(JSON.stringify(result)), { expirationTtl }).catch(() => {}));
+	if (cacheable) ctx.waitUntil(kv.put(key, packForCache(JSON.stringify(clean)), { expirationTtl }).catch(() => {}));
+	return clean;
 }

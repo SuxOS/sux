@@ -106,10 +106,11 @@ describe("deferCacheWrite", () => {
 		const { kv } = makeKv();
 		const result = { content: [{ type: "text", text: "upstream 503 body" }], noCache: true };
 
-		deferCacheWrite(kv, ctx, "cache:k1", result);
+		const cleaned = deferCacheWrite(kv, ctx, "cache:k1", result);
 
 		expect(deferred).toHaveLength(0);
-		expect("noCache" in result).toBe(false); // internal flag must not leak into the MCP response
+		expect("noCache" in cleaned).toBe(false); // internal flag must not leak into the MCP response
+		expect("noCache" in result).toBe(true); // and the shared run result is left untouched
 	});
 
 	it("strips a falsy noCache flag before the value is stored", async () => {
@@ -117,11 +118,31 @@ describe("deferCacheWrite", () => {
 		const { kv, store } = makeKv();
 		const result = { content: [{ type: "text", text: "ok" }], noCache: false };
 
-		deferCacheWrite(kv, ctx, "cache:k1", result);
+		const cleaned = deferCacheWrite(kv, ctx, "cache:k1", result);
 
-		expect("noCache" in result).toBe(false);
+		expect("noCache" in cleaned).toBe(false);
 		await Promise.all(deferred);
 		expect(store.get("cache:k1")!.value).not.toContain("noCache");
+	});
+
+	it("coalesced callers sharing one noCache result never poison the cache", async () => {
+		// Single-flight hands the SAME run result to every coalesced caller, and each
+		// caller runs the write path once. A noCache upstream-error body must stay
+		// uncached no matter how many callers process it — the first caller's strip
+		// must not flip a later caller's decision to cacheable (the delete-based
+		// version cached the error body as a 2nd-caller success under the normal key).
+		const { ctx, deferred } = makeCtx();
+		const { kv, store } = makeKv();
+		const shared = { content: [{ type: "text", text: "upstream 404 body" }], noCache: true };
+
+		const a = deferCacheWrite(kv, ctx, "cache:k1", shared);
+		const b = deferCacheWrite(kv, ctx, "cache:k1", shared); // 2nd+ coalesced caller
+
+		expect(deferred).toHaveLength(0); // neither caller scheduled a write
+		await Promise.all(deferred);
+		expect(store.size).toBe(0); // the error body was never cached
+		expect("noCache" in a).toBe(false); // stripped from each caller's response
+		expect("noCache" in b).toBe(false);
 	});
 
 	it("writes nothing for non-cacheable fns (null key)", () => {
