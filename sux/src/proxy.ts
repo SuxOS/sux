@@ -146,6 +146,11 @@ export function isBlockedTarget(url: string): boolean {
 	}
 	// URL keeps IPv6 literals bracketed ([::1]); strip for the IP check.
 	if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+	// A trailing dot is the root-anchored FQDN form: "localhost." resolves to
+	// loopback exactly as "localhost" does, yet slips past both the exact-match
+	// and ".localhost" suffix checks below. Strip trailing dot(s) so the
+	// fully-qualified form can't smuggle a loopback/localhost name past the guard.
+	host = host.replace(/\.+$/, "");
 	if (host === "localhost" || host.endsWith(".localhost")) return true;
 	return isPrivateIp(host);
 }

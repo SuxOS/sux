@@ -62,6 +62,19 @@ describe("SSRF guard", () => {
 		expect(isBlockedTarget("not a url")).toBe(true);
 	});
 
+	it("blocks the root-anchored FQDN form of localhost (trailing dot resolves to loopback)", () => {
+		// `new URL` keeps the trailing dot in the hostname ("localhost."), which
+		// resolves to loopback but slips past a naive === "localhost" / .endsWith
+		// (".localhost") check — the guard must normalize the trailing dot away.
+		expect(new URL("http://localhost./").hostname).toBe("localhost.");
+		expect(isBlockedTarget("http://localhost./")).toBe(true);
+		expect(isBlockedTarget("http://LOCALHOST./")).toBe(true);
+		expect(isBlockedTarget("http://api.localhost./")).toBe(true); // .localhost subdomain, FQDN form
+		expect(isBlockedTarget("http://localhost../")).toBe(true); // multiple trailing dots too
+		// A public host with a trailing dot is still allowed (no over-block).
+		expect(isBlockedTarget("http://example.com./")).toBe(false);
+	});
+
 	it("allows ordinary public hosts (incl. public IP literals and 172.x outside 16-31)", () => {
 		expect(isBlockedTarget("https://example.com/")).toBe(false);
 		expect(isBlockedTarget("https://www.homedepot.com/p/1")).toBe(false);
