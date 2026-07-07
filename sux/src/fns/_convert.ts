@@ -37,6 +37,13 @@ function yamlScalar(v: unknown): string {
 	return needsQuote(s) ? JSON.stringify(s) : s;
 }
 
+// A map key gets the same quoting as a scalar value: an unquoted key containing
+// `:`, `#`, a leading `-`, or the empty string re-parses as a different key (or,
+// for the empty key, is lost entirely), so emit it quoted when needsQuote flags it.
+function yamlKey(k: string): string {
+	return needsQuote(k) ? JSON.stringify(k) : k;
+}
+
 export function toYaml(v: unknown, indent = 0): string {
 	const pad = "  ".repeat(indent);
 	if (Array.isArray(v)) {
@@ -58,9 +65,9 @@ export function toYaml(v: unknown, indent = 0): string {
 			.map((k) => {
 				const val = (v as Record<string, unknown>)[k];
 				if (val !== null && typeof val === "object" && Object.keys(val as object).length) {
-					return `${pad}${k}:\n${toYaml(val, indent + 1)}`;
+					return `${pad}${yamlKey(k)}:\n${toYaml(val, indent + 1)}`;
 				}
-				return `${pad}${k}: ${yamlScalar(val)}`;
+				return `${pad}${yamlKey(k)}: ${yamlScalar(val)}`;
 			})
 			.join("\n");
 	}
@@ -139,22 +146,45 @@ export function parseYaml(text: string): unknown {
 		mergeMap(obj, minIndent);
 		return obj;
 	}
+	// Split a `key: value` line into its key and the remaining value text. A
+	// quoted key (emitted by toYaml when the key contains `:`, `#`, a leading `-`,
+	// or is empty) is scanned to its matching close quote so an embedded `:` is not
+	// mistaken for the key/value separator, then unquoted via parseScalar.
+	function splitKey(line: string): { key: string; rest: string } | null {
+		const body = line.slice(indentOf(line));
+		const q = body[0];
+		if (q === '"' || q === "'") {
+			let j = 1;
+			for (; j < body.length; j++) {
+				if (q === '"' && body[j] === "\\") j++;
+				else if (body[j] === q) {
+					if (q === "'" && body[j + 1] === "'") j++;
+					else break;
+				}
+			}
+			const after = body.slice(j + 1).replace(/^\s*/, "");
+			if (after[0] !== ":") return null;
+			return { key: String(parseScalar(body.slice(0, j + 1))), rest: after.slice(1) };
+		}
+		const m = body.match(/^([^:]+?):\s*(.*)$/);
+		return m ? { key: m[1].trim(), rest: m[2] } : null;
+	}
 	function mergeMap(obj: Record<string, unknown>, minIndent: number) {
 		while (i < lines.length) {
 			const line = lines[i];
 			const ind = indentOf(line);
 			if (ind < minIndent || /^\s*-(\s|$)/.test(line.slice(ind))) break;
-			const m = line.match(/^\s*([^:]+?):\s*(.*)$/);
-			if (!m) break;
+			const kv = splitKey(line);
+			if (!kv) break;
 			i++;
-			const key = m[1].trim();
-			if (m[2].trim() === "") {
+			const key = kv.key;
+			if (kv.rest.trim() === "") {
 				// Zero-relative-indent sequences (kubernetes/GitHub-Actions style):
 				// a `- ` item at the key's own indent belongs to the key.
 				const next = lines[i];
 				const seqAtKeyIndent = next !== undefined && indentOf(next) === ind && /^\s*-(\s|$)/.test(next);
 				obj[key] = parseBlock(seqAtKeyIndent ? ind : ind + 1);
-			} else obj[key] = parseScalar(m[2]);
+			} else obj[key] = parseScalar(kv.rest);
 		}
 	}
 	return parseBlock(0);

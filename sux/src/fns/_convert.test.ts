@@ -35,6 +35,23 @@ describe("toYaml (multiline strings)", () => {
 	});
 });
 
+describe("toYaml (map-key quoting)", () => {
+	it("quotes a key containing a colon so it can't be re-split into key/value", () => {
+		expect(toYaml({ "a: b": 1 })).toBe('"a: b": 1');
+		expect(parseYaml(toYaml({ "a: b": 1 }))).toEqual({ "a: b": 1 });
+	});
+
+	it("quotes the empty key so it isn't silently dropped", () => {
+		expect(toYaml({ "": 1 })).toBe('"": 1');
+		expect(parseYaml(toYaml({ "": 1 }))).toEqual({ "": 1 });
+	});
+
+	it("round-trips keys with '#', a leading '-', and a nested quoted key", () => {
+		const obj = { "a#b": "x", "-lead": "y", "k: 1": { "c: d": 2 } };
+		expect(parseYaml(toYaml(obj))).toEqual(obj);
+	});
+});
+
 describe("toXml (attribute-value escaping)", () => {
 	it("escapes a double quote in an attribute value so it can't close the attribute early", () => {
 		// A `"` in an @attr value would otherwise emit `<n id="a"b">…` — malformed
