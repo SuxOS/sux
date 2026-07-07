@@ -1,0 +1,38 @@
+{
+  "manifest_version": "0.3",
+  "name": "sux",
+  "display_name": "sux",
+  "version": "1.0.0",
+  "description": "Bridges the remote OAuth-gated sux MCP server (residential caching web-fetch engine) to Claude Desktop via mcp-remote over stdio. OAuth runs in your browser on first use.",
+  "author": {
+    "name": "Colin Summers",
+    "url": "https://github.com/colinxs/sux-mcp"
+  },
+  "homepage": "https://sux.colinxs.workers.dev",
+  "server": {
+    "type": "node",
+    "entry_point": "mcp-remote",
+    "mcp_config": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "${user_config.server_url}"
+      ]
+    }
+  },
+  "user_config": {
+    "server_url": {
+      "type": "string",
+      "title": "sux MCP URL",
+      "description": "The remote sux MCP endpoint. Leave as-is unless you self-host a different deployment.",
+      "required": true,
+      "default": "https://sux.colinxs.workers.dev/mcp"
+    }
+  },
+  "compatibility": {
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}
