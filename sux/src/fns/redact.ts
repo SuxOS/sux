@@ -12,10 +12,11 @@ const PATTERNS: Array<{ type: RedactType; re: RegExp }> = [
 	{ type: "ssn", re: /\b\d{3}[-\s]\d{2}[-\s]\d{4}\b/g },
 	// Card-shaped digit groups (13–19 digits, optional space/dash groupings).
 	{ type: "credit_card", re: /\b(?:\d[ -]?){13,19}\b/g },
+	// IPv4 + common IPv6. Runs before phone so the phone regex can't eat the
+	// leading octets of a dotted-quad (e.g. 192.168 out of 192.168.1.100).
+	{ type: "ip", re: /\b(?:(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{1,4})\b/g },
 	// Phone: optional +country / (area), then grouped digits with separators.
 	{ type: "phone", re: /(?:\+\d{1,3}[\s.-]?)?(?:\(\d{1,4}\)[\s.-]?)?\d{2,4}[\s.-]\d{3,4}(?:[\s.-]\d{3,4})?\b/g },
-	// IPv4 + common IPv6.
-	{ type: "ip", re: /\b(?:(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{1,4})\b/g },
 ];
 
 /** Luhn check on the digits of a card candidate. */

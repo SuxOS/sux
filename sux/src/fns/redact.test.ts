@@ -31,6 +31,15 @@ describe("redact", () => {
 		expect(out.redacted).toContain("10.0.0.1");
 	});
 
+	it("redacts a dotted-quad with 3-digit octets without the phone regex eating the front", async () => {
+		const out = await run({ text: "server at 192.168.1.100" });
+		expect(out.redacted).toBe("server at [REDACTED:ip]");
+		expect(out.counts.ip).toBe(1);
+		expect(out.counts.phone).toBeUndefined();
+		expect(out.redacted).not.toContain("192.168");
+		expect(out.redacted).not.toContain(".1.100");
+	});
+
 	it("rejects an unknown type", async () => {
 		const r = await redact.run({} as any, { text: "x", types: ["passport"] });
 		expect(r.isError).toBe(true);
