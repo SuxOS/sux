@@ -72,7 +72,11 @@ export function htmlToMd(html: string): string {
 function inlineMdToHtml(s: string): string {
 	return encodeEntities(s)
 		.replace(/`([^`]+)`/g, (_m, c) => `<code>${c}</code>`)
-		.replace(/\[([^\]]*)\]\(([^)]*)\)/g, (_m, txt, href) => `<a href="${href}">${txt}</a>`)
+		// href lands inside a double-quoted attribute; encodeEntities above only
+		// escapes &<>, so a link URL carrying a quote (`[x](" onclick="…)`) would
+		// break out of the attribute and inject event handlers. Escape the quote so
+		// the URL can't smuggle extra attributes into the emitted <a> tag.
+		.replace(/\[([^\]]*)\]\(([^)]*)\)/g, (_m, txt, href) => `<a href="${href.replace(/"/g, "&quot;")}">${txt}</a>`)
 		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
 		.replace(/__([^_]+)__/g, "<strong>$1</strong>")
 		.replace(/\*([^*]+)\*/g, "<em>$1</em>")
