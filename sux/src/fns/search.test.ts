@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("../kagi", () => ({
-	kagiTool: vi.fn(async (_env: any, _name: string, args: any) => {
+const { kagiTool } = vi.hoisted(() => ({
+	kagiTool: vi.fn(async (_env: any, _name: string, args: any, _route?: string) => {
 		if (args.query === "boom") return { content: [{ text: "err" }], isError: true };
 		return { content: [{ text: `## Search Results\n### [Result](https://x.com)\nfor ${args.query} limit=${args.limit} wf=${args.workflow}` }] };
 	}),
 }));
+vi.mock("../kagi", () => ({ kagiTool }));
 
 import { search } from "./search";
 
@@ -24,5 +25,13 @@ describe("search", () => {
 		const r = await search.run({} as any, { query: "boom" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/Search failed/);
+	});
+	it("egresses direct (auto route) by default", async () => {
+		await search.run({} as any, { query: "cats" });
+		expect(kagiTool).toHaveBeenLastCalledWith(expect.anything(), "kagi_search_fetch", expect.anything(), "auto");
+	});
+	it("routes through the proxy when proxy: true", async () => {
+		await search.run({} as any, { query: "cats", proxy: true });
+		expect(kagiTool).toHaveBeenLastCalledWith(expect.anything(), "kagi_search_fetch", expect.anything(), "proxy");
 	});
 });

@@ -1,6 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { hasAI, llm } from "../ai";
 import { kagiTool } from "../kagi";
+import type { Route } from "../proxy";
 import { stripHtml } from "./_util";
 
 export type Hit = { title: string; url: string; snippet?: string };
@@ -8,7 +9,7 @@ export type Hit = { title: string; url: string; snippet?: string };
 const fmt = (hits: Hit[]): string =>
 	hits.length ? hits.map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}${h.snippet ? `\n   ${h.snippet}` : ""}`).join("\n\n") : "(no results)";
 
-async function serpapiGoogle(env: any, q: string, limit: number): Promise<Hit[]> {
+async function serpapiGoogle(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
 	const resp = await fetch(`https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(q)}&num=${limit}&api_key=${env.SERPAPI_KEY}`);
 	if (!resp.ok) throw new Error(`SerpAPI HTTP ${resp.status}`);
 	const j = (await resp.json()) as any;
@@ -16,8 +17,8 @@ async function serpapiGoogle(env: any, q: string, limit: number): Promise<Hit[]>
 }
 
 // Kagi (the flagship) — its hosted MCP returns markdown `### [title](url)` blocks.
-async function kagi(env: any, q: string, limit: number): Promise<Hit[]> {
-	const r = await kagiTool(env, "kagi_search_fetch", { query: q, limit });
+async function kagi(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
+	const r = await kagiTool(env, "kagi_search_fetch", { query: q, limit }, route);
 	const md = r?.content?.[0]?.text ?? "";
 	const hits: Hit[] = [];
 	for (const block of md.split(/\n(?=###\s*\[)/)) {
@@ -30,7 +31,7 @@ async function kagi(env: any, q: string, limit: number): Promise<Hit[]> {
 	return hits;
 }
 
-const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number) => Promise<Hit[]> }> = {
+const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number, route: Route) => Promise<Hit[]> }> = {
 	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi },
 	google: { envKey: "SERPAPI_KEY", envName: "SERPAPI_KEY (SerpAPI, engine=google)", run: serpapiGoogle },
 };
@@ -75,7 +76,7 @@ export const webSearch: Fn = {
 	name: "web_search",
 	description:
 		"Web search over Kagi and native Google (SerpAPI). `engine`: kagi (default), google, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"Both engines are key-gated (kagi → KAGI_API_KEY, google → SERPAPI_KEY) and used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
+		"Both engines are key-gated (kagi → KAGI_API_KEY, google → SERPAPI_KEY) and used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Set proxy: true to route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down); Google/SerpAPI always egresses direct. Returns numbered results (title, url, snippet) — cite by number.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -85,6 +86,7 @@ export const webSearch: Fn = {
 			engine: { type: "string", enum: ["kagi", "google", "all"], default: "kagi" },
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 			summarize: { type: "boolean", description: "Summarize the merged results with Workers AI.", default: false },
+			proxy: { type: "boolean", description: "Route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down).", default: false },
 		},
 	},
 	cacheable: true,
@@ -95,6 +97,7 @@ export const webSearch: Fn = {
 		const engine = String(args?.engine ?? "kagi");
 		const limit = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 		const wantSummary = args?.summarize === true;
+		const route: Route = args?.proxy === true ? "proxy" : "auto";
 
 		// Resolve the engine list.
 		let engines: string[];
@@ -109,7 +112,7 @@ export const webSearch: Fn = {
 		}
 
 		// Run the selected engines in parallel; keep whatever succeeds.
-		const settled = await Promise.allSettled(engines.map((name) => ENGINES[name].run(env, q, limit)));
+		const settled = await Promise.allSettled(engines.map((name) => ENGINES[name].run(env, q, limit, route)));
 		const lists = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
 		const ranAll = engine === "all";
 		const hits = ranAll ? merge(lists, limit) : lists[0] ?? [];
