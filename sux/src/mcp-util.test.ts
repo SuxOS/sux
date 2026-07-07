@@ -37,9 +37,9 @@ describe("deferCacheWrite", () => {
 	const makeKv = () => {
 		const store = new Map<string, { value: string; opts: { expirationTtl: number } }>();
 		const kv = {
-			put: async (key: string, value: string, opts: { expirationTtl: number }) => {
+			put: async (key: string, value: string | ArrayBufferView | ArrayBuffer, opts: { expirationTtl: number }) => {
 				await Promise.resolve(); // genuinely async, so a blocking (awaited-inline) write would be visible
-				store.set(key, { value, opts });
+				store.set(key, { value: value as string, opts }); // small test payloads stay plain strings (packForCache passthrough)
 			},
 		};
 		return { store, kv };
@@ -151,7 +151,7 @@ describe("deferCacheWrite", () => {
 describe("cache read/write round-trip (index.ts flow)", () => {
 	it("a repeated identical call hits the entry written by deferCacheWrite", async () => {
 		const store = new Map<string, { value: string; opts: { expirationTtl: number } }>();
-		const kv = { put: async (k: string, v: string, opts: { expirationTtl: number }) => void store.set(k, { value: v, opts }) };
+		const kv = { put: async (k: string, v: string | ArrayBufferView | ArrayBuffer, opts: { expirationTtl: number }) => void store.set(k, { value: v as string, opts }) };
 		const deferred: Promise<unknown>[] = [];
 		const ctx = { waitUntil: (p: Promise<unknown>) => void deferred.push(p) };
 

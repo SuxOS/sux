@@ -1,3 +1,5 @@
+import { packForCache } from "./cache-codec";
+
 export type JsonRpc = {
 	jsonrpc?: string;
 	id?: unknown;
@@ -77,7 +79,7 @@ export async function cacheKey(toolName: string, args: unknown): Promise<string>
 // an unset/invalid ttl falls back to CACHE_TTL_SECONDS, so callers that don't
 // pass one keep the existing behavior.
 export function deferCacheWrite(
-	kv: { put: (key: string, value: string, opts: { expirationTtl: number }) => Promise<unknown> },
+	kv: { put: (key: string, value: string | ArrayBufferView | ArrayBuffer, opts: { expirationTtl: number }) => Promise<unknown> },
 	ctx: { waitUntil: (promise: Promise<unknown>) => void },
 	key: string | null,
 	result: { isError?: boolean; noCache?: boolean; [k: string]: unknown },
@@ -86,5 +88,7 @@ export function deferCacheWrite(
 	const cacheable = key && !result.isError && !result.noCache;
 	delete result.noCache;
 	const expirationTtl = typeof ttl === "number" && ttl > 0 ? ttl : CACHE_TTL_SECONDS;
-	if (cacheable) ctx.waitUntil(kv.put(key, JSON.stringify(result), { expirationTtl }).catch(() => {}));
+	// packForCache transparently compresses large JSON payloads (zstd→brotli) and
+	// returns the plain string for small ones; index.ts reverses it on read.
+	if (cacheable) ctx.waitUntil(kv.put(key, packForCache(JSON.stringify(result)), { expirationTtl }).catch(() => {}));
 }

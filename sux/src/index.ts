@@ -1,6 +1,7 @@
 import type OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { isAllowedLogin } from "./utils";
 import { cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
+import { unpackFromCache } from "./cache-codec";
 import { findFn, type RtEnv, toolList } from "./registry";
 import { FUNCTIONS } from "./fns";
 import { recordCall } from "./metrics";
@@ -60,10 +61,17 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		const started = Date.now();
 		const key = fn.cacheable ? await cacheKey(name, args) : null;
 		if (key && !fresh) {
-			const cached = await env.OAUTH_KV.get(key);
-			if (cached) {
-				recordCall(env, ctx, { tool: name, ms: Date.now() - started, cache: true });
-				return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(cached) });
+			// Read as bytes so compressed frames (cache-codec) round-trip; unpack
+			// reverses packForCache (plain string, or zstd/brotli frame). Any unpack
+			// failure (corrupt/unknown codec) is treated as a miss and recomputed.
+			try {
+				const raw = await env.OAUTH_KV.get(key, "arrayBuffer");
+				if (raw) {
+					recordCall(env, ctx, { tool: name, ms: Date.now() - started, cache: true });
+					return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(unpackFromCache(raw)) });
+				}
+			} catch (e) {
+				console.warn(`sux cache read failed for '${name}', recomputing: ${String((e as Error).message ?? e)}`);
 			}
 		}
 		let result;
