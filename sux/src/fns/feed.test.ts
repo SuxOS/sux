@@ -48,6 +48,17 @@ describe("feed", () => {
 		expect(r.isError).toBe(true);
 	});
 
+	it("survives out-of-range numeric entities instead of throwing RangeError", async () => {
+		const xml = `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
+			<item><title>Bad &#x110000; hex &#99999999999; dec</title><link>https://ex.com/1</link></item>
+		</channel></rss>`;
+		const r = await feed.run({} as any, { xml });
+		expect(r.isError).toBeFalsy();
+		const out = JSON.parse(r.content[0].text);
+		expect(out.count).toBe(1);
+		expect(out.items[0].title).toBe("Bad � hex � dec");
+	});
+
 	it("fails on an upstream error page instead of parsing an empty feed", async () => {
 		vi.mocked(smartFetch).mockResolvedValueOnce(new Response("<html>Too Many Requests</html>", { status: 429 }));
 		const r = await feed.run({} as any, { url: "https://ex.com/feed.xml" });
