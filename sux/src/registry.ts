@@ -57,20 +57,14 @@ export type RtEnv = Env &
 		EBAY_CLIENT_ID?: string;
 		EBAY_CLIENT_SECRET?: string;
 
-		ALPHAVANTAGE_KEY?: string;
 
 		TAVILY_API_KEY?: string;
 
-		ETSY_API_KEY?: string;
 
 		GOOGLE_MAPS_KEY?: string;
 
-		WOLFRAM_APP_ID?: string;
 
 		YOUTUBE_API_KEY?: string;
-		TMDB_API_KEY?: string;
-		NYT_API_KEY?: string;
-		GUARDIAN_API_KEY?: string;
 		AI?: AiBinding;
 		IMAGES?: ImagesBinding;
 
