@@ -1,7 +1,7 @@
 import { type Fn, fail, ok } from "../registry";
 import { hasAI, llm } from "../ai";
 import { kagiTool } from "../kagi";
-import { type Route, smartFetch } from "../proxy";
+import type { Route } from "../proxy";
 import { stripHtml } from "./_util";
 
 export type Hit = { title: string; url: string; snippet?: string };
@@ -48,14 +48,19 @@ export function parseGoogleSerp(html: string, limit: number): Hit[] {
 	return hits;
 }
 
-// Google, DIRECT — scrape the SERP through the residential proxy. A residential
-// IP defeats the datacenter-IP SERP block, so this needs no API key (the old
-// SerpAPI path is gone). google.com isn't a direct-host, so `auto` proxies it.
-async function googleDirect(env: any, q: string, limit: number, route: Route): Promise<Hit[]> {
+// Google, DIRECT — no SerpAPI. Google now gates results behind JS (a plain HTTP
+// fetch, even residential/curl-impersonate, returns an empty JS shell), so we
+// render the SERP in the `render` mac backend (headed browser + CapSolver clears
+// the bot wall) and parse the post-JS HTML. Real Google results, no third-party
+// SERP API — but heavier than an API call, so google is an opt-in engine.
+async function googleDirect(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
+	const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Array<{ name: string; run: (e: any, a: any) => Promise<any> }> };
+	const render = FUNCTIONS.find((f) => f.name === "render");
+	if (!render) throw new Error("google engine needs the `render` fn");
 	const url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${Math.min(20, limit + 5)}&hl=en`;
-	const resp = await smartFetch(env, url, { headers: { "Accept-Language": "en-US,en;q=0.9" } }, route === "direct" ? "auto" : route);
-	if (resp.status >= 400) throw new Error(`Google HTTP ${resp.status}`);
-	return parseGoogleSerp(await resp.text(), limit);
+	const r = await render.run(env, { url, backend: "mac", as: "html", solve: true, wait_ms: 6000 });
+	if (r?.isError) throw new Error(`Google render failed: ${r.content?.[0]?.text ?? "unknown"}`);
+	return parseGoogleSerp(r?.content?.[0]?.text ?? "", limit);
 }
 
 async function brave(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
@@ -129,7 +134,7 @@ export const webSearch: Fn = {
 	cost: 3,
 	description:
 		"Web search over Kagi, native Google, and Brave. `engine`: kagi (default), google, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"google is scraped DIRECTLY through the residential proxy (a residential IP defeats the SERP block) — no key needed. kagi and brave are key-gated (KAGI_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` silently skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Set proxy: true to route the Kagi query through the residential proxy too (google always egresses residentially). Returns numbered results (title, url, snippet) — cite by number.",
+		"google renders the real SERP in the headed `render` mac backend (Google now needs JS — a plain HTTP fetch returns an empty shell) and parses it — no SERP API key, but heavier/slower than an API, so it's opt-in. kagi (default) and brave are key-gated (KAGI_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

@@ -4,9 +4,10 @@ vi.mock("../kagi", () => ({
 	kagiTool: vi.fn(async () => ({ content: [{ type: "text", text: "### [Kagi Result](https://example.com/a)\n**URL:** https://example.com/a\nA kagi snippet.\n\n### [Second Result](https://example.org/b)\n**URL:** https://example.org/b\nAnother snippet." }] })),
 }));
 
-// google is now scraped directly through the residential proxy (smartFetch).
-const { smartFetch } = vi.hoisted(() => ({ smartFetch: vi.fn() }));
-vi.mock("../proxy", () => ({ smartFetch }));
+// google now renders the SERP via the `render` mac backend (delegated through
+// the registry), so mock ./index to supply a fake render.
+const { renderRun } = vi.hoisted(() => ({ renderRun: vi.fn() }));
+vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 
 import { parseGoogleSerp, webSearch } from "./web_search";
 
@@ -47,16 +48,14 @@ describe("web_search", () => {
 		expect(r.content[0].text).toContain("2. Second Result");
 	});
 
-	it("scrapes Google directly with NO key (residential proxy)", async () => {
-		smartFetch.mockResolvedValueOnce(new Response(serp([{ url: "https://g.com/x", title: "G Result" }]), { status: 200 }));
+	it("renders Google via the mac backend (no key) and parses results", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: serp([{ url: "https://g.com/x", title: "G Result" }]) }] });
 		const r = await webSearch.run({} as any, { query: "x", engine: "google" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toContain("1. G Result");
 		expect(r.content[0].text).toContain("https://g.com/x");
-		// smartFetch(env, url, init, route) — url is arg index 1: google, not serpapi
-		const calledUrl = String(smartFetch.mock.calls[0][1]);
-		expect(calledUrl).toContain("google.com/search");
-		expect(calledUrl).not.toContain("serpapi");
+		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ backend: "mac", solve: true }));
+		expect(String(renderRun.mock.calls[0][1].url)).toContain("google.com/search");
 	});
 
 	it("calls Brave when the key is present", async () => {
@@ -76,7 +75,7 @@ describe("web_search", () => {
 
 	it("engine 'all' fans out (kagi + keyless google) and merges by consensus", async () => {
 		// google also returns example.com/a → consensus ranks it above example.org/b.
-		smartFetch.mockResolvedValueOnce(new Response(serp([{ url: "https://example.com/a", title: "Shared" }]), { status: 200 }));
+		renderRun.mockResolvedValueOnce({ content: [{ text: serp([{ url: "https://example.com/a", title: "Shared" }]) }] });
 		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", engine: "all" });
 		expect(r.isError).toBeFalsy();
 		const text = r.content[0].text;

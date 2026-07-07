@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-const { smartFetch } = vi.hoisted(() => ({ smartFetch: vi.fn() }));
-vi.mock("../proxy", () => ({ smartFetch }));
+// shop renders Google Shopping via the `render` mac backend (through the registry).
+const { renderRun } = vi.hoisted(() => ({ renderRun: vi.fn() }));
+vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 
 import { parseGoogleShopping, shop } from "./shop";
 
@@ -28,17 +29,17 @@ describe("shop", () => {
 		expect(r.content[0].text).toMatch(/dedicated `walmart` fn/);
 	});
 
-	it("scrapes Google Shopping directly (no key) and formats hits", async () => {
-		smartFetch.mockResolvedValueOnce(new Response(card("https://m.example/p", "Drill", "$59.00"), { status: 200 }));
+	it("renders Google Shopping via the mac backend (no key) and formats hits", async () => {
+		renderRun.mockResolvedValueOnce({ content: [{ text: card("https://m.example/p", "Drill", "$59.00") }] });
 		const r = await shop.run({} as any, { query: "drill" });
 		expect(r.isError).toBeFalsy();
 		expect(r.content[0].text).toContain("1. Drill — $59.00 [m.example]");
-		expect(String(smartFetch.mock.calls[0][1])).toContain("tbm=shop");
-		expect(String(smartFetch.mock.calls[0][1])).not.toContain("serpapi");
+		expect(renderRun).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ backend: "mac", solve: true }));
+		expect(String(renderRun.mock.calls[0][1].url)).toContain("tbm=shop");
 	});
 
 	it("returns a friendly note when nothing parses", async () => {
-		smartFetch.mockResolvedValueOnce(new Response("<html>no products</html>", { status: 200 }));
+		renderRun.mockResolvedValueOnce({ content: [{ text: "<html>no products</html>" }] });
 		const r = await shop.run({} as any, { query: "xyz" });
 		expect(r.content[0].text).toMatch(/no products parsed/);
 	});

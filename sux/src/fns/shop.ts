@@ -1,5 +1,4 @@
 import { type Fn, fail, ok } from "../registry";
-import { smartFetch } from "../proxy";
 import { stripHtml } from "./_util";
 
 type ShopHit = { title: string; price?: string; source?: string; url?: string };
@@ -55,7 +54,7 @@ export const shop: Fn = {
 	name: "shop",
 	cost: 3,
 	description:
-		"Product search via Google Shopping, scraped DIRECTLY through the residential proxy (no API key — the old SerpAPI path is gone). `query` is the product; returns numbered products with price, merchant, and link. For a specific big retailer, prefer its dedicated fn — walmart, homedepot, bestbuy, ebay, costco, kroger — which returns structured data; passing store:'walmart' etc. here just points you at that fn. Google Shopping markup churns, so results are best-effort.",
+		"Product search via Google Shopping, rendered in the `render` mac backend (no SERP API key — Google needs JS now). `query` is the product; returns numbered products with price, merchant, and link. For a specific big retailer, prefer its dedicated fn — walmart, homedepot, bestbuy, ebay, costco, kroger — which returns structured data (passing store:'walmart' etc. here points you there). Heavier than an API and Google Shopping markup churns, so results are best-effort.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -76,11 +75,16 @@ export const shop: Fn = {
 		const limit = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 
 		try {
+			// Google Shopping needs JS now, so render it in the `render` mac backend
+			// (headed browser) and parse the post-JS HTML — best-effort.
+			const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Array<{ name: string; run: (e: any, a: any) => Promise<any> }> };
+			const render = FUNCTIONS.find((f) => f.name === "render");
+			if (!render) return fail("shop needs the `render` fn.");
 			const url = `https://www.google.com/search?tbm=shop&q=${encodeURIComponent(q)}&hl=en&num=${Math.min(40, limit + 10)}`;
-			const resp = await smartFetch(env, url, { headers: { "Accept-Language": "en-US,en;q=0.9" } });
-			if (resp.status >= 400) return fail(`Google Shopping HTTP ${resp.status}`);
-			const hits = parseGoogleShopping(await resp.text(), limit);
-			if (!hits.length) return ok(`(no products parsed for "${q}" — Google Shopping markup may have changed; try a dedicated retailer fn)`);
+			const rr = await render.run(env, { url, backend: "mac", as: "html", solve: true, wait_ms: 6000 });
+			if (rr?.isError) return fail(`Google Shopping render failed: ${rr.content?.[0]?.text ?? "unknown"}`);
+			const hits = parseGoogleShopping(rr?.content?.[0]?.text ?? "", limit);
+			if (!hits.length) return ok(`(no products parsed for "${q}" — Google Shopping markup may have changed; try a dedicated retailer fn like walmart/homedepot/bestbuy)`);
 			return ok(fmt(hits));
 		} catch (e) {
 			return fail(`shop failed: ${String((e as Error).message ?? e)}`);
