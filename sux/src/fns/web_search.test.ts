@@ -92,6 +92,15 @@ describe("web_search", () => {
 		expect(String(renderRun.mock.calls[0][1].url)).toContain("google.com/search");
 	});
 
+	it("over-requests the Google SERP so a high limit can be honored after host-drops/dedupe", async () => {
+		// Google's host filtering + dedupe shrink the parsed count, so the requested
+		// num must exceed limit — a num capped at 20 could never honor limit:25.
+		renderRun.mockResolvedValueOnce({ content: [{ text: serp([{ url: "https://g.com/x", title: "G Result" }]) }] });
+		await webSearch.run({} as any, { query: "x", engine: "google", limit: 25 });
+		const num = Number(new URL(String(renderRun.mock.calls[0][1].url)).searchParams.get("num"));
+		expect(num).toBeGreaterThan(25);
+	});
+
 	it("calls Brave when the key is present", async () => {
 		const fetchMock = vi.fn(async (_u?: any, _i?: any) => new Response(JSON.stringify({ web: { results: [{ title: "B", url: "https://b.com", description: "brave desc" }] } }), { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);

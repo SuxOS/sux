@@ -96,7 +96,10 @@ async function ddg(env: any, q: string, limit: number, route: Route): Promise<Hi
 // the bot wall) and parse the post-JS HTML. Real Google results, no third-party
 // SERP API — but heavier than an API call, so google is an opt-in engine.
 async function googleDirect(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
-	const url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${Math.min(20, limit + 5)}&hl=en`;
+	// Over-request: Google's SERP host drops (google/gstatic) and dedupe shrink the
+	// parsed hit count, so ask for more than `limit` (up to Google's ~40 ceiling) or
+	// a high limit can never be honored.
+	const url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${Math.min(40, limit + 10)}&hl=en`;
 	return parseGoogleSerp(await renderHtml(env, url), limit);
 }
 
