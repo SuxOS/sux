@@ -16,6 +16,22 @@ export function clamp(s: string, maxBytes = 100_000): string {
 }
 
 /**
+ * Fetch a URL as post-JS HTML via the `render` mac backend (headed browser +
+ * CapSolver). The path for sites that gate content behind JS / bot walls
+ * (Google, LinkedIn, Google Shopping). Delegates to the render fn through the
+ * registry (dynamic import breaks the index.ts→fns cycle); throws on render
+ * failure so callers can wrap with their own message. Was triplicated inline.
+ */
+export async function renderHtml(env: RtEnv, url: string, opts?: { solve?: boolean; wait_ms?: number }): Promise<string> {
+	const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Array<{ name: string; run: (e: RtEnv, a: unknown) => Promise<{ content?: Array<{ text?: string }>; isError?: boolean }> }> };
+	const render = FUNCTIONS.find((f) => f.name === "render");
+	if (!render) throw new Error("the `render` fn is not available");
+	const r = await render.run(env, { url, backend: "mac", as: "html", solve: opts?.solve ?? true, wait_ms: opts?.wait_ms ?? 6000 });
+	if (r?.isError) throw new Error(r.content?.[0]?.text ?? "render failed");
+	return r.content?.[0]?.text ?? "";
+}
+
+/**
  * Run `fn` over `items` with bounded concurrency, preserving input order in the
  * result. Index-claiming worker pool (was hand-rolled identically in batch and
  * batch_fetch). `fn` should handle its own per-item errors — a throw rejects the

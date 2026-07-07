@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { stripHtml } from "./_util";
+import { renderHtml, stripHtml } from "./_util";
 
 type ShopHit = { title: string; price?: string; source?: string; url?: string };
 
@@ -76,14 +76,9 @@ export const shop: Fn = {
 
 		try {
 			// Google Shopping needs JS now, so render it in the `render` mac backend
-			// (headed browser) and parse the post-JS HTML — best-effort.
-			const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Array<{ name: string; run: (e: any, a: any) => Promise<any> }> };
-			const render = FUNCTIONS.find((f) => f.name === "render");
-			if (!render) return fail("shop needs the `render` fn.");
+			// and parse the post-JS HTML — best-effort.
 			const url = `https://www.google.com/search?tbm=shop&q=${encodeURIComponent(q)}&hl=en&num=${Math.min(40, limit + 10)}`;
-			const rr = await render.run(env, { url, backend: "mac", as: "html", solve: true, wait_ms: 6000 });
-			if (rr?.isError) return fail(`Google Shopping render failed: ${rr.content?.[0]?.text ?? "unknown"}`);
-			const hits = parseGoogleShopping(rr?.content?.[0]?.text ?? "", limit);
+			const hits = parseGoogleShopping(await renderHtml(env, url), limit);
 			if (!hits.length) return ok(`(no products parsed for "${q}" — Google Shopping markup may have changed; try a dedicated retailer fn like walmart/homedepot/bestbuy)`);
 			return ok(fmt(hits));
 		} catch (e) {

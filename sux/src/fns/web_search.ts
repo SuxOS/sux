@@ -2,7 +2,7 @@ import { type Fn, fail, ok } from "../registry";
 import { hasAI, llm } from "../ai";
 import { kagiTool } from "../kagi";
 import { type Route, smartFetch } from "../proxy";
-import { stripHtml } from "./_util";
+import { renderHtml, stripHtml } from "./_util";
 
 export type Hit = { title: string; url: string; snippet?: string };
 
@@ -83,13 +83,8 @@ async function ddg(env: any, q: string, limit: number, route: Route): Promise<Hi
 // the bot wall) and parse the post-JS HTML. Real Google results, no third-party
 // SERP API — but heavier than an API call, so google is an opt-in engine.
 async function googleDirect(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {
-	const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Array<{ name: string; run: (e: any, a: any) => Promise<any> }> };
-	const render = FUNCTIONS.find((f) => f.name === "render");
-	if (!render) throw new Error("google engine needs the `render` fn");
 	const url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${Math.min(20, limit + 5)}&hl=en`;
-	const r = await render.run(env, { url, backend: "mac", as: "html", solve: true, wait_ms: 6000 });
-	if (r?.isError) throw new Error(`Google render failed: ${r.content?.[0]?.text ?? "unknown"}`);
-	return parseGoogleSerp(r?.content?.[0]?.text ?? "", limit);
+	return parseGoogleSerp(await renderHtml(env, url), limit);
 }
 
 async function brave(env: any, q: string, limit: number, _route: Route): Promise<Hit[]> {

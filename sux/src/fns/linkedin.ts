@@ -1,4 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
+import { renderHtml } from "./_util";
 
 // LinkedIn public data by SCRAPING (Proxycurl — the old provider path — shut down
 // in July 2025 after LinkedIn sued Nubela). We render the public profile/company
@@ -78,14 +79,9 @@ export const linkedin: Fn = {
 		if (!/^https?:\/\/([\w-]+\.)*linkedin\.com\//i.test(url)) return fail("`url` must be a linkedin.com profile or company URL.");
 		const action = String(args?.action ?? "person") === "company" ? "company" : "person";
 
-		// Delegate the anti-bot render to the `render` fn (mac backend + CapSolver).
-		const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
-		const render = FUNCTIONS.find((f) => f.name === "render");
-		if (!render) return fail("linkedin needs the `render` fn (not found in the registry).");
 		try {
-			const r = await render.run(env, { url, backend: "mac", as: "html", solve: true });
-			if (r.isError) return fail(`linkedin scrape failed (render): ${r.content?.[0]?.text ?? "unknown error"}`);
-			const html = r.content?.[0]?.text ?? "";
+			// Anti-bot render via the mac backend (headed browser + CapSolver).
+			const html = await renderHtml(env, url);
 			if (!parseJsonLd(html).length && /authwall|sign in to LinkedIn|Join LinkedIn to view/i.test(html)) {
 				return fail("LinkedIn returned an auth wall (no public data). This profile needs an authenticated session.");
 			}
@@ -93,7 +89,7 @@ export const linkedin: Fn = {
 			if (!data.name) return fail("Could not extract public profile data from the LinkedIn page (structure may have changed or the page is gated).");
 			return ok(JSON.stringify(data, null, 2));
 		} catch (e) {
-			return fail(`linkedin failed: ${String((e as Error).message ?? e)}`);
+			return fail(`linkedin render/scrape failed: ${String((e as Error).message ?? e)}`);
 		}
 	},
 };
