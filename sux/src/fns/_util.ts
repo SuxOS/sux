@@ -33,6 +33,58 @@ export function fromB64(b64: string): Uint8Array {
 
 export type Fetched = { status: number; text: string; headers: Headers; url: string };
 
+// ---------- In-isolate content-fetch dedup (substituter, PLAN Nix insight) ----------
+// A pipe/batch/multi-tool chain runs in ONE isolate within a short window and
+// often fetches the same URL from several tools (scrape → extract → readability
+// → metadata …). Cache the fetched text in memory keyed by url+maxBytes so the
+// residential round-trip happens once per chain. Per-isolate + short-TTL: it
+// adds no latency (memory only), needs no ctx/KV, and can't break the fetch path
+// (all ops are pure and wrapped around — never through — the live fetch). The
+// tool-result KV cache still handles cross-isolate/identical-call dedup; this
+// closes the CROSS-TOOL same-URL gap the result cache (keyed by tool+args) can't.
+
+export type FetchCacheEntry = { at: number; status: number; text: string; headers: Record<string, string>; url: string };
+const FETCH_CACHE = new Map<string, FetchCacheEntry>();
+export const FETCH_CACHE_TTL_MS = 30_000;
+export const FETCH_CACHE_MAX_ENTRIES = 64;
+export const FETCH_CACHE_MAX_TEXT = 512_000; // don't pin very large bodies in memory
+
+// Disabled under vitest so the module-level cache can't leak fetched bodies
+// between the many fns tests that mock the fetch and assert on it. A test can
+// force it on/off via setFetchDedup to exercise the integration in isolation.
+let dedupForced: boolean | null = null;
+const fetchDedupActive = (): boolean => dedupForced ?? !(typeof process !== "undefined" && process.env?.VITEST);
+
+/** Test seam: force the fetch dedup on (true) / off (false) / default (null). */
+export function setFetchDedup(on: boolean | null): void {
+	dedupForced = on;
+}
+
+/** Fresh (non-expired) cache entry for `key`, or null. Evicts on expiry. */
+export function fetchCacheGet(key: string, now: number): FetchCacheEntry | null {
+	const e = FETCH_CACHE.get(key);
+	if (!e) return null;
+	if (now - e.at > FETCH_CACHE_TTL_MS) {
+		FETCH_CACHE.delete(key);
+		return null;
+	}
+	return e;
+}
+
+/** Insert an entry, evicting the oldest (Map insertion order) past the cap. */
+export function fetchCacheSet(key: string, e: FetchCacheEntry): void {
+	if (FETCH_CACHE.size >= FETCH_CACHE_MAX_ENTRIES && !FETCH_CACHE.has(key)) {
+		const oldest = FETCH_CACHE.keys().next().value;
+		if (oldest !== undefined) FETCH_CACHE.delete(oldest);
+	}
+	FETCH_CACHE.set(key, e);
+}
+
+/** Test seam: clear the per-isolate fetch cache. */
+export function clearFetchCache(): void {
+	FETCH_CACHE.clear();
+}
+
 /** Default byte cap for text fetches — generous enough that full-body consumers
  * (feeds, sitemaps) aren't silently truncated, small enough to bound memory. */
 export const FETCH_TEXT_MAX_BYTES = 2_000_000;
@@ -80,8 +132,22 @@ export async function fetchText(
 		const text = new TextDecoder().decode(blob.bytes);
 		return { status: 200, text: text.slice(0, maxBytes), headers: new Headers({ "content-type": blob.contentType }), url };
 	}
+	// Dedup GET fetches within the isolate (bodyless, method GET/undefined only —
+	// never cache a POST or a request with a body). A hit skips the whole proxy
+	// round-trip; a miss populates for the rest of the chain.
+	const method = (init?.method ?? "GET").toUpperCase();
+	const dedupKey = fetchDedupActive() && method === "GET" && !init?.body ? `${maxBytes}|${url}` : null;
+	if (dedupKey) {
+		const hit = fetchCacheGet(dedupKey, Date.now());
+		if (hit) return { status: hit.status, text: hit.text, headers: new Headers(hit.headers), url: hit.url };
+	}
 	const resp = await smartFetch(env, url, { method: init?.method, headers: init?.headers, body: init?.body });
-	return { status: resp.status, text: await readBodyText(resp, maxBytes), headers: resp.headers, url };
+	const text = await readBodyText(resp, maxBytes);
+	// Only cache successful, reasonably-sized bodies (never an error page).
+	if (dedupKey && resp.status < 400 && text.length <= FETCH_CACHE_MAX_TEXT) {
+		fetchCacheSet(dedupKey, { at: Date.now(), status: resp.status, text, headers: Object.fromEntries(resp.headers), url });
+	}
+	return { status: resp.status, text, headers: resp.headers, url };
 }
 
 /**
