@@ -74,6 +74,57 @@ export function isDirectHost(url: string): boolean {
 	}
 }
 
+/**
+ * SSRF guard: reject loopback / private / link-local / CGNAT / ULA / metadata
+ * address literals — the destinations the residential node must never be tricked
+ * into fetching, since it sits *inside* the home LAN (router admin UI, uhttpd,
+ * every other device). Mirrors node/server.mjs isPrivateIp. `host` is an IP
+ * literal (v4 dotted-decimal or v6); anything that isn't a recognizable private
+ * literal returns false so ordinary hostnames pass through.
+ */
+export function isPrivateIp(host: string): boolean {
+	if (host.includes(":")) {
+		// IPv6: loopback (::1), unique-local (fc00::/7), link-local (fe80::/10), v4-mapped.
+		if (host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe8") || host.startsWith("fe9") || host.startsWith("fea") || host.startsWith("feb")) return true;
+		if (host.startsWith("::ffff:")) return isPrivateIp(host.slice(7));
+		return false;
+	}
+	const parts = host.split(".");
+	if (parts.length !== 4) return false; // not a dotted-decimal IPv4 literal
+	const oct = parts.map((n) => Number(n));
+	if (oct.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+	const [a, b] = oct;
+	return (
+		a === 0 || a === 10 || a === 127 || // this-network, private, loopback
+		(a === 100 && b >= 64 && b <= 127) || // CGNAT 100.64/10 (Tailscale's own range)
+		(a === 169 && b === 254) || // link-local + cloud metadata 169.254.169.254
+		(a === 172 && b >= 16 && b <= 31) || // private
+		(a === 192 && b === 168) // private
+	);
+}
+
+/**
+ * SSRF guard: true when `url` must NOT be fetched — a non-http(s) scheme, an
+ * unparseable URL, a localhost name, or an IP literal in a private/loopback/
+ * link-local/CGNAT/ULA/metadata range. The Worker can't resolve DNS, so this
+ * catches IP-literal + localhost targets before they reach the residential node;
+ * node/server.mjs resolves the host and re-checks every A/AAAA (DNS-rebinding).
+ */
+export function isBlockedTarget(url: string): boolean {
+	let host: string;
+	try {
+		const u = new URL(url);
+		if (u.protocol !== "http:" && u.protocol !== "https:") return true;
+		host = u.hostname.toLowerCase();
+	} catch {
+		return true; // unparseable — refuse rather than forward garbage
+	}
+	// URL keeps IPv6 literals bracketed ([::1]); strip for the IP check.
+	if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+	if (host === "localhost" || host.endsWith(".localhost")) return true;
+	return isPrivateIp(host);
+}
+
 export type Route = "auto" | "proxy" | "direct";
 
 // Transient/rate-limit statuses worth another shot with backoff: gateway/
@@ -217,6 +268,12 @@ export async function smartFetch(
 	init: { method?: string; headers?: Headers | Record<string, string>; body?: string; redirect?: "follow" | "manual" | "error" } = {},
 	route: Route = "auto",
 ): Promise<Response> {
+	// SSRF guard: never fetch a private/loopback/link-local/metadata target —
+	// direct OR via the residential node (which sits inside the home LAN). Hard
+	// refusal, not a fallback: an internal target is never the caller's intent.
+	if (isBlockedTarget(url)) {
+		throw new Error(`smartFetch: refusing blocked target ${url} (private/loopback/link-local/metadata host)`);
+	}
 	// GitHub auth applies regardless of route; caller-supplied headers win.
 	const ghAuth = githubAuthHeaders(env, url);
 	let directRoute: FetchRoute = "direct";

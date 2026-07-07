@@ -43,6 +43,29 @@ calc=$( { printf '%s\n' "$TS"; cat "$req"; } | openssl dgst -sha256 -hmac "$SECR
 url=$(jq -r '.url // empty' "$req")
 [ -n "$url" ] || { emit 400 '{"error":"missing_url"}'; exit 0; }
 case "$url" in http://*|https://*) : ;; *) emit 400 '{"error":"bad_scheme"}'; exit 0 ;; esac
+
+# SSRF guard (defense-in-depth; mirrors src/proxy.ts isBlockedTarget). This box
+# sits inside the home LAN, so refuse loopback / private / link-local / CGNAT /
+# ULA / metadata destinations before curl ever reaches them. Extract the host:
+# drop scheme, path/query/fragment, and userinfo; unwrap a bracketed IPv6, else
+# strip the :port.
+authority=$(printf '%s' "$url" | sed -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#[/?#].*$##' -e 's#^[^@]*@##')
+case "$authority" in
+	\[*\]*) host=$(printf '%s' "$authority" | sed -e 's#^\[##' -e 's#\].*$##') ;;
+	*) host=${authority%%:*} ;;
+esac
+host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+case "$host" in
+	*:*) # IPv6 literal: loopback / ULA (fc00::/7) / link-local (fe80::/10)
+		case "$host" in ::1|::ffff:*|fc*|fd*|fe8*|fe9*|fea*|feb*) emit 400 '{"error":"blocked_target"}'; exit 0 ;; esac ;;
+	*) # localhost / IPv4 dotted-decimal private ranges
+		case "$host" in
+			localhost|*.localhost|0.*|10.*|127.*|169.254.*|192.168.* \
+			|172.1[6-9].*|172.2[0-9].*|172.3[01].* \
+			|100.6[4-9].*|100.7[0-9].*|100.8[0-9].*|100.9[0-9].*|100.1[01][0-9].*|100.12[0-7].*)
+				emit 400 '{"error":"blocked_target"}'; exit 0 ;;
+		esac ;;
+esac
 method=$(jq -r '.method // "GET" | ascii_upcase' "$req")
 
 # Header config. With curl-impersonate, forward only NON-fingerprint headers

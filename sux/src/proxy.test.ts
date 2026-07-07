@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { backoffDelay, drainRouteTally, fetchPageViaTailscale, fetchViaTailscale, hmacHex, isDirectHost, isTailscaleConfigured, isTextualContentType, smartFetch, willProxy } from "./proxy";
+import { backoffDelay, drainRouteTally, fetchPageViaTailscale, fetchViaTailscale, hmacHex, isBlockedTarget, isDirectHost, isTailscaleConfigured, isTextualContentType, smartFetch, willProxy } from "./proxy";
 
 const ON = { TAILSCALE_PROXY_URL: "https://x.ts.net", TAILSCALE_PROXY_SECRET: "s" };
 
@@ -39,6 +39,43 @@ describe("smart routing", () => {
 	it("honors forced routes", () => {
 		expect(willProxy(ON, "https://mcp.kagi.com", "proxy")).toBe(true); // force proxy overrides direct-host
 		expect(willProxy(ON, "https://example.com", "direct")).toBe(false); // force direct overrides auto
+	});
+});
+
+describe("SSRF guard", () => {
+	it("blocks private, loopback, link-local, CGNAT, ULA and metadata targets", () => {
+		expect(isBlockedTarget("http://127.0.0.1/")).toBe(true);
+		expect(isBlockedTarget("http://10.0.0.5/")).toBe(true);
+		expect(isBlockedTarget("http://172.16.0.1/")).toBe(true);
+		expect(isBlockedTarget("http://172.31.255.255/")).toBe(true);
+		expect(isBlockedTarget("http://192.168.1.1/")).toBe(true); // router admin UI
+		expect(isBlockedTarget("http://169.254.169.254/latest/meta-data/")).toBe(true); // cloud metadata
+		expect(isBlockedTarget("http://100.100.100.100/")).toBe(true); // Tailscale CGNAT
+		expect(isBlockedTarget("http://0.0.0.0/")).toBe(true);
+		expect(isBlockedTarget("http://localhost/")).toBe(true);
+		expect(isBlockedTarget("http://api.localhost/")).toBe(true);
+		expect(isBlockedTarget("http://[::1]/")).toBe(true);
+		expect(isBlockedTarget("http://[fd12:3456::1]/")).toBe(true);
+		expect(isBlockedTarget("http://[fe80::1]/")).toBe(true);
+		expect(isBlockedTarget("gopher://example.com/")).toBe(true); // non-http(s) scheme
+		expect(isBlockedTarget("file:///etc/passwd")).toBe(true);
+		expect(isBlockedTarget("not a url")).toBe(true);
+	});
+
+	it("allows ordinary public hosts (incl. public IP literals and 172.x outside 16-31)", () => {
+		expect(isBlockedTarget("https://example.com/")).toBe(false);
+		expect(isBlockedTarget("https://www.homedepot.com/p/1")).toBe(false);
+		expect(isBlockedTarget("https://8.8.8.8/")).toBe(false);
+		expect(isBlockedTarget("https://172.32.0.1/")).toBe(false);
+		expect(isBlockedTarget("https://[2606:4700::1]/")).toBe(false);
+	});
+
+	it("smartFetch refuses a private target and never calls fetch", async () => {
+		const fetchMock = vi.fn(async () => new Response("ok"));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(smartFetch(ON, "http://169.254.169.254/latest/meta-data/")).rejects.toThrow(/blocked target/i);
+		await expect(smartFetch(ON, "http://192.168.1.1/", {}, "direct")).rejects.toThrow(/blocked target/i);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });
 
