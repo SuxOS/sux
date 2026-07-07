@@ -54,6 +54,36 @@ describe("approved-clients cookie (HMAC round-trip)", () => {
 	it("returns false (not throw) when no cookie is present at all", async () => {
 		expect(await isClientApproved(reqWithCookie(), "client-A", SECRET)).toBe(false);
 	});
+
+	it("accumulates a second client onto an existing valid cookie (prior consent is not lost)", async () => {
+		// addApprovedClient reads the existing approved list off the incoming cookie
+		// and appends — a user who approved client-A then approves client-B must end
+		// up with a cookie that skips consent for BOTH, not one that forgets A.
+		const setA = await addApprovedClient(reqWithCookie(), "client-A", SECRET);
+		const setAB = await addApprovedClient(reqWithCookie(cookiePair(setA)), "client-B", SECRET);
+		const back = reqWithCookie(cookiePair(setAB));
+		expect(await isClientApproved(back, "client-A", SECRET)).toBe(true);
+		expect(await isClientApproved(back, "client-B", SECRET)).toBe(true);
+		expect(await isClientApproved(back, "client-C", SECRET)).toBe(false);
+	});
+
+	// The load-bearing security invariant of the accumulation path: a FORGED incoming
+	// cookie (bad signature) must be discarded whole before the new client is added,
+	// so its planted entries are never re-signed into a now-valid cookie. Otherwise an
+	// attacker could plant __Host-APPROVED_CLIENTS=<junk-sig>.<base64 ["evil-client"]>
+	// and have the server launder "evil-client" into a genuine signature the moment the
+	// user approves any unrelated client — silently pre-approving the attacker's client.
+	it("does not launder forged entries from an invalid incoming cookie into a freshly-signed one", async () => {
+		const forgedPayload = btoa(JSON.stringify(["victim-client", "evil-client"]));
+		const forged = reqWithCookie(`${COOKIE_NAME}=deadbeef.${forgedPayload}`);
+		const setCookie = await addApprovedClient(forged, "legit-client", SECRET);
+		const back = reqWithCookie(cookiePair(setCookie));
+		// The user's real approval is honored …
+		expect(await isClientApproved(back, "legit-client", SECRET)).toBe(true);
+		// … but the forged entries were dropped, not carried into the valid signature.
+		expect(await isClientApproved(back, "victim-client", SECRET)).toBe(false);
+		expect(await isClientApproved(back, "evil-client", SECRET)).toBe(false);
+	});
 });
 
 describe("validateCSRFToken (one-time-use gate)", () => {
