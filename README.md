@@ -1,81 +1,20 @@
-# Kagi MCP — private OAuth→Bearer bridge
+# sux — a residential caching web-fetch engine, served over MCP
 
-A tiny [Cloudflare Worker](https://developers.cloudflare.com/workers/) that lets
-Claude's **custom connectors** (claude.ai web + iOS) reach [Kagi's hosted MCP
-server](https://mcp.kagi.com/mcp).
+**sux** is a personal, self-owned web-access layer: a Cloudflare Worker that
+caches and serves from the edge but *queries the web from your own residential
+IP* through infrastructure you control — reaching sites that block datacenters.
+It does the fetching, parsing, converting, and AI-summarizing at the edge
+instead of in your context window, and exposes the whole thing to any MCP client
+as a set of small, composable tools.
 
-## Why this exists
+The Worker and its full documentation live under [`sux/`](sux/):
 
-Claude's custom connectors speak **OAuth only** — there's no field for pasting a
-static bearer token. Kagi's hosted MCP currently authenticates with
-`Authorization: Bearer <API key>` and does **not** support OAuth yet. This Worker
-bridges the gap:
-
-1. It runs [`workers-oauth-provider`](https://github.com/cloudflare/workers-oauth-provider)
-   as a full OAuth 2.1 server, so Claude can complete an OAuth flow.
-2. It uses **GitHub** as the upstream identity provider (you log in with GitHub).
-3. It gates access to a **single GitHub account** (`ALLOWED_GITHUB_LOGIN`) — fail-closed.
-4. It then **reverse-proxies** the MCP JSON-RPC / SSE stream to Kagi, injecting the
-   Kagi API key server-side so it never leaves the Worker.
-
-This server defines **no tools of its own** — `kagi_search_fetch`, `kagi_extract`,
-and anything else are entirely Kagi's, streamed straight through.
-
-> When Kagi ships OAuth, delete this Worker and point Claude directly at
-> `https://mcp.kagi.com/mcp`.
-
-## Architecture
-
-```
-Claude connector ──OAuth(GitHub login)──▶ Worker /authorize,/callback,/token
-                                              │  (workers-oauth-provider + GitHub)
-                                              ▼
-Claude connector ──Bearer <oauth token>──▶ Worker /mcp
-                                              │  ① validate token → ctx.props.login
-                                              │  ② gate: login === ALLOWED_GITHUB_LOGIN
-                                              │  ③ swap in Kagi API key
-                                              ▼
-                                    https://mcp.kagi.com/mcp  (SSE / JSON-RPC)
-```
-
-Only `/mcp` is proxied (MCP Streamable HTTP transport). There is no `/sse`
-endpoint.
-
-## Endpoints & guards
-
-- **`/mcp`** — the OAuth-gated proxy. After token validation it checks the login
-  against `ALLOWED_GITHUB_LOGIN` (comma-separated allowlist) and applies a
-  per-user rate limit (`MCP_RATE_LIMITER`, 120 req/60s — tune in `wrangler.jsonc`)
-  before forwarding to Kagi.
-- **`/health`** — unauthenticated liveness for uptime monitors. Returns booleans
-  for whether each required secret is configured (never the values).
-  `GET /health?deep=1` also pings Kagi and reports `upstream.reachable`
-  (`503`/`"degraded"` if unreachable).
-- **`/authorize`, `/callback`, `/token`, `/register`** — the OAuth flow.
-
-## Composing layer (mostly transparent)
-
-`initialize`, notifications, and GET streams pass straight through. Only two
-methods are intercepted (`src/mcp.ts`); any unrecognized response shape falls
-back to a verbatim passthrough, so this can't break the connection:
-
-- **`tools/call` caching** — results of read-only tools (`CACHEABLE_TOOLS`:
-  `kagi_search_fetch`, `kagi_extract`) are cached in KV keyed by tool + args for
-  `CACHE_TTL_SECONDS` (1h). Cuts repeat latency ~40× and saves Kagi quota. Errors
-  (`result.isError`) are never cached.
-- **Query audit log** — every `tools/call` logs a structured `audit {...}` line
-  (login, tool, cache hit/miss, latency, status) to Workers Logs. Metadata only,
-  never the result payload.
-- **`tools/list` curation** — `HIDDEN_TOOLS` / `TOOL_DESCRIPTION_OVERRIDES` in
-  `src/mcp.ts` hide tools or rewrite their descriptions. By default the
-  `kagi_search_fetch` description is enriched with scoping guidance and the Kagi
-  **lens name→ID map** (Academic=2, Forums=1, Programming=15, News360=29,
-  Recipes=120, Small Web=107), so the model can scope/"lens" a search using the
-  existing tool's `lens_id`/`include_domains`/`time_relative`/… args — no extra
-  tool needed.
-
-> **Note:** MCP clients cache `tools/list`, so after changing a tool or its
-> description, start a fresh chat or toggle the connector to pick it up.
+- **[`sux/README.md`](sux/README.md)** — the single source of truth:
+  architecture, the three load-bearing pillars (MCP dispatch / residential
+  egress / content-addressed cache), the bot-detection war, ops, and roadmap.
+  Deeper dives are under [`sux/docs/`](sux/docs/).
+- **[`sux/FUNCTIONS.md`](sux/FUNCTIONS.md)** — the full function inventory,
+  generated from `sux/src/fns/*.ts` by `npm run docs`.
 
 ## Client-side routing helpers
 
@@ -98,102 +37,34 @@ Two artifacts teach Claude to pick the right sux tool for a query:
 - **`docs/claude-profile-snippet.md`** — a compact snippet to paste into
   claude.ai → Settings → Profile, for chats where skills aren't available.
 
-The full function inventory lives in **`sux/FUNCTIONS.md`** — the source of
-truth, generated from `sux/src/fns/*.ts` by `npm run docs`. `scripts/check-skill-sync.mjs`
-keeps everything honest **from the repo alone** (no live server): FUNCTIONS.md
-matches `npm run docs`, every function is named in the skill, and the plugin's
-`skills/` dir mirrors `.claude/skills/` byte-for-byte. Run it with
-`node scripts/check-skill-sync.mjs --offline`; the **Skill sync** workflow runs
-it on every relevant PR and weekly, and can regenerate on a schedule. After
+`scripts/check-skill-sync.mjs` keeps everything honest **from the repo alone**
+(no live server): `sux/FUNCTIONS.md` matches `npm run docs`, every function is
+named in the skill, and the plugin's `skills/` dir mirrors `.claude/skills/`
+byte-for-byte. Run it with `node scripts/check-skill-sync.mjs --offline`. After
 changing the tool surface, run `npm run docs` and
 `node scripts/check-skill-sync.mjs --write`, then update the skill prose if you
 added a function.
 
-## Required secrets
-
-| Secret | Purpose |
-|---|---|
-| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret |
-| `COOKIE_ENCRYPTION_KEY` | Random 32-byte hex, e.g. `openssl rand -hex 32` — signs the approval/session cookies |
-| `KAGI_API_KEY` | Your Kagi API token (from the Kagi dashboard) — injected server-side |
-| `ALLOWED_GITHUB_LOGIN` | Comma-separated GitHub usernames allowed through (case-insensitive), e.g. `alice` or `alice,bob` |
-
-If `ALLOWED_GITHUB_LOGIN` is unset or empty, the gate fails closed and **every**
-request returns `403`. If `KAGI_API_KEY` is wrong, Kagi returns tool errors
-in-band (HTTP 200 with `"isError": true`) rather than a clean 401 — see
-Troubleshooting.
-
-## Deploy
-
-1. Create a [GitHub OAuth App](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app):
-   - Homepage URL: `https://kagi-mcp.<your-subdomain>.workers.dev`
-   - Authorization callback URL: `https://kagi-mcp.<your-subdomain>.workers.dev/callback`
-2. Create the KV namespace and put its id in `wrangler.jsonc` under `OAUTH_KV`:
-   ```bash
-   wrangler kv namespace create "OAUTH_KV"
-   ```
-3. Set the secrets:
-   ```bash
-   wrangler secret put GITHUB_CLIENT_ID
-   wrangler secret put GITHUB_CLIENT_SECRET
-   wrangler secret put COOKIE_ENCRYPTION_KEY   # openssl rand -hex 32
-   wrangler secret put KAGI_API_KEY
-   wrangler secret put ALLOWED_GITHUB_LOGIN
-   ```
-4. Deploy:
-   ```bash
-   wrangler deploy
-   ```
-5. In Claude → **Settings → Connectors → Add custom connector**, enter
-   `https://kagi-mcp.<your-subdomain>.workers.dev/mcp` and complete the GitHub
-   login. Once connected, Kagi's tools appear.
-
-## Local development
-
-Use a **separate** GitHub OAuth app pointing at localhost:
-
-- Homepage URL: `http://localhost:8788`
-- Authorization callback URL: `http://localhost:8788/callback`
-
-Create `.dev.vars` (git-ignored) with all five secrets:
-
-```
-GITHUB_CLIENT_ID=...
-GITHUB_CLIENT_SECRET=...
-COOKIE_ENCRYPTION_KEY=...
-KAGI_API_KEY=...
-ALLOWED_GITHUB_LOGIN=...
-```
-
-Then:
+## Scripts
 
 ```bash
 npm install
-npm run dev        # http://localhost:8788
-npm run type-check # tsc --noEmit
+npm run dev         # wrangler dev --config sux/wrangler.jsonc
+npm run type-check  # tsc --noEmit
+npm test            # vitest run --config sux/vitest.config.ts
+npm run deploy      # wrangler deploy --config sux/wrangler.jsonc
+npm run docs        # regenerate sux/FUNCTIONS.md
 ```
-
-`.dev.vars` is read **only at startup** — restart `wrangler dev` after editing it.
-
-## Troubleshooting
-
-Run `wrangler tail` (or watch `wrangler dev` output) and match the symptom:
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `403 forbidden` on every call; log shows `gate: rejected login=...` | Logged-in GitHub user ≠ `ALLOWED_GITHUB_LOGIN`, or that secret is empty | Set `ALLOWED_GITHUB_LOGIN` to your exact GitHub username |
-| Connector adds fine, but every search returns an error like `Token signature failed to verify` | Wrong/empty `KAGI_API_KEY` (Kagi validates only on tool calls, in-band) | Re-copy the key from the Kagi dashboard; no spaces/newlines |
-| `502 bad_gateway`; log shows `upstream: fetch ... threw` | Worker couldn't reach `mcp.kagi.com` | Transient network / Kagi outage — retry |
-| OAuth login loops or `Invalid state` | Stale/mismatched cookies or `COOKIE_ENCRYPTION_KEY` changed | Clear cookies; keep `COOKIE_ENCRYPTION_KEY` stable |
 
 ## CI/CD (GitHub Actions)
 
-- **`.github/workflows/ci.yml`** — on every push/PR to `main`: `npm ci`,
-  `type-check`, and `wrangler deploy --dry-run` (validates the bundle & config
-  without deploying).
+- **`.github/workflows/ci.yml`** — on every push/PR: `npm ci`, `type-check`,
+  `npm test`, the node deploy-blob sync check, docs/index sync checks, and
+  `wrangler deploy --dry-run --config sux/wrangler.jsonc` (validates the bundle
+  & config without deploying).
 - **`.github/workflows/deploy.yml`** — on push to `main` (or manual dispatch):
-  type-check then deploy via `cloudflare/wrangler-action`.
+  type-check + test, then deploy via `cloudflare/wrangler-action` with
+  `--config sux/wrangler.jsonc`.
 - **`.github/workflows/skill-sync.yml`** — source-derived, no secrets. Its
   **check** job runs on PRs touching the skill / functions / gen-docs / script,
   and weekly: `node scripts/check-skill-sync.mjs --offline` enforces that
@@ -201,11 +72,7 @@ Run `wrangler tail` (or watch `wrangler dev` output) and match the symptom:
   `.claude/skills/sux/SKILL.md`, and `plugins/sux-router/skills/` mirrors
   `.claude/skills/`. Its **fix** job (schedule / manual dispatch) regenerates
   FUNCTIONS.md and re-mirrors the plugin skill (`--write`), opening/refreshing a
-  PR on `bot/docs-update` when anything changed — this needs the repo setting
-  *Allow GitHub Actions to create and approve pull requests* (Settings →
-  Actions → General). An optional `--live` flag can still diff FUNCTIONS.md
-  against a deployed server's `tools/list` (`SUX_MCP_URL`/`SUX_MCP_TOKEN`), but
-  it is not used by CI.
+  PR on `bot/docs-update` when anything changed.
 
 Deploy needs two **repo secrets** (Settings → Secrets and variables → Actions):
 
@@ -214,29 +81,6 @@ Deploy needs two **repo secrets** (Settings → Secrets and variables → Action
 | `CLOUDFLARE_API_TOKEN` | Cloudflare dashboard → My Profile → API Tokens → *Edit Cloudflare Workers* template |
 | `CLOUDFLARE_ACCOUNT_ID` | Workers & Pages → account ID in the URL/sidebar |
 
-The deploy pushes **code + `wrangler.jsonc` vars only**. Worker *secrets*
-(`KAGI_API_KEY`, `GITHUB_CLIENT_*`, `COOKIE_ENCRYPTION_KEY`,
-`ALLOWED_GITHUB_LOGIN`) are managed out-of-band with `wrangler secret put` and are
+The deploy pushes **code + `sux/wrangler.jsonc` vars only**. Worker *secrets* are
+managed out-of-band with `wrangler secret put --config sux/wrangler.jsonc` and are
 never in the repo or the pipeline.
-
-## Observability & debugging
-
-- **Workers Logs** are enabled (`observability.enabled` in `wrangler.jsonc`), so
-  requests are traceable in the Cloudflare dashboard, not just via live `wrangler
-  tail`.
-- **`DEBUG_MCP`** (a `vars` entry, default `"1"`) toggles verbose proxy logging:
-  each request logs the JSON-RPC method in and Kagi's status out, correlated by
-  `cf-ray`. Set it to `"0"` (and redeploy) for a quiet, fully-streaming
-  production path — when off, request bodies are streamed straight through
-  instead of being buffered to log them.
-
-## Security notes
-
-- The Kagi API key lives only in Worker secrets and is injected server-side; it is
-  never sent to the client.
-- The gate is enforced at the `/mcp` proxy. Any GitHub user can *complete* the
-  OAuth flow and receive a token, but a non-allowed token only ever gets a `403` —
-  it can never reach Kagi.
-- This is a single-user bridge. Review Cloudflare's
-  [Securing MCP Servers](https://github.com/cloudflare/agents/blob/main/docs/securing-mcp-servers.md)
-  before broadening access.
