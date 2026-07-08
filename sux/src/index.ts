@@ -29,6 +29,98 @@ type CleanResult = ReturnType<typeof deferCacheWrite>;
 // cache-scheduled) result, so followers reuse it without redoing the close path.
 const inflight = new Map<string, Promise<CleanResult>>();
 
+// Dispatch-path safety rails. These sit on the HOT tools/call path and preserve
+// behavior for every normal call — they only engage on pathological inputs or a
+// fn that misbehaves:
+//   • FN_DEADLINE_MS — no single fn.run may hang the isolate indefinitely.
+//   • MAX_OUTPUT_CHARS — a fn result's text can't blow the caller's token budget
+//     (or a giant KV value); byte-exact `raw` fns opt out (their bytes are the
+//     payload and must not gain a marker).
+//   • MAX_ARG_BYTES / MAX_ARG_DEPTH — reject a pathological args blob before it
+//     reaches normalizeArgs/run (memory/CPU DoS, or stack blowup on deep nesting).
+const FN_DEADLINE_MS = 60_000;
+const MAX_OUTPUT_CHARS = 1_000_000;
+const MAX_ARG_BYTES = 256_000;
+const MAX_ARG_DEPTH = 64;
+
+// Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout
+// we RESOLVE (not reject) with a clean isError ToolResult and abandon the run
+// promise (it may finish in the background; its value is dropped). The timer is
+// always cleared so a fast fn doesn't hold the isolate open. A rejection or a
+// resolve from run that arrives first wins the race unchanged, so the normal path
+// is byte-for-byte identical to a bare `await fn.run(...)`.
+export function withDeadline(name: string, ms: number, run: Promise<ToolResult>): Promise<ToolResult> {
+	let timer: ReturnType<typeof setTimeout>;
+	const timeout = new Promise<ToolResult>((resolve) => {
+		timer = setTimeout(() => resolve({ content: [{ type: "text", text: `Tool '${name}' timed out after ${ms}ms` }], isError: true }), ms);
+	});
+	return Promise.race([run, timeout]).finally(() => clearTimeout(timer));
+}
+
+// Clamp the total text length of a fn result so one fn can't return an
+// unbounded payload. Walks the text parts, keeping content up to `max` chars,
+// then appends a single truncation marker. Returns the input untouched (same
+// reference) when it's already within budget, so the common case allocates
+// nothing. Non-text parts pass through unchanged.
+export function clampResult(result: ToolResult, max: number): ToolResult {
+	if (!Array.isArray(result.content)) return result;
+	let total = 0;
+	let clamped = false;
+	const content = result.content.map((part) => {
+		if (part?.type !== "text" || typeof part.text !== "string") return part;
+		if (total >= max) {
+			clamped = true;
+			return { ...part, text: "" };
+		}
+		const remaining = max - total;
+		if (part.text.length > remaining) {
+			clamped = true;
+			total = max;
+			return { ...part, text: part.text.slice(0, remaining) };
+		}
+		total += part.text.length;
+		return part;
+	});
+	if (!clamped) return result;
+	content.push({ type: "text" as const, text: `\n…[sux: output truncated at ${max} chars]` });
+	return { ...result, content };
+}
+
+// Bounded depth probe: returns the greater of the object's nesting depth and
+// (limit + 1) if it's deeper than `limit`. Recursion is capped at `limit`, so a
+// pathologically deep (or cyclic) blob can't blow the stack while we measure it.
+function exceedsDepth(v: unknown, limit: number): boolean {
+	let deep = false;
+	const walk = (node: unknown, d: number): void => {
+		if (deep) return;
+		if (d > limit) {
+			deep = true;
+			return;
+		}
+		if (node === null || typeof node !== "object") return;
+		for (const val of Object.values(node as Record<string, unknown>)) walk(val, d + 1);
+	};
+	walk(v, 0);
+	return deep;
+}
+
+// Reject a pathological args blob before normalizeArgs/run. Depth is checked
+// FIRST (bounded, stack-safe) so a deeply-nested payload can't blow the stack in
+// JSON.stringify below. Returns a reason string to surface, or null when fine.
+export function checkArgs(args: unknown, maxBytes: number, maxDepth: number): string | null {
+	if (args !== null && typeof args === "object" && exceedsDepth(args, maxDepth)) {
+		return `arguments nested too deep (> ${maxDepth} levels)`;
+	}
+	let json: string;
+	try {
+		json = JSON.stringify(args ?? null);
+	} catch {
+		return "arguments are not serializable";
+	}
+	if (json.length > maxBytes) return `arguments too large (${json.length} > ${maxBytes} bytes)`;
+	return null;
+}
+
 // The real tools/call dispatch chain, split out from rtServer.fetch so it can be
 // exercised end-to-end in tests without constructing the module-scope
 // OAuthProvider or a full Request. rtServer.fetch calls this after the auth gate,
@@ -87,6 +179,18 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			delete (rawArgs as Record<string, unknown>).summarize;
 		}
 
+		// Arg-size guard: reject a pathological args blob (oversized JSON, or nested
+		// past a sane depth) BEFORE normalizeArgs/run — a cheap up-front rejection
+		// that protects the recursive normalize walk and the fn from a memory/CPU/
+		// stack DoS. Recorded as an error call so rejections show up in observability.
+		const argErr = checkArgs(rawArgs, MAX_ARG_BYTES, MAX_ARG_DEPTH);
+		if (argErr) {
+			const rejectEvent = { tool: name, ms: 0, error: true, err: argErr };
+			recordCall(env, ctx, rejectEvent);
+			shipToLoki(env, ctx, rejectEvent);
+			return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Tool '${name}' rejected: ${argErr}` }], isError: true } });
+		}
+
 		// Sane normalization on open: fold styled/fullwidth "font" unicode to ASCII
 		// and strip BOM/zero-width/control chars from string inputs. Byte-exact fns
 		// (hash/encode/compress/qr/kv/…) opt out via `raw` so their bytes are untouched.
@@ -139,6 +243,12 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 					}
 				}
 			}
+			// Output byte-cap: clamp the (normalized, maybe-summarized) text before it
+			// is returned OR cached, so no fn can blow the caller's token budget or
+			// write a giant KV value. Universal at dispatch — but byte-exact `raw` fns
+			// opt out (they already own their output and must not gain a marker), and
+			// fns that already clamp keep their result unchanged (a no-op when under cap).
+			if (!fn.raw) out = clampResult(out, MAX_OUTPUT_CHARS);
 			// noCache/isError results are returned but never cached; deferCacheWrite
 			// hands back a cleaned clone (noCache stripped) without mutating the shared
 			// run result, so coalesced callers can't poison each other's cache decision.
@@ -155,9 +265,12 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			// expensive fn.run AND the shared close path (normalize + the single cache
 			// write) once; non-cacheable fns (no key) always run directly. Every
 			// coalesced awaiter shares the one cleaned result the leader produced.
+			// Each fn.run is wrapped in a hard per-fn deadline so a hung fn resolves to
+			// a clean isError result instead of stalling the isolate (and the group).
+			const runGuarded = () => withDeadline(name, FN_DEADLINE_MS, fn.run(env, args));
 			result = key
-				? await singleFlight(inflight, key, async () => finalize(await fn.run(env, args)))
-				: await finalize(await fn.run(env, args));
+				? await singleFlight(inflight, key, async () => finalize(await runGuarded()))
+				: await finalize(await runGuarded());
 		} catch (e) {
 			err = String((e as Error).message ?? e);
 			console.error(`sux tool '${name}' threw: ${(e as Error)?.stack ?? err}`);
