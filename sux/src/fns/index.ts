@@ -69,6 +69,7 @@ import { markdown } from "./markdown";
 import { openalex } from "./openalex";
 import { pdf } from "./pdf";
 import { people } from "./people";
+import { people_finder } from "./people_finder";
 import { pipe } from "./pipe";
 import { places } from "./places";
 import { preferences } from "./preferences";
@@ -158,6 +159,7 @@ export const FUNCTIONS: Fn[] = [
 	openalex,
 	pdf,
 	people,
+	people_finder,
 	pipe,
 	places,
 	preferences,
