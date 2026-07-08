@@ -8,6 +8,20 @@ Half the store code written this session is degrade logic for **"the Mac is asle
 
 **Decisions (Colin, 2026-07-08):** primary = **home spare Linux box**, cloud = **failover**; Worker→vault transport = **Workers VPC (cloudflared), retire the public Funnel**.
 
+## The three tiers (Colin, 2026-07-08)
+
+The system settles into three tiers, each with a different job and a different availability/statefulness profile:
+
+| Tier | What | State | Availability | Reached by |
+|---|---|---|---|---|
+| **1 · Store** | sux Worker (stateless fns) + **git store** | none in the Worker; git = truth, KV = cache | **always on, always correct** | claude.ai/mobile/desktop (OAuth) + the fns |
+| **2 · Live MCP** | **stateful Obsidian** (Electron + plugins) on the always-on box | the running app + vault working copy | as good as the box | the Worker, privately, over **Workers VPC** |
+| **3 · Client MCP** | the heavyweight Obsidian MCP surfaced to **Claude clients**, **OAuth-wrapped** | — | public-facing (clients require it) | claude.ai UI / mobile / desktop |
+
+Tier 1 is built and deploy-ready. Tier 2 is the vpc-hosting design below. Tier 3 is the client-exposure question — §8, where the "Funnel vs Cloudflare Zero Trust" report lives.
+
+**Sync model (revised — Sync is now *in*, alongside git):** the always-on box runs **both** fabrics. **git** (obsidian-git → `colinxs/vault`) stays the **source of truth** — the undo, the Worker's fallback backend, retrieval's exact-identifier rung. **Obsidian Sync** (native — the box runs the full app, so Sync is built in; obsidian-headless can't serve it and isn't used) is the **device-convergence layer** so the box, your Mac, and your phone's Obsidian apps stay live-synced. Complementary, not competing: git is truth + machine-readable (the Worker reads it); Sync is your-devices + E2E. The one hazard is two writers racing the same file — see §7.
+
 ---
 
 ## 1. Transport: Cloudflare Workers VPC
@@ -171,6 +185,36 @@ Editable Excalidraw of the topology: [`diagrams/vpc-topology.excalidraw`](diagra
 ## 7. Open items
 
 - **Service-token rotation** (if you use the public-hostname + Access path for the web UI): tokens expire (~1 yr), a lapse silently breaks the caller — set the 1-week-out alert. Workers VPC bindings don't have this (no token).
-- **obsidian-git conflict safety** at short intervals across two live nodes (home + cloud) both auto-committing — pick one as the write master, or lengthen the cloud node's push interval, to avoid merge churn. (Realistically only the home node takes interactive writes.)
-- **Access for MCP / Managed OAuth** (shipped 2025) is the future upgrade if you want AI-agent OAuth to the vault MCP instead of a static bearer — deferred; the bearer + Workers VPC is enough now.
+- **Sync + git conflict safety** — three writers can now touch the same file: obsidian-git on the box, Obsidian Sync across your devices, and the Worker (git backend). Keep the **home node the single interactive-write master**; make the cloud node **pull/mirror-only** (git pull, no auto-commit); rely on Sync for device convergence and git for the machine-readable truth. An uncommitted Obsidian write is the one state neither git nor the Worker can see until it commits — keep the obsidian-git interval short.
 - Vault out of iCloud on the Mac becomes moot once the live vault is the Linux box (the [iCloud-materialize gotcha](knowledge-store-live.md) disappears).
+
+---
+
+## 8. Tier 3 — surfacing the Obsidian MCP to Claude clients (the Funnel vs Zero Trust report)
+
+**The ask:** the heavyweight, plugin-rich Obsidian MCP, **OAuth-wrapped** (not a raw bearer), usable as a connector in **claude.ai UI, Claude mobile, and Claude Desktop**. Two hard constraints from research (2026-07-08):
+
+1. **Claude clients require the MCP server to be reachable over the PUBLIC internet** from Anthropic's IPs — *"servers hosted on a private network, behind a VPN, or blocked by a firewall won't connect"* ([Anthropic support](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)). So tier 3 is inherently a **public** exposure — Workers VPC and the tailnet (both private) **cannot** be the client path; they're only the *Worker's* path (tier 2).
+2. Claude's connector supports **OAuth** (auth spec 3/26 + 6/18) across claude.ai, mobile, Desktop, Cowork ([Anthropic](https://support.claude.com/en/articles/11503834-building-custom-connectors-via-remote-mcp-servers)) — but its connector is **strict about the OAuth discovery handshake**: it needs the `WWW-Authenticate: Bearer resource_metadata="…"` header on the 401 (RFC 9728). Claude **Code** tolerates its absence by probing `.well-known/oauth-protected-resource`; **claude.ai web/mobile do not**.
+
+### The report
+
+| Option | OAuth? | Works in claude.ai web / mobile / desktop? | Verdict |
+|---|---|---|---|
+| **Tailscale Funnel** (today's mcp-gate public tier) | **No** — secret-in-URL only; claude.ai treats it as `auth: none` | secret-path works, but no OAuth, no identity, no revocation beyond rotating the secret; 3-port ceiling (full) | **Rejected** for the OAuth requirement |
+| **Cloudflare Zero Trust · Access for MCP (Managed OAuth)** | Yes — Access becomes an RFC 8707 OAuth server; the origin validates the `Cf-Access-Jwt-Assertion` JWT | **Broken today for exactly these clients** — Access's 401 omits the `WWW-Authenticate` header, so claude.ai web/mobile fail at *Connect* before any login; only **Claude Code** succeeds ([anthropics/claude-ai-mcp#410](https://github.com/anthropics/claude-ai-mcp/issues/410), closed *not-planned*) | **Not yet** — right idea, wrong clients |
+| **Spec-correct OAuth MCP behind a plain cloudflared tunnel** | Yes — the server implements MCP OAuth itself and emits the `WWW-Authenticate` header | **Yes** — this is the header claude.ai needs | **The working path** |
+
+**So neither of the two you named cleanly meets the requirement**: Funnel has no OAuth at all, and CF Access Managed OAuth — the elegant, purpose-built option — is currently broken for claude.ai web/mobile/desktop connectors (the exact clients you want), working only in Claude Code, with no planned fix. The requirement is met only by an MCP server that speaks the OAuth discovery handshake correctly.
+
+### Recommendation — route tier 3 *through the sux Worker*
+
+The cleanest working path reuses what already works: **the sux Worker is itself an OAuth'd remote MCP server that is already a live connector in claude.ai, mobile, and Desktop** — so its OAuth discovery handshake already satisfies those clients (proven — it's the sux connector). Therefore:
+
+- **Clients → sux Worker (its existing OAuth) → Workers VPC → the private Obsidian MCP.** The Worker federates the box's `/mcp/` tools (the `obsidian` fn already does `action=tools`/`action=call`; the richer move is to re-expose the plugin's tools as first-class connector tools).
+- **Obsidian never goes public.** It stays private behind Workers VPC for *both* tier 2 and tier 3; the Obsidian bearer is only ever a **Worker secret** — that *is* "wrap the local bearer with OAuth," done by the Worker's OAuth, with zero new public surface and nothing new to secure.
+- **Search comes for free** — the plugin's structured `search_query` (JsonLogic) is one of the federated tools.
+
+**Fallback if you want a *dedicated* Obsidian connector** (separate from sux), accepting a public endpoint: run a spec-correct OAuth MCP on the box behind a plain cloudflared tunnel — [`jimprosser/obsidian-web-mcp`](https://github.com/jimprosser/obsidian-web-mcp) is purpose-built prior art (OAuth 2.0 + PKCE, cloudflared outbound-only, path-traversal-guarded, **atomic writes explicitly safe for Obsidian Sync**). It implements the handshake claude.ai needs, so it works where CF Access Managed OAuth doesn't. Trade-off: a second OAuth system to run and a public (OAuth-gated) Obsidian surface.
+
+**Revisit CF Access Managed OAuth** once #410's `WWW-Authenticate` gap is fixed on either side — then it becomes the lowest-maintenance dedicated-connector path (Cloudflare handles the OAuth, you just validate the JWT). Track it; don't build on it yet.
