@@ -77,6 +77,18 @@ back to a verbatim passthrough, so this can't break the connection:
 > **Note:** MCP clients cache `tools/list`, so after changing a tool or its
 > description, start a fresh chat or toggle the connector to pick it up.
 
+## Client-side routing helpers
+
+Two artifacts teach Claude to pick the right sux tool for a query:
+
+- **`.claude/skills/sux-router/SKILL.md`** — a Claude Code skill with the full
+  intent→tool routing map (search, fetch/render ladder, research, shopping,
+  documents, transforms, `pipe`/`batch` composition). Loaded automatically in
+  Claude Code sessions in this repo; copy it into `~/.claude/skills/` to use it
+  everywhere.
+- **`docs/claude-profile-snippet.md`** — a compact snippet to paste into
+  claude.ai → Settings → Profile, for chats where skills aren't available.
+
 ## Required secrets
 
 | Secret | Purpose |
