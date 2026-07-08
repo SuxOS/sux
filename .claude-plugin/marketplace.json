@@ -1,5 +1,6 @@
 {
   "name": "sux",
+  "description": "Plugins for the sux MCP server — currently the sux-router skill, which maps natural-language requests to the right sux tool.",
   "owner": {
     "name": "colinxs"
   },
