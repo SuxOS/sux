@@ -1,13 +1,19 @@
 {
   "name": "sux-router",
   "displayName": "sux router",
-  "version": "0.1.0",
-  "description": "Ships the `sux` skill — intent→tool routing for the sux MCP server: web search, fetch/render escalation, research databases, shopping, documents, data transforms, and server-side pipe/batch composition.",
+  "version": "0.2.0",
+  "description": "Installs BOTH the `sux` skill (intent→tool routing) AND the sux MCP connector — one install gets you the routing guidance plus the tools themselves (web search, fetch/render escalation, research databases, shopping, documents, data transforms, and server-side pipe/batch composition).",
   "author": {
     "name": "colinxs"
   },
   "repository": "https://github.com/colinxs/sux",
   "license": "MIT",
   "keywords": ["mcp", "routing", "web-search", "scraping"],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "mcpServers": {
+    "sux": {
+      "type": "http",
+      "url": "https://sux.colinxs.workers.dev/mcp"
+    }
+  }
 }
