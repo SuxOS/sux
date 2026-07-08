@@ -1,13 +1,19 @@
 name: Skill sync
 
-# Keeps .claude/skills/sux-router/SKILL.md aligned with the deployed sux
-# server's tool surface. Weekly (and on demand) it asks the live server for
-# tools/list and diffs against docs/sux-tools.txt + the skill; on drift it
-# opens/refreshes a `skill-sync` issue. On PRs that touch the skill it runs
-# the offline (snapshot-only) check, so no secret is needed there.
+# Keeps the sux skill, its plugin copy, and the generated function reference in
+# sync — all derived from the repo itself (sux/src/fns/*.ts), no live server or
+# secrets required. `scripts/check-skill-sync.mjs` enforces three invariants:
+#   1. sux/FUNCTIONS.md == `npm run docs` output (stale docs fail)
+#   2. every function in FUNCTIONS.md is named in .claude/skills/sux/SKILL.md
+#   3. plugins/sux-router/skills/ mirrors .claude/skills/ byte-for-byte
 #
-# Secrets: SUX_MCP_URL (the /mcp endpoint), SUX_MCP_TOKEN (bearer, if gated).
-# If SUX_MCP_URL is unset the live check is skipped rather than failed.
+# check job — gates PRs that touch the skill / functions / script, and runs on
+#             the weekly schedule + manual dispatch. Offline, no secrets.
+# fix job   — schedule / manual dispatch only: regenerates FUNCTIONS.md and
+#             re-mirrors the plugin skill, then opens/refreshes a PR on
+#             `bot/docs-update` if anything changed. Needs the repo setting
+#             "Allow GitHub Actions to create and approve pull requests"
+#             (Settings → Actions → General).
 
 on:
   schedule:
@@ -15,15 +21,14 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - '.claude/skills/sux-router/SKILL.md'
-      - 'docs/sux-tools.txt'
+      - '.claude/skills/**'
+      - 'plugins/sux-router/skills/**'
+      - 'sux/src/fns/**'
+      - 'sux/FUNCTIONS.md'
+      - 'sux/scripts/gen-docs.mjs'
       - 'docs/claude-profile-snippet.md'
       - 'scripts/check-skill-sync.mjs'
       - '.github/workflows/skill-sync.yml'
-
-permissions:
-  contents: read
-  issues: write
 
 concurrency:
   group: skill-sync-${{ github.ref }}
@@ -31,8 +36,10 @@ concurrency:
 
 jobs:
   check:
-    name: SKILL.md vs deployed tool surface
+    name: SKILL.md / FUNCTIONS.md / plugin mirror
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -40,41 +47,48 @@ jobs:
         with:
           node-version: 24
 
-      - name: Check
-        id: check
-        env:
-          SUX_MCP_URL: ${{ secrets.SUX_MCP_URL }}
-          SUX_MCP_TOKEN: ${{ secrets.SUX_MCP_TOKEN }}
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ] || [ -z "$SUX_MCP_URL" ]; then
-            [ -z "$SUX_MCP_URL" ] && echo "SUX_MCP_URL not set — running offline check only." | tee -a "$GITHUB_STEP_SUMMARY"
-            node scripts/check-skill-sync.mjs --offline 2>&1 | tee report.txt
-          else
-            node scripts/check-skill-sync.mjs 2>&1 | tee report.txt
-          fi
+      - name: Check (source-derived, offline)
+        run: node scripts/check-skill-sync.mjs --offline
 
-      - name: Open or refresh drift issue
-        if: failure() && github.event_name != 'pull_request'
+  fix:
+    name: Regenerate docs + re-mirror plugin skill
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Regenerate from source
+        run: node scripts/check-skill-sync.mjs --write
+
+      - name: Open or refresh PR if anything changed
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh label create skill-sync --description "sux-router skill drifted from the deployed tool surface" --color D93F0B 2>/dev/null || true
-          {
-            echo "The deployed sux tool surface no longer matches \`.claude/skills/sux-router/SKILL.md\` / \`docs/sux-tools.txt\`."
-            echo
-            echo '```'
-            cat report.txt
-            echo '```'
-            echo
-            echo "Fix: update the skill (and \`docs/claude-profile-snippet.md\` if a headline tool changed), then refresh the snapshot with \`SUX_MCP_URL=… node scripts/check-skill-sync.mjs --write\`."
-            echo
-            echo "_Last checked by run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}_"
-          } > body.md
-          existing=$(gh issue list --state open --label skill-sync --json number --jq '.[0].number // empty')
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "FUNCTIONS.md and plugin skill already up to date." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B bot/docs-update
+          git add sux/FUNCTIONS.md plugins/sux-router/skills
+          git commit -m "docs: regenerate FUNCTIONS.md + re-mirror plugin skill"
+          git push -f origin bot/docs-update
+          existing=$(gh pr list --state open --head bot/docs-update --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
-            gh issue edit "$existing" --body-file body.md
-            gh issue comment "$existing" --body "Still drifting as of the latest scheduled check — body updated."
+            gh pr comment "$existing" --body "Refreshed by the latest Skill sync run."
+            echo "Updated existing PR #$existing." | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            gh issue create --title "sux-router skill drift: SKILL.md vs deployed tool surface" --label skill-sync --body-file body.md
+            gh pr create \
+              --title "docs: regenerate FUNCTIONS.md + plugin skill mirror" \
+              --body "$(printf 'Automated source-derived regeneration by the **Skill sync** workflow:\n\n- `sux/FUNCTIONS.md` — regenerated from `sux/src/fns/*.ts` via `npm run docs`\n- `plugins/sux-router/skills/` — re-mirrored from `.claude/skills/`\n\nIf a newly added function is unmentioned in `.claude/skills/sux/SKILL.md`, the **check** job will fail until the skill prose is updated by hand.\n\nRun: %s/%s/actions/runs/%s' "${{ github.server_url }}" "${{ github.repository }}" "${{ github.run_id }}")"
+            echo "Opened new docs PR." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
