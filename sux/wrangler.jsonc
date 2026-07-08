@@ -2,7 +2,7 @@
 	"$schema": "../node_modules/wrangler/config-schema.json",
 	"name": "sux",
 	"main": "src/index.ts",
-	"compatibility_date": "2025-03-10",
+	"compatibility_date": "2025-06-01",
 	"compatibility_flags": ["nodejs_compat"],
 	// KV: OAuth state + tool-result cache (same scheme as the core Worker).
 	"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "d0dadc11fdd64598992f4a84a958bafb" }],
