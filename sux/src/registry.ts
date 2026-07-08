@@ -46,6 +46,9 @@ export type RtEnv = Env &
 		// Remote Obsidian backend: the Funnel'd Local REST API URL + its bearer key.
 		OBSIDIAN_REMOTE_URL?: string;
 		OBSIDIAN_REMOTE_KEY?: string;
+		// Dropbox app-folder blob store (dropbox fn + ingest blob routing): an
+		// App-folder-scoped access token — it can only see /Apps/<app>/.
+		DROPBOX_TOKEN?: string;
 
 		EXA_API_KEY?: string;
 

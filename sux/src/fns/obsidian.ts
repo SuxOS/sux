@@ -69,6 +69,30 @@ async function noteWritten(env: any, path: string, body: string | null, commitSh
 	else await cacheDel(env, CACHE_HEAD);
 }
 
+// --- shared vault-write machinery (the write op here + the ingest fn) ---
+export type VaultCfg = { repo: string; branch: string; dir: string; inVault: (p: string) => string };
+
+export function vaultCfg(env: any): VaultCfg | { error: string } {
+	const repo = env.OBSIDIAN_VAULT_REPO;
+	if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(String(repo))) return { error: "Obsidian git backend not configured. Set OBSIDIAN_VAULT_REPO to 'owner/repo'." };
+	const branch = String(env.OBSIDIAN_VAULT_BRANCH ?? "main");
+	const dir = String(env.OBSIDIAN_VAULT_DIR ?? "").replace(/^\/+|\/+$/g, "");
+	return { repo: String(repo), branch, dir, inVault: (p: string) => (dir ? `${dir}/${p}`.replace(/\/+/g, "/") : p) };
+}
+
+/** Commit one file (create/overwrite) into the vault repo; warms the KV cache for text bodies. */
+export async function vaultPut(env: any, cfg: VaultCfg, path: string, content: string | Uint8Array, message: string): Promise<{ ok: true; commit?: string; created: boolean } | { ok: false; error: string }> {
+	const full = cfg.inVault(path);
+	const cur = await ghJson(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`);
+	const sha = cur.status === 200 ? cur.json?.sha : undefined;
+	const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
+	const body = JSON.stringify({ message, content: toB64(bytes), branch: cfg.branch, ...(sha ? { sha } : {}) });
+	const put = await ghJson(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
+	if (put.status >= 400) return { ok: false, error: `GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (writes need a GITHUB_TOKEN with write access).` };
+	await noteWritten(env, path, typeof content === "string" ? content : null, put.json?.commit?.sha);
+	return { ok: true, commit: put.json?.commit?.sha, created: cur.status === 404 };
+}
+
 // Surgical find/replace: the match must be unique unless all=true, so an edit
 // can never land somewhere unintended — task ops flip exactly the checkbox they
 // mean to, and a note is never reprinted wholesale.
@@ -251,11 +275,9 @@ export const obsidian: Fn = {
 		if (backend === "local") {
 			return fail("backend:'local' (Obsidian Local REST API over the tailnet) isn't wired yet — expose the Local REST API over Tailscale Funnel and use backend:'remote' (OBSIDIAN_REMOTE_URL + OBSIDIAN_REMOTE_KEY), or use the git backend.");
 		}
-		const repo = env.OBSIDIAN_VAULT_REPO;
-		if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(String(repo))) return fail("Obsidian git backend not configured. Set OBSIDIAN_VAULT_REPO to 'owner/repo'.");
-		const branch = String(env.OBSIDIAN_VAULT_BRANCH ?? "main");
-		const dir = String(env.OBSIDIAN_VAULT_DIR ?? "").replace(/^\/+|\/+$/g, "");
-		const inVault = (p: string) => (dir ? `${dir}/${p}`.replace(/\/+/g, "/") : p);
+		const cfg = vaultCfg(env);
+		if ("error" in cfg) return fail(cfg.error);
+		const { repo, branch, dir, inVault } = cfg;
 
 		try {
 			if (action === "list") {
@@ -319,14 +341,9 @@ export const obsidian: Fn = {
 				const content = String(args?.content ?? "");
 				if (!p) return fail("action=write requires a `path`.");
 				if (!content) return fail("action=write requires `content`.");
-				const full = inVault(p);
-				const cur = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(branch)}`);
-				const sha = cur.status === 200 ? cur.json?.sha : undefined;
-				const body = JSON.stringify({ message: `sux: write ${p}`, content: toB64(new TextEncoder().encode(content)), branch, ...(sha ? { sha } : {}) });
-				const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
-				if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (write needs a GITHUB_TOKEN with write access).`);
-				await noteWritten(env, p, content, put.json?.commit?.sha);
-				return ok(JSON.stringify({ ok: true, path: p, bytes: content.length, created: cur.status === 404, commit: put.json?.commit?.sha }, null, 2));
+				const r = await vaultPut(env, cfg, p, content, `sux: write ${p}`);
+				if (!r.ok) return fail(r.error);
+				return ok(JSON.stringify({ ok: true, path: p, bytes: content.length, created: r.created, commit: r.commit }, null, 2));
 			}
 			if (action === "edit") {
 				const p = String(args?.path ?? "").trim();

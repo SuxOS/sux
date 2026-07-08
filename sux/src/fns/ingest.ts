@@ -1,0 +1,140 @@
+import { type Fn, fail, ok } from "../registry";
+import { htmlToMd } from "./_markup";
+import { clamp, loadBytes, putBlob } from "./_util";
+import { dropboxPut } from "./dropbox";
+import { vaultCfg, vaultPut } from "./obsidian";
+
+// Capture — the intake half of the knowledge core (docs/proposals/domains.md §3).
+// Exactly one source in (url | text | query), one provenance-stamped markdown
+// note out, into Inbox/ of the git-backed vault (git = truth; vaultPut warms the
+// KV cache). Blob routing for non-markdown sources: ≤1MB is committed into the
+// vault repo as an attachment (a vault is allowed to hold small binaries);
+// larger — or blobs:"dropbox" — uploads to the Dropbox app folder and the note
+// carries the shared link; R2 is the fallback when DROPBOX_TOKEN is unset.
+// Notes are cheap intake, never polished — triage promotes them later.
+const BLOB_VAULT_MAX = 1_048_576;
+const BODY_MAX = 150_000;
+
+const slugify = (s: string) =>
+	s
+		.toLowerCase()
+		.replace(/https?:\/\//, "")
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 60) || "capture";
+
+const isTextCt = (ct: string) => /^text\/|^application\/(json|xml|javascript|x-yaml|yaml)|[/+](json|xml|yaml)/i.test(ct);
+
+const urlName = (u: string): string => {
+	try {
+		const last = decodeURIComponent(new URL(u).pathname.split("/").filter(Boolean).pop() ?? "");
+		return last.replace(/[^\w.-]+/g, "_");
+	} catch {
+		return "";
+	}
+};
+
+function buildNote(title: string, source: string, body: string, tags: string[]): string {
+	const tagLine = ["capture", ...tags.map((t) => String(t).trim()).filter(Boolean)].join(", ");
+	return `---\ntype: capture\ncreated: ${new Date().toISOString()}\nsource: "${source.replace(/"/g, '\\"')}"\ntags: [${tagLine}]\n---\n\n# ${title}\n\n${body}\n`;
+}
+
+export const ingest: Fn = {
+	name: "ingest",
+	cost: 3,
+	description:
+		"Capture into the Obsidian vault (git-backed = the undo; the KV cache is warmed). Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments) | text (verbatim body) | query (web-search results). Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md, or `path` if given. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (R2 fallback when DROPBOX_TOKEN is unset). Returns { note, commit, source, blob? }.",
+	inputSchema: {
+		type: "object",
+		additionalProperties: false,
+		properties: {
+			url: { type: "string", description: "Capture a web page or file." },
+			text: { type: "string", description: "Capture raw text/markdown as the note body." },
+			query: { type: "string", description: "Run a web search and capture the results." },
+			title: { type: "string", description: "Note title (derived from the source when omitted)." },
+			path: { type: "string", description: "Explicit vault note path (default Inbox/<date> <slug>.md)." },
+			tags: { type: "array", items: { type: "string" }, description: "Extra frontmatter tags ('capture' is always included)." },
+			blobs: { type: "string", enum: ["auto", "dropbox"], default: "auto", description: "Blob routing: auto = ≤1MB into the vault repo, larger to Dropbox; dropbox = always Dropbox." },
+		},
+	},
+	cacheable: false,
+	run: async (env, args) => {
+		const cfg = vaultCfg(env);
+		if ("error" in cfg) return fail(cfg.error);
+		const url = typeof args?.url === "string" && args.url.trim() ? String(args.url).trim() : undefined;
+		const text = typeof args?.text === "string" && args.text.trim() ? String(args.text) : undefined;
+		const query = typeof args?.query === "string" && args.query.trim() ? String(args.query).trim() : undefined;
+		if ([url, text, query].filter(Boolean).length !== 1) return fail("Provide exactly one source: `url`, `text`, or `query`.");
+		const tags = Array.isArray(args?.tags) ? args.tags.map(String) : [];
+		const date = new Date().toISOString().slice(0, 10);
+
+		try {
+			let title = String(args?.title ?? "").trim();
+			let source: string;
+			let body: string;
+			let blob: { placement: string; link: string; size: number; content_type?: string } | undefined;
+
+			if (text) {
+				title ||= text.split("\n")[0].replace(/^#+\s*/, "").slice(0, 80).trim() || "capture";
+				source = "text";
+				body = text;
+			} else if (query) {
+				// Dispatch through the registry (dynamic import avoids the index.ts cycle, same as pipe).
+				const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
+				const search = FUNCTIONS.find((f) => f.name === "search");
+				if (!search) return fail("search fn unavailable.");
+				const r = await search.run(env, { query });
+				const got = r.content?.[0]?.text ?? "";
+				if (r.isError) return fail(`ingest query failed: ${got}`);
+				title ||= query;
+				source = `search: ${query}`;
+				body = got;
+			} else {
+				const { bytes, contentType } = await loadBytes(env, { url });
+				const ct = String(contentType ?? "")
+					.split(";")[0]
+					.trim()
+					.toLowerCase();
+				source = url!;
+				if (/html/.test(ct)) {
+					const html = new TextDecoder().decode(bytes);
+					const m = /<title[^>]*>([^<]{1,200})<\/title>/i.exec(html);
+					title ||= m?.[1]?.trim() || urlName(url!) || url!;
+					body = htmlToMd(html);
+				} else if (isTextCt(ct)) {
+					title ||= urlName(url!) || url!;
+					body = new TextDecoder().decode(bytes);
+				} else {
+					const name = urlName(url!) || `${slugify(title || "blob")}.bin`;
+					title ||= name;
+					const meta = [`- size: ${bytes.length} bytes`, ct ? `- content-type: ${ct}` : ""].filter(Boolean);
+					if (args?.blobs === "dropbox" || bytes.length > BLOB_VAULT_MAX) {
+						if (env.DROPBOX_TOKEN) {
+							const up = await dropboxPut(env, `/attachments/${name}`, bytes);
+							if ("error" in up) return fail(up.error);
+							blob = { placement: "dropbox", link: up.url ?? `dropbox:${up.path}`, size: bytes.length, content_type: ct || undefined };
+						} else {
+							const ref = await putBlob(env, bytes, ct || "application/octet-stream");
+							blob = { placement: "r2 (DROPBOX_TOKEN unset)", link: ref.url, size: bytes.length, content_type: ct || undefined };
+						}
+						body = [`[${name}](${blob.link})`, "", ...meta, `- stored: ${blob.placement}`].join("\n");
+					} else {
+						const apath = `Attachments/${date}-${name}`;
+						const w = await vaultPut(env, cfg, apath, bytes, `sux: ingest attachment ${name}`);
+						if (!w.ok) return fail(w.error);
+						blob = { placement: "vault", link: apath, size: bytes.length, content_type: ct || undefined };
+						body = [`![[${apath}]]`, "", ...meta, "- stored: vault"].join("\n");
+					}
+				}
+			}
+
+			const notePath = String(args?.path ?? "").trim() || `Inbox/${date} ${slugify(title)}.md`;
+			const md = buildNote(title, source, clamp(body, BODY_MAX), tags);
+			const w = await vaultPut(env, cfg, notePath, md, `sux: ingest ${title.slice(0, 60)}`);
+			if (!w.ok) return fail(w.error);
+			return ok(JSON.stringify({ ok: true, note: notePath, commit: w.commit, source, ...(blob ? { blob } : {}) }, null, 2));
+		} catch (e) {
+			return fail(`ingest failed: ${String((e as Error).message ?? e)}`);
+		}
+	},
+};
