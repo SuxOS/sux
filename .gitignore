@@ -176,3 +176,8 @@ dist
 
 # CapSolver browser extension — downloaded artifact, contains the API key in config.js
 sux/mac-render/extensions/
+
+# TLS certs/keys (e.g. stray `tailscale cert` output) — never commit
+*.crt
+*.key
+*.pem
