@@ -4,15 +4,28 @@
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",
+    "deploy:sux": "wrangler deploy --config sux/wrangler.jsonc",
+    "secret:sux": "wrangler secret put --config sux/wrangler.jsonc",
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "cf-typegen": "wrangler types",
     "type-check": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run && vitest run --config sux/vitest.config.ts",
+    "test:core": "vitest run",
+    "test:sux": "vitest run --config sux/vitest.config.ts",
+    "test:watch": "vitest",
+    "docs": "node sux/scripts/gen-docs.mjs",
+    "gen:index": "node sux/scripts/gen-index.mjs",
+    "build:node": "node sux/node/build-deploy.mjs",
+    "check:node": "node sux/node/build-deploy.mjs --check",
+    "bench:costs": "node sux/scripts/benchmark-costs.mjs",
+    "check:pricing": "node sux/scripts/check-pricing.mjs"
   },
   "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.8.1"
+    "@cloudflare/puppeteer": "^1.1.0",
+    "@cloudflare/workers-oauth-provider": "^0.8.1",
+    "fflate": "^0.8.3",
+    "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
     "typescript": "6.0.3",

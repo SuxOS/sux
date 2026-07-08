@@ -1,10 +1,9 @@
 name: CI
 
+# Triggers on every push and pull request (all branches) — fails on any error.
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -22,7 +21,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -34,6 +33,24 @@ jobs:
       - name: Test
         run: npm test
 
+      # The installer (root@192.168.1.1) embeds node/server.mjs as a base64 blob;
+      # this fails if it has drifted from server.mjs (fix: npm run build:node).
+      # Guards against shipping a stale residential node — how the binary-egress
+      # bug hid: the blob and its source had silently diverged.
+      - name: Node deploy blob in sync
+        run: npm run check:node
+
+      # FUNCTIONS.md is generated from the fn files — fail if it's stale
+      # (fix: npm run docs). The fn set churns fast; this keeps the agent-facing
+      # tool reference honest.
+      - name: Docs in sync
+        run: npm run docs && git diff --exit-code sux/FUNCTIONS.md
+
+      # The generated fn manifest (index.ts) must include every fns/*.ts
+      # (fix: npm run gen:index) — a new fn that isn't registered ships silently.
+      - name: Function index in sync
+        run: npm run gen:index && git diff --exit-code sux/src/fns/index.ts
+
       # Validates the Worker bundles & config are deployable without deploying.
       - name: Build (dry-run deploy)
-        run: npx wrangler deploy --dry-run
+        run: npx wrangler deploy --dry-run --config sux/wrangler.jsonc

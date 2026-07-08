@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sux": {
+      "type": "http",
+      "url": "https://sux.colinxs.workers.dev/mcp"
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "sux",
+  "displayName": "sux",
+  "version": "1.0.0",
+  "description": "Registers the remote sux MCP server (residential caching web-fetch engine: web search, scrape/render, extract/convert, AI text, storage) as an OAuth-gated connector, and ships the routing skill that teaches Claude which sux function to reach for.",
+  "author": {
+    "name": "Colin Summers",
+    "url": "https://github.com/colinxs"
+  },
+  "homepage": "https://sux.colinxs.workers.dev",
+  "repository": "https://github.com/colinxs/sux-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "web-search",
+    "scrape",
+    "residential-proxy",
+    "cloudflare-worker",
+    "extract",
+    "convert"
+  ],
+  "mcpServers": "./.mcp.json"
+}

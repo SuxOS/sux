@@ -173,3 +173,6 @@ dist
 .dev.vars*
 !.dev.vars.example
 !.env.example
+
+# CapSolver browser extension — downloaded artifact, contains the API key in config.js
+sux/mac-render/extensions/
