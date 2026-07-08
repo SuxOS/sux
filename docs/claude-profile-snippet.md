@@ -3,7 +3,7 @@
 Paste the block below into claude.ai → **Settings → Profile → "What personal
 preferences should Claude consider in responses?"**. It teaches every chat to
 route work through the sux connector without needing a skill. Keep it in sync
-with `.claude/skills/sux-router/SKILL.md` (the fuller Claude Code version).
+with `.claude/skills/sux/SKILL.md` (the fuller Claude Code version).
 
 ---
 

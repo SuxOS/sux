@@ -81,7 +81,7 @@ back to a verbatim passthrough, so this can't break the connection:
 
 Two artifacts teach Claude to pick the right sux tool for a query:
 
-- **`.claude/skills/sux-router/SKILL.md`** — a Claude Code skill with the full
+- **`.claude/skills/sux/SKILL.md`** — a Claude Code skill with the full
   intent→tool routing map (search, fetch/render ladder, research, shopping,
   documents, transforms, `pipe`/`batch` composition). Loaded automatically in
   Claude Code sessions in this repo.
@@ -97,13 +97,17 @@ Two artifacts teach Claude to pick the right sux tool for a query:
   claude.ai custom connector).
 - **`docs/claude-profile-snippet.md`** — a compact snippet to paste into
   claude.ai → Settings → Profile, for chats where skills aren't available.
-- **`docs/TOOLS.md`** — generated full tool reference (created/refreshed by the
-  Docs update workflow).
 
-They're kept honest by `docs/sux-tools.txt` (a committed snapshot of the
-deployed tool names) and `scripts/check-skill-sync.mjs`, run weekly by the
-**Skill sync** workflow. After changing the tool surface, update the skill and
-refresh the snapshot: `SUX_MCP_URL=… node scripts/check-skill-sync.mjs --write`.
+The full function inventory lives in **`sux/FUNCTIONS.md`** — the source of
+truth, generated from `sux/src/fns/*.ts` by `npm run docs`. `scripts/check-skill-sync.mjs`
+keeps everything honest **from the repo alone** (no live server): FUNCTIONS.md
+matches `npm run docs`, every function is named in the skill, and the plugin's
+`skills/` dir mirrors `.claude/skills/` byte-for-byte. Run it with
+`node scripts/check-skill-sync.mjs --offline`; the **Skill sync** workflow runs
+it on every relevant PR and weekly, and can regenerate on a schedule. After
+changing the tool surface, run `npm run docs` and
+`node scripts/check-skill-sync.mjs --write`, then update the skill prose if you
+added a function.
 
 ## Required secrets
 
@@ -190,18 +194,18 @@ Run `wrangler tail` (or watch `wrangler dev` output) and match the symptom:
   without deploying).
 - **`.github/workflows/deploy.yml`** — on push to `main` (or manual dispatch):
   type-check then deploy via `cloudflare/wrangler-action`.
-- **`.github/workflows/skill-sync.yml`** — weekly (and on PRs touching the
-  skill): checks `.claude/skills/sux-router/SKILL.md` + `docs/sux-tools.txt`
-  against the live server's `tools/list` and opens/refreshes a `skill-sync`
-  issue on drift. Needs optional repo secrets `SUX_MCP_URL` (the `/mcp`
-  endpoint) and `SUX_MCP_TOKEN` (bearer, if gated); without them it degrades
-  to the offline snapshot check.
-- **`.github/workflows/docs-update.yml`** — weekly (or manual dispatch):
-  regenerates the machine-maintained docs from the live server
-  (`docs/sux-tools.txt`, `docs/TOOLS.md`, the plugin's skill copy) and opens a
-  PR on `bot/docs-update` when anything changed. Same secrets as skill-sync,
-  plus the repo setting *Allow GitHub Actions to create and approve pull
-  requests* (Settings → Actions → General).
+- **`.github/workflows/skill-sync.yml`** — source-derived, no secrets. Its
+  **check** job runs on PRs touching the skill / functions / gen-docs / script,
+  and weekly: `node scripts/check-skill-sync.mjs --offline` enforces that
+  `sux/FUNCTIONS.md` matches `npm run docs`, every function is named in
+  `.claude/skills/sux/SKILL.md`, and `plugins/sux-router/skills/` mirrors
+  `.claude/skills/`. Its **fix** job (schedule / manual dispatch) regenerates
+  FUNCTIONS.md and re-mirrors the plugin skill (`--write`), opening/refreshing a
+  PR on `bot/docs-update` when anything changed — this needs the repo setting
+  *Allow GitHub Actions to create and approve pull requests* (Settings →
+  Actions → General). An optional `--live` flag can still diff FUNCTIONS.md
+  against a deployed server's `tools/list` (`SUX_MCP_URL`/`SUX_MCP_TOKEN`), but
+  it is not used by CI.
 
 Deploy needs two **repo secrets** (Settings → Secrets and variables → Actions):
 

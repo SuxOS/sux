@@ -1,42 +1,105 @@
 #!/usr/bin/env node
-// Keep the sux-router skill, its plugin copy, and the generated docs honest
-// against the deployed sux server's tool surface. No dependencies; speaks MCP
-// Streamable HTTP directly.
+// Keep the sux skill, its plugin copy, and the generated function reference
+// honest — all derived from the repo itself, no live server required.
+//
+// Truth lives in source:
+//   sux/src/fns/*.ts  --(npm run docs)-->  sux/FUNCTIONS.md   (the tool inventory)
+//   sux/FUNCTIONS.md  --------------------> .claude/skills/sux/SKILL.md  (every fn named)
+//   .claude/skills/   --------------------> plugins/sux-router/skills/   (byte-for-byte mirror)
 //
 // Modes:
-//   node scripts/check-skill-sync.mjs            live check (needs SUX_MCP_URL)
-//   node scripts/check-skill-sync.mjs --offline  snapshot-only check (no network)
-//   node scripts/check-skill-sync.mjs --write    regenerate docs/sux-tools.txt and
-//                                                docs/TOOLS.md from the live server,
-//                                                and sync the plugin's skill copy
+//   node scripts/check-skill-sync.mjs            offline, source-derived check (default)
+//   node scripts/check-skill-sync.mjs --offline  same as default (explicit)
+//   node scripts/check-skill-sync.mjs --live      also probe SUX_MCP_URL and diff the
+//                                                 deployed tools/list against FUNCTIONS.md
+//   node scripts/check-skill-sync.mjs --write     regenerate FUNCTIONS.md + re-mirror the
+//                                                 plugin skill dir (fix mode)
 //
-// Env:
-//   SUX_MCP_URL    the /mcp endpoint of the deployed server (required unless --offline)
+// Env (only for --live):
+//   SUX_MCP_URL    the /mcp endpoint of the deployed server
 //   SUX_MCP_TOKEN  bearer token, if the endpoint is auth-gated (optional)
 //
 // Exit codes: 0 in sync · 1 drift found · 2 misconfigured/unreachable
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { cpSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const SNAPSHOT = 'docs/sux-tools.txt';
-const TOOLS_DOC = 'docs/TOOLS.md';
-const SKILL = '.claude/skills/sux/SKILL.md';
-const PLUGIN_SKILL = 'plugins/sux-router/skills/sux/SKILL.md';
-const SNIPPET = 'docs/claude-profile-snippet.md';
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const R = (...p) => join(ROOT, ...p);
 
-const mode = process.argv.includes('--write')
-  ? 'write'
-  : process.argv.includes('--offline')
-    ? 'offline'
-    : 'check';
+const GEN_DOCS = R('sux', 'scripts', 'gen-docs.mjs');
+const FUNCTIONS = R('sux', 'FUNCTIONS.md');
+const SKILL = R('.claude', 'skills', 'sux', 'SKILL.md');
+const SKILLS_DIR = R('.claude', 'skills');
+const PLUGIN_SKILLS_DIR = R('plugins', 'sux-router', 'skills');
+const SNIPPET = R('docs', 'claude-profile-snippet.md');
+
+const has = (flag) => process.argv.includes(flag);
+const mode = has('--write') ? 'write' : 'check';
+const live = has('--live');
 
 function die(msg, code = 2) {
   console.error(msg);
   process.exit(code);
 }
 
-// --- MCP Streamable HTTP client (initialize → tools/list, SSE-tolerant) ---
+// --- Source-derived helpers ---
+
+// Regenerate FUNCTIONS.md from sux/src/fns/*.ts. Returns the fresh contents.
+function regenerateFunctions() {
+  execFileSync(process.execPath, [GEN_DOCS], { stdio: ['ignore', 'ignore', 'inherit'] });
+  return readFileSync(FUNCTIONS, 'utf8');
+}
+
+// Every function is a `| `name` | …` table row in FUNCTIONS.md.
+function fnNamesFrom(md) {
+  const names = new Set();
+  for (const line of md.split('\n')) {
+    const m = line.match(/^\|\s*`([a-z0-9_]+)`/);
+    if (m) names.add(m[1]);
+  }
+  return [...names].sort();
+}
+
+const mentioned = (text, name) => new RegExp(`\\b${name}\\b`).test(text);
+
+// Recursively list files under dir as paths relative to dir (sorted).
+function walk(dir) {
+  const out = [];
+  const rec = (d) => {
+    for (const entry of readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = join(d, entry.name);
+      if (entry.isDirectory()) rec(full);
+      else if (entry.isFile()) out.push(relative(dir, full));
+    }
+  };
+  if (safeIsDir(dir)) rec(dir);
+  return out.sort();
+}
+
+function safeIsDir(p) {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function mirrorPluginSkills() {
+  rmSync(PLUGIN_SKILLS_DIR, { recursive: true, force: true });
+  cpSync(SKILLS_DIR, PLUGIN_SKILLS_DIR, { recursive: true });
+}
+
+function report(title, names) {
+  if (names.length === 0) return false;
+  console.log(`\n${title}:`);
+  for (const n of names) console.log(`  - ${n}`);
+  return true;
+}
+
+// --- Optional live probe (--live) — MCP Streamable HTTP, SSE-tolerant ---
 
 async function rpc(url, token, method, params, sessionId, isNotification = false) {
   const headers = {
@@ -56,7 +119,6 @@ async function rpc(url, token, method, params, sessionId, isNotification = false
   const session = res.headers.get('mcp-session-id') ?? sessionId;
   const text = await res.text();
 
-  // Body is either plain JSON or an SSE stream of `data: {...}` events.
   let json;
   if ((res.headers.get('content-type') ?? '').includes('text/event-stream')) {
     for (const line of text.split('\n')) {
@@ -79,127 +141,95 @@ async function rpc(url, token, method, params, sessionId, isNotification = false
 async function fetchLiveTools() {
   const url = process.env.SUX_MCP_URL;
   const token = process.env.SUX_MCP_TOKEN;
-  if (!url) die('SUX_MCP_URL is not set (use --offline for the snapshot-only check).');
+  if (!url) die('--live requires SUX_MCP_URL (the /mcp endpoint).');
 
   const init = await rpc(url, token, 'initialize', {
     protocolVersion: '2025-03-26',
     capabilities: {},
-    clientInfo: { name: 'sux-skill-sync', version: '1.0.0' },
+    clientInfo: { name: 'sux-skill-sync', version: '2.0.0' },
   });
   await rpc(url, token, 'notifications/initialized', {}, init.session, true).catch(() => {});
 
-  const byName = new Map();
+  const names = new Set();
   let cursor;
   do {
     const { json } = await rpc(url, token, 'tools/list', cursor ? { cursor } : {}, init.session);
-    for (const t of json.result.tools ?? []) byName.set(t.name, t.description ?? '');
+    for (const t of json.result.tools ?? []) names.add(t.name);
     cursor = json.result.nextCursor;
   } while (cursor);
 
-  if (byName.size === 0) die('tools/list returned zero tools — refusing to treat that as truth.');
-  return [...byName.entries()].map(([name, description]) => ({ name, description })).sort((a, b) => a.name.localeCompare(b.name));
+  if (names.size === 0) die('tools/list returned zero tools — refusing to treat that as truth.');
+  return [...names].sort();
 }
 
-// --- Generated docs ---
-
-function writeSnapshot(tools) {
-  writeFileSync(
-    SNAPSHOT,
-    '# Tool surface of the deployed sux server, one name per line.\n' +
-      '# Regenerate with: SUX_MCP_URL=… node scripts/check-skill-sync.mjs --write\n' +
-      tools.map((t) => t.name).join('\n') +
-      '\n',
-  );
-}
-
-function writeToolsDoc(tools) {
-  const body = tools.map((t) => `## \`${t.name}\`\n\n${(t.description || '_no description_').trim()}\n`).join('\n');
-  writeFileSync(
-    TOOLS_DOC,
-    `# sux tool reference (${tools.length} tools)\n\n` +
-      '_Generated from the live server by `scripts/check-skill-sync.mjs --write` — do not edit by hand._\n\n' +
-      body,
-  );
-}
-
-function syncPluginSkill() {
-  mkdirSync(dirname(PLUGIN_SKILL), { recursive: true });
-  copyFileSync(SKILL, PLUGIN_SKILL);
-}
-
-// --- Checks ---
-
-const readLines = (path) =>
-  readFileSync(path, 'utf8')
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('#'));
-
-const mentioned = (text, name) => new RegExp(`\\b${name}\\b`).test(text);
-
-function report(title, names) {
-  if (names.length === 0) return false;
-  console.log(`\n${title}:`);
-  for (const n of names) console.log(`  - ${n}`);
-  return true;
-}
+// --- Main ---
 
 async function main() {
   if (mode === 'write') {
-    const tools = await fetchLiveTools();
-    writeSnapshot(tools);
-    writeToolsDoc(tools);
-    syncPluginSkill();
-    console.log(`Wrote ${tools.length} tools to ${SNAPSHOT} and ${TOOLS_DOC}; synced ${PLUGIN_SKILL}.`);
+    const md = regenerateFunctions();
+    mirrorPluginSkills();
+    console.log(`Regenerated ${relative(ROOT, FUNCTIONS)} (${fnNamesFrom(md).length} functions) and mirrored ` +
+      `${relative(ROOT, SKILLS_DIR)}/ → ${relative(ROOT, PLUGIN_SKILLS_DIR)}/.`);
     return;
   }
 
-  const snapshot = readLines(SNAPSHOT);
-  const skill = readFileSync(SKILL, 'utf8');
-  const snippet = readFileSync(SNIPPET, 'utf8');
   let drift = false;
 
-  if (mode === 'check') {
-    const live = (await fetchLiveTools()).map((t) => t.name);
-    const snapSet = new Set(snapshot);
-    const liveSet = new Set(live);
-    drift |= report(
-      'Tools on the live server but NOT in docs/sux-tools.txt (new — add to SKILL.md, snippet, and snapshot)',
-      live.filter((n) => !snapSet.has(n)),
-    );
-    drift |= report(
-      'Tools in docs/sux-tools.txt but GONE from the live server (removed — prune everywhere)',
-      snapshot.filter((n) => !liveSet.has(n)),
-    );
-  }
-
-  // Every snapshot tool must at least be named in the skill. The profile
-  // snippet is deliberately a summary, so it only gets a soft warning.
-  drift |= report(
-    `Tools in ${SNAPSHOT} never mentioned in ${SKILL}`,
-    snapshot.filter((n) => !mentioned(skill, n)),
-  );
-
-  // The plugin ships a copy of the canonical skill — they must be identical.
-  if (!existsSync(PLUGIN_SKILL)) {
-    console.log(`\n${PLUGIN_SKILL} is missing — run --write (or copy ${SKILL}).`);
-    drift = true;
-  } else if (readFileSync(PLUGIN_SKILL, 'utf8') !== skill) {
-    console.log(`\n${PLUGIN_SKILL} differs from ${SKILL} — run --write (or copy it over).`);
+  // 1. FUNCTIONS.md must be exactly what `npm run docs` produces from source.
+  const before = readFileSync(FUNCTIONS, 'utf8');
+  const after = regenerateFunctions();
+  const fnNames = fnNamesFrom(after);
+  if (before !== after) {
+    writeFileSync(FUNCTIONS, before); // non-destructive check: restore the committed copy
+    console.log(`\n${relative(ROOT, FUNCTIONS)} is stale — regenerate with \`npm run docs\` and commit.`);
     drift = true;
   }
 
-  const unSnippeted = snapshot.filter((n) => !mentioned(snippet, n));
+  // 2. Every function in FUNCTIONS.md must be named somewhere in the skill.
+  const skill = readFileSync(SKILL, 'utf8');
+  drift = report(
+    `Functions in ${relative(ROOT, FUNCTIONS)} never mentioned in ${relative(ROOT, SKILL)}`,
+    fnNames.filter((n) => !mentioned(skill, n)),
+  ) || drift;
+
+  // 3. The plugin ships a byte-for-byte mirror of .claude/skills/.
+  const srcFiles = walk(SKILLS_DIR);
+  const dstFiles = walk(PLUGIN_SKILLS_DIR);
+  const missing = srcFiles.filter((f) => !dstFiles.includes(f));
+  const extra = dstFiles.filter((f) => !srcFiles.includes(f));
+  const changed = srcFiles
+    .filter((f) => dstFiles.includes(f))
+    .filter((f) => readFileSync(join(SKILLS_DIR, f), 'utf8') !== readFileSync(join(PLUGIN_SKILLS_DIR, f), 'utf8'));
+  drift = report(`Files in .claude/skills/ missing from plugins/sux-router/skills/`, missing) || drift;
+  drift = report(`Files in plugins/sux-router/skills/ not in .claude/skills/`, extra) || drift;
+  drift = report(`Files that differ between .claude/skills/ and plugins/sux-router/skills/`, changed) || drift;
+
+  // Soft, non-failing: the profile snippet is a hand-tuned summary, not exhaustive.
+  const snippet = readFileSync(SNIPPET, 'utf8');
+  const unSnippeted = fnNames.filter((n) => !mentioned(snippet, n));
   if (unSnippeted.length)
-    console.log(
-      `\nFYI (not failing): ${unSnippeted.length} tools not in the profile snippet: ${unSnippeted.join(', ')}`,
-    );
+    console.log(`\nFYI (not failing): ${unSnippeted.length} functions not in the profile snippet: ${unSnippeted.join(', ')}`);
+
+  // Optional live probe: does the deployed tool surface match FUNCTIONS.md?
+  if (live) {
+    const liveNames = await fetchLiveTools();
+    const fnSet = new Set(fnNames);
+    const liveSet = new Set(liveNames);
+    drift = report(
+      'Tools on the live server but NOT in FUNCTIONS.md (deploy is ahead of main — regenerate/redeploy)',
+      liveNames.filter((n) => !fnSet.has(n)),
+    ) || drift;
+    drift = report(
+      'Functions in FUNCTIONS.md but NOT on the live server (main is ahead of deploy — redeploy)',
+      fnNames.filter((n) => !liveSet.has(n)),
+    ) || drift;
+  }
 
   if (drift) {
-    console.log('\nDRIFT — update SKILL.md / docs/claude-profile-snippet.md, then regenerate with --write.');
+    console.log('\nDRIFT — run `node scripts/check-skill-sync.mjs --write` (regenerates FUNCTIONS.md + re-mirrors the plugin skill), edit SKILL.md if a function is unmentioned, then commit.');
     process.exit(1);
   }
-  console.log(`OK — ${snapshot.length} tools; skill, plugin copy, and snapshot in sync${mode === 'check' ? ' with the live server' : ''}.`);
+  console.log(`OK — ${fnNames.length} functions; FUNCTIONS.md fresh, skill names them all, plugin mirror in sync${live ? ', matches the live server' : ''}.`);
 }
 
 main().catch((e) => die(String(e?.stack ?? e)));
