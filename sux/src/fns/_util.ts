@@ -224,6 +224,19 @@ export function noCacheOn4xx<T extends { noCache?: boolean }>(result: T, status:
 }
 
 /**
+ * Transport fns (proxy/scrape/batch_fetch) accept an arbitrary method, but their
+ * results are content-addressed by args and cached for the fn TTL. A non-idempotent
+ * request (POST/PUT/PATCH/DELETE/…) must never be memoized: caching it both serves
+ * a stale response for a repeat mutation and silently skips re-executing the side
+ * effect. Only GET/HEAD are safe to cache; mark everything else noCache.
+ */
+export function noCacheOnMutation<T extends { noCache?: boolean }>(result: T, method: unknown): T {
+	const m = String(method ?? "GET").toUpperCase();
+	if (m !== "GET" && m !== "HEAD") result.noCache = true;
+	return result;
+}
+
+/**
  * Load raw bytes from an inline base64 payload or a URL — THE binary input path,
  * shared by every bytes-consuming fn. URL fetches go through the residential
  * proxy binary-safely (the proxy transports binary bodies base64-encoded, see
