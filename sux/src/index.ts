@@ -1,6 +1,6 @@
 import type OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { isAllowedLogin } from "./utils";
-import { cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
+import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
 import { findFn, type RtEnv, type ToolResult, toolList } from "./registry";
 import { singleFlight } from "./single-flight";
@@ -198,28 +198,13 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 
 		const started = Date.now();
 		const key = fn.cacheable ? await cacheKey(summarize ? `${name}::summarize` : name, args) : null;
-		if (key && !fresh) {
-			// Read as bytes so compressed frames (cache-codec) round-trip; unpack
-			// reverses packForCache (plain string, or zstd/brotli frame). Any unpack
-			// failure (corrupt/unknown codec) is treated as a miss and recomputed.
-			try {
-				const raw = await env.OAUTH_KV.get(key, "arrayBuffer");
-				if (raw) {
-					const hitEvent = { tool: name, ms: Date.now() - started, cache: true };
-					recordCall(env, ctx, hitEvent);
-					shipToLoki(env, ctx, hitEvent);
-					return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(unpackFromCache(raw)) });
-				}
-			} catch (e) {
-				console.warn(`sux cache read failed for '${name}', recomputing: ${String((e as Error).message ?? e)}`);
-			}
-		}
 		// The close path for one successful run: normalize the text output, optionally
 		// summarize it, then schedule the (single) cache write and return the cleaned
-		// result. Folded into the single-flight leader below so a coalesced burst runs
-		// it EXACTLY once for the whole group — N awaiters share one normalize pass and
-		// one KV put instead of each re-normalizing the shared object and scheduling a
-		// byte-identical write.
+		// result. Defined before the read so a stale-while-revalidate hit can drive it as
+		// a background refresh. Folded into the single-flight leader below so a coalesced
+		// burst runs it EXACTLY once for the whole group — N awaiters share one normalize
+		// pass and one KV put instead of each re-normalizing the shared object and
+		// scheduling a byte-identical write.
 		const finalize = async (ran: ToolResult): Promise<CleanResult> => {
 			// Sane normalization on close: same folding/cleanup over text output.
 			if (!fn.raw && !ran.isError && Array.isArray(ran.content)) {
@@ -256,21 +241,61 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			// (when set) overrides the global cache lifetime for this fn.
 			return deferCacheWrite(env.OAUTH_KV, ctx, key, out, fn.ttl);
 		};
+		// Each fn.run is wrapped in a hard per-fn deadline so a hung fn resolves to a
+		// clean isError result instead of stalling the isolate (and the group).
+		const runGuarded = () => withDeadline(name, FN_DEADLINE_MS, fn.run(env, args));
+		// One expensive run plus its close path. Coalesce concurrent same-key runs
+		// (cacheable fns only, keyed by the content-addressed cache key) so a burst of
+		// identical calls — or a foreground miss racing a background stale refresh —
+		// runs fn.run AND the shared close path (normalize + the single cache write)
+		// once; non-cacheable fns (no key) always run directly. Every coalesced awaiter
+		// shares the one cleaned result the leader produced.
+		const computeAndCache = (): Promise<CleanResult> =>
+			key ? singleFlight(inflight, key, async () => finalize(await runGuarded())) : (async () => finalize(await runGuarded()))();
+
+		if (key && !fresh) {
+			// Read as bytes so compressed frames (cache-codec) round-trip; unpack
+			// reverses packForCache (plain string, or zstd/brotli frame). getWithMetadata
+			// carries the soft-TTL marker along in the same read (falling back to get for
+			// bindings/mocks without it). Any unpack failure (corrupt/unknown codec) is
+			// treated as a miss and recomputed.
+			try {
+				const kvRead = env.OAUTH_KV as unknown as {
+					getWithMetadata?: (k: string, type: "arrayBuffer") => Promise<{ value: ArrayBuffer | null; metadata: CacheMeta | null }>;
+					get: (k: string, type: "arrayBuffer") => Promise<ArrayBuffer | null>;
+				};
+				let raw: ArrayBuffer | null;
+				let meta: CacheMeta | null = null;
+				if (typeof kvRead.getWithMetadata === "function") {
+					const got = await kvRead.getWithMetadata(key, "arrayBuffer");
+					raw = got.value;
+					meta = got.metadata ?? null;
+				} else {
+					raw = await kvRead.get(key, "arrayBuffer");
+				}
+				if (raw) {
+					// Stale-while-revalidate: an entry past its soft TTL — but still within the
+					// KV hard TTL / stale grace window, since KV would have evicted it otherwise
+					// — is served IMMEDIATELY and refreshed in the background via ctx.waitUntil.
+					// A legacy entry carries no soft marker and is always treated as fresh.
+					// isError/noCache results are never cached, so a stale value is always a
+					// success — "never serve stale for noCache/isError" holds by construction.
+					const stale = typeof meta?.softExpiresAt === "number" && Date.now() >= meta.softExpiresAt;
+					if (stale) ctx.waitUntil(computeAndCache().catch((e) => console.warn(`sux stale refresh failed for '${name}': ${String((e as Error).message ?? e)}`)));
+					const hitEvent = { tool: name, ms: Date.now() - started, cache: true, ...(stale ? { stale: true } : {}) };
+					recordCall(env, ctx, hitEvent);
+					shipToLoki(env, ctx, hitEvent);
+					return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(unpackFromCache(raw)) });
+				}
+			} catch (e) {
+				console.warn(`sux cache read failed for '${name}', recomputing: ${String((e as Error).message ?? e)}`);
+			}
+		}
 
 		let result: CleanResult;
 		let err: string | undefined;
 		try {
-			// Coalesce concurrent same-key runs (cacheable fns only, keyed by the
-			// content-addressed cache key) so a burst of identical calls runs the
-			// expensive fn.run AND the shared close path (normalize + the single cache
-			// write) once; non-cacheable fns (no key) always run directly. Every
-			// coalesced awaiter shares the one cleaned result the leader produced.
-			// Each fn.run is wrapped in a hard per-fn deadline so a hung fn resolves to
-			// a clean isError result instead of stalling the isolate (and the group).
-			const runGuarded = () => withDeadline(name, FN_DEADLINE_MS, fn.run(env, args));
-			result = key
-				? await singleFlight(inflight, key, async () => finalize(await runGuarded()))
-				: await finalize(await runGuarded());
+			result = await computeAndCache();
 		} catch (e) {
 			err = String((e as Error).message ?? e);
 			console.error(`sux tool '${name}' threw: ${(e as Error)?.stack ?? err}`);
