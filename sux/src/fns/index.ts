@@ -71,6 +71,7 @@ import { pdf } from "./pdf";
 import { people } from "./people";
 import { pipe } from "./pipe";
 import { places } from "./places";
+import { preferences } from "./preferences";
 import { product_search } from "./product_search";
 import { reddit } from "./reddit";
 import { render } from "./render";
@@ -82,6 +83,7 @@ import { store } from "./store";
 import { obsidian } from "./obsidian";
 import { tailscale } from "./tailscale";
 import { tavily } from "./tavily";
+import { voice } from "./voice";
 import { walmart } from "./walmart";
 import { watch } from "./watch";
 import { webSearch } from "./web_search";
@@ -158,6 +160,7 @@ export const FUNCTIONS: Fn[] = [
 	people,
 	pipe,
 	places,
+	preferences,
 	product_search,
 	reddit,
 	render,
@@ -169,6 +172,7 @@ export const FUNCTIONS: Fn[] = [
 	obsidian,
 	tailscale,
 	tavily,
+	voice,
 	walmart,
 	watch,
 	webSearch,
