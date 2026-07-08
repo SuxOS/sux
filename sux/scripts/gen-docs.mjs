@@ -33,7 +33,7 @@ const dir = readdirSync(FNS);
 const byName = new Map();
 for (const f of files) {
 	const src = readFileSync(join(FNS, f), "utf8");
-	const name = src.match(/name:\s*"([^"]+)"/)?.[1] ?? f.replace(/\.ts$/, "");
+	const name = src.match(/:\s*Fn\s*=\s*\{[\s\S]*?\bname:\s*"([^"]+)"/)?.[1] ?? f.replace(/\.ts$/, "");
 	const desc = (src.match(/description:\s*\n?\s*"((?:[^"\\]|\\.)*)"/)?.[1] ?? "").replace(/\\"/g, '"');
 	const stub = PLANNED.has(name);
 	const tested = dir.includes(f.replace(/\.ts$/, ".test.ts"));
