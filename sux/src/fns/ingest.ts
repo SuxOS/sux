@@ -39,11 +39,17 @@ function buildNote(title: string, source: string, body: string, tags: string[]):
 	return `---\ntype: capture\ncreated: ${new Date().toISOString()}\nsource: "${source.replace(/"/g, '\\"')}"\ntags: [${tagLine}]\n---\n\n# ${title}\n\n${body}\n`;
 }
 
+// Dispatch through the registry (dynamic import avoids the index.ts cycle, same as pipe).
+async function fnByName(name: string): Promise<Fn | undefined> {
+	const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
+	return FUNCTIONS.find((f) => f.name === name);
+}
+
 export const ingest: Fn = {
 	name: "ingest",
 	cost: 3,
 	description:
-		"Capture into the Obsidian vault (git-backed = the undo; the KV cache is warmed). Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments) | text (verbatim body) | query (web-search results). Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md, or `path` if given. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (R2 fallback when DROPBOX_TOKEN is unset). Returns { note, commit, source, blob? }.",
+		"Capture into the Obsidian vault (git-backed = the undo; the KV cache is warmed). Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments) | text (verbatim body) | query (web-search results). Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md, or `path` if given. Optional passes: summarize:true prepends an AI summary section; compress:true stores only the distilled summary (provenance keeps the full content re-fetchable) — either degrades to verbatim capture when AI is unavailable. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (R2 fallback when DROPBOX_TOKEN is unset). Returns { note, commit, source, pass?, blob? }.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -55,6 +61,8 @@ export const ingest: Fn = {
 			path: { type: "string", description: "Explicit vault note path (default Inbox/<date> <slug>.md)." },
 			tags: { type: "array", items: { type: "string" }, description: "Extra frontmatter tags ('capture' is always included)." },
 			blobs: { type: "string", enum: ["auto", "dropbox"], default: "auto", description: "Blob routing: auto = ≤1MB into the vault repo, larger to Dropbox; dropbox = always Dropbox." },
+			summarize: { type: "boolean", default: false, description: "Prepend an AI summary section above the captured body." },
+			compress: { type: "boolean", default: false, description: "Store only the distilled summary instead of the full body (provenance keeps it re-fetchable)." },
 		},
 	},
 	cacheable: false,
@@ -79,9 +87,7 @@ export const ingest: Fn = {
 				source = "text";
 				body = text;
 			} else if (query) {
-				// Dispatch through the registry (dynamic import avoids the index.ts cycle, same as pipe).
-				const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
-				const search = FUNCTIONS.find((f) => f.name === "search");
+				const search = await fnByName("search");
 				if (!search) return fail("search fn unavailable.");
 				const r = await search.run(env, { query });
 				const got = r.content?.[0]?.text ?? "";
@@ -128,11 +134,28 @@ export const ingest: Fn = {
 				}
 			}
 
+			// Optional distillation passes (never on blob stubs). Degrade, don't fail:
+			// a capture that lands verbatim beats one that bounces because AI was down.
+			let pass: string | undefined;
+			if ((args?.summarize === true || args?.compress === true) && !blob) {
+				const sum = await fnByName("summarize");
+				const r = sum ? await sum.run(env, { text: body, style: args?.compress === true ? "bullets" : "paragraph" }) : undefined;
+				const summary = r && !r.isError ? (r.content?.[0]?.text ?? "").trim() : "";
+				if (!summary) pass = "summarize unavailable — captured verbatim";
+				else if (args?.compress === true) {
+					body = `${summary}\n\n> compressed capture — full content re-fetchable from \`source\``;
+					pass = "compressed";
+				} else {
+					body = `## Summary\n\n${summary}\n\n---\n\n${body}`;
+					pass = "summarized";
+				}
+			}
+
 			const notePath = String(args?.path ?? "").trim() || `Inbox/${date} ${slugify(title)}.md`;
 			const md = buildNote(title, source, clamp(body, BODY_MAX), tags);
 			const w = await vaultPut(env, cfg, notePath, md, `sux: ingest ${title.slice(0, 60)}`);
 			if (!w.ok) return fail(w.error);
-			return ok(JSON.stringify({ ok: true, note: notePath, commit: w.commit, source, ...(blob ? { blob } : {}) }, null, 2));
+			return ok(JSON.stringify({ ok: true, note: notePath, commit: w.commit, source, ...(pass ? { pass } : {}), ...(blob ? { blob } : {}) }, null, 2));
 		} catch (e) {
 			return fail(`ingest failed: ${String((e as Error).message ?? e)}`);
 		}

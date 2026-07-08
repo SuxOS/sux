@@ -121,4 +121,40 @@ describe("ingest (capture → vault)", () => {
 		expect(JSON.parse(r.content[0].text).note).toBe("Inbox/thought.md");
 		expect(gh.puts["Inbox/thought.md"]).toContain("quick thought");
 	});
+
+	it("compress:true stores only the distilled summary", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const env = { ...ENV, AI: { run: async () => ({ response: "• distilled point" }) } };
+		const r = await ingest.run(env, { text: "A very long meeting transcript\nline\nline\nline", compress: true });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.pass).toBe("compressed");
+		const note = gh.puts[out.note];
+		expect(note).toContain("• distilled point");
+		expect(note).toContain("compressed capture");
+		expect(note).not.toContain("line\nline\nline");
+	});
+
+	it("summarize:true prepends a summary section above the verbatim body", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const env = { ...ENV, AI: { run: async () => ({ response: "One-paragraph gist." }) } };
+		const r = await ingest.run(env, { text: "Original body stays.", summarize: true });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.pass).toBe("summarized");
+		const note = gh.puts[out.note];
+		expect(note).toContain("## Summary");
+		expect(note).toContain("One-paragraph gist.");
+		expect(note).toContain("Original body stays.");
+	});
+
+	it("passes degrade to verbatim capture when AI is unavailable", async () => {
+		const gh = ghMock();
+		routes.handler = gh.handler;
+		const r = await ingest.run(ENV, { text: "keep me verbatim", summarize: true });
+		const out = JSON.parse(r.content[0].text);
+		expect(out.ok).toBe(true);
+		expect(out.pass).toMatch(/unavailable/);
+		expect(gh.puts[out.note]).toContain("keep me verbatim");
+	});
 });
