@@ -89,6 +89,11 @@ Two artifacts teach Claude to pick the right sux tool for a query:
 - **`docs/claude-profile-snippet.md`** — a compact snippet to paste into
   claude.ai → Settings → Profile, for chats where skills aren't available.
 
+They're kept honest by `docs/sux-tools.txt` (a committed snapshot of the
+deployed tool names) and `scripts/check-skill-sync.mjs`, run weekly by the
+**Skill sync** workflow. After changing the tool surface, update the skill and
+refresh the snapshot: `SUX_MCP_URL=… node scripts/check-skill-sync.mjs --write`.
+
 ## Required secrets
 
 | Secret | Purpose |
@@ -174,6 +179,12 @@ Run `wrangler tail` (or watch `wrangler dev` output) and match the symptom:
   without deploying).
 - **`.github/workflows/deploy.yml`** — on push to `main` (or manual dispatch):
   type-check then deploy via `cloudflare/wrangler-action`.
+- **`.github/workflows/skill-sync.yml`** — weekly (and on PRs touching the
+  skill): checks `.claude/skills/sux-router/SKILL.md` + `docs/sux-tools.txt`
+  against the live server's `tools/list` and opens/refreshes a `skill-sync`
+  issue on drift. Needs optional repo secrets `SUX_MCP_URL` (the `/mcp`
+  endpoint) and `SUX_MCP_TOKEN` (bearer, if gated); without them it degrades
+  to the offline snapshot check.
 
 Deploy needs two **repo secrets** (Settings → Secrets and variables → Actions):
 
