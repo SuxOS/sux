@@ -1,0 +1,42 @@
+# gitleaks configuration for the sux repo.
+# Extends the built-in ruleset (which detects cloud keys, tokens, private keys,
+# etc.) and adds a defensive allowlist for known-safe paths so CI stays green on
+# legitimate content while still failing on any real leaked secret.
+#
+# Motivation: a CapSolver API key was once committed inside the downloaded
+# browser-extension bundle. That directory is now gitignored, but we allowlist
+# it here too so a stray `git add -f` still can't smuggle the key past scanning
+# on the off-chance the ignore is bypassed — the scan itself skips it by path,
+# not by hoping the file is absent.
+
+title = "sux gitleaks config"
+
+[extend]
+# Inherit gitleaks' default rules so we detect the full built-in secret set.
+useDefault = true
+
+[allowlist]
+description = "Known-safe paths and placeholder-only files"
+
+# Regexes matched against the detected secret value. Narrowly scoped to obvious
+# test placeholders so a real credential in a test file is still caught.
+regexes = [
+  # sux/node/server.test.ts uses `const secret = "test-secret-0123456789"` as a
+  # fixture for the HMAC helper — not a credential.
+  '''test-secret-[0-9a-z]+''',
+]
+
+# Regexes matched against file paths (relative to repo root).
+paths = [
+  # CapSolver browser-extension bundle: a downloaded third-party artifact whose
+  # config.js embeds the API key. Gitignored (sux/mac-render/extensions/), but
+  # allowlisted here defensively so it can never trip — or slip past — the scan.
+  '''sux/mac-render/extensions/.*''',
+
+  # Committed env template — placeholder keys only, all values intentionally
+  # blank (see .dev.vars.example). Never contains real secrets.
+  '''\.dev\.vars\.example$''',
+
+  # Lockfile: npm integrity SHA-512 hashes are content digests, not secrets.
+  '''package-lock\.json$''',
+]
