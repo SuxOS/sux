@@ -22,6 +22,63 @@ async function ghJson(env: any, url: string, init?: { method?: string; body?: st
 	return { status: resp.status, json };
 }
 
+// --- KV read-through cache (git = truth, KV = cache) ---
+// Git-backend reads validate against the vault's HEAD commit sha (rechecked with
+// GitHub at most once a minute); git writes warm the cache in-line, since the
+// contents API hands back the new commit sha — which IS the new HEAD. Remote
+// reads write through so that when the Mac is asleep, `read` serves the last
+// known copy instead of failing. The cache never feeds writes: edit/append
+// always re-read their source.
+const CACHE_HEAD = "cache:vault:head";
+const HEAD_RECHECK_MS = 60_000;
+const noteKey = (p: string) => `cache:vault:note:${p.replace(/^\/+/, "")}`;
+const listKey = (d: string) => `cache:vault:list:${d.replace(/^\/+/, "") || "/"}`;
+
+async function cacheGet(env: any, key: string): Promise<any | null> {
+	try {
+		const raw = await env.OAUTH_KV?.get(key);
+		return raw ? JSON.parse(raw) : null;
+	} catch {
+		return null;
+	}
+}
+async function cachePut(env: any, key: string, value: unknown): Promise<void> {
+	try {
+		await env.OAUTH_KV?.put(key, JSON.stringify(value));
+	} catch {}
+}
+async function cacheDel(env: any, key: string): Promise<void> {
+	try {
+		await env.OAUTH_KV?.delete(key);
+	} catch {}
+}
+
+async function vaultHead(env: any, repo: string, branch: string): Promise<string | null> {
+	const cached = await cacheGet(env, CACHE_HEAD);
+	if (cached?.sha && Date.now() - cached.at < HEAD_RECHECK_MS) return cached.sha;
+	const { status, json } = await ghJson(env, `${GH}/repos/${repo}/git/ref/heads/${encodeURIComponent(branch)}`);
+	const sha = status === 200 ? (json?.object?.sha ?? null) : null;
+	if (sha) await cachePut(env, CACHE_HEAD, { sha, at: Date.now() });
+	return sha ?? cached?.sha ?? null;
+}
+
+async function noteWritten(env: any, path: string, body: string | null, commitSha: string | null | undefined): Promise<void> {
+	if (body !== null && commitSha) await cachePut(env, noteKey(path), { body, sha: commitSha, at: Date.now(), src: "git" });
+	else await cacheDel(env, noteKey(path));
+	if (commitSha) await cachePut(env, CACHE_HEAD, { sha: commitSha, at: Date.now() });
+	else await cacheDel(env, CACHE_HEAD);
+}
+
+// Surgical find/replace: the match must be unique unless all=true, so an edit
+// can never land somewhere unintended — task ops flip exactly the checkbox they
+// mean to, and a note is never reprinted wholesale.
+function applyEdit(text: string, find: string, replace: string, all: boolean): { text: string; count: number } | { error: string } {
+	const count = text.split(find).length - 1;
+	if (count === 0) return { error: "`find` text not found" };
+	if (count > 1 && !all) return { error: `\`find\` matches ${count} times — pass all:true to replace every occurrence, or make it unique` };
+	return { text: all ? text.split(find).join(replace) : text.replace(find, replace), count };
+}
+
 // --- remote backend: Obsidian Local REST API over a public HTTPS (Funnel) URL ---
 function remoteFetch(env: any, path: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<Response> {
 	const base = String(env.OBSIDIAN_REMOTE_URL).replace(/\/+$/, "");
@@ -90,10 +147,20 @@ async function runRemote(env: any, action: string, args: any) {
 		if (action === "read") {
 			const p = String(args?.path ?? "").trim();
 			if (!p) return fail("action=read requires a `path`.");
-			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { headers: { Accept: "text/markdown" } });
+			let resp: Response;
+			try {
+				resp = await remoteFetch(env, `/vault/${encPath(p)}`, { headers: { Accept: "text/markdown" } });
+			} catch (e) {
+				// Mac asleep / Funnel down: serve the last KV-cached copy over failing.
+				const hit = await cacheGet(env, noteKey(p));
+				if (typeof hit?.body === "string") return ok(hit.body);
+				return fail(`obsidian remote unreachable (${String((e as Error).message ?? e)}) and no cached copy of ${p} — try backend:'git'.`);
+			}
 			if (resp.status === 404) return fail(`Note not found: ${p}`);
 			if (resp.status >= 400) return fail(`Obsidian remote error reading: HTTP ${resp.status}`);
-			return ok(await resp.text());
+			const text = await resp.text();
+			await cachePut(env, noteKey(p), { body: text, sha: null, at: Date.now(), src: "remote" });
+			return ok(text);
 		}
 		if (action === "search") {
 			const q = String(args?.query ?? "").trim();
@@ -111,9 +178,44 @@ async function runRemote(env: any, action: string, args: any) {
 			if (!content) return fail("action=append requires `content`.");
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "POST", headers: { "Content-Type": "text/markdown" }, body: content });
 			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}`);
+			await cacheDel(env, noteKey(p)); // merged body lives server-side; next read refills
 			return ok(JSON.stringify({ ok: true, path: p, bytes: content.length }, null, 2));
 		}
-		return fail(`Unknown action '${action}'. Use list | read | search | append.`);
+		if (action === "write") {
+			const p = String(args?.path ?? "").trim();
+			const content = String(args?.content ?? "");
+			if (!p) return fail("action=write requires a `path`.");
+			if (!content) return fail("action=write requires `content`.");
+			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "PUT", headers: { "Content-Type": "text/markdown" }, body: content });
+			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}`);
+			await cachePut(env, noteKey(p), { body: content, sha: null, at: Date.now(), src: "remote" });
+			return ok(JSON.stringify({ ok: true, path: p, bytes: content.length }, null, 2));
+		}
+		if (action === "edit") {
+			const p = String(args?.path ?? "").trim();
+			const find = String(args?.find ?? "");
+			if (!p) return fail("action=edit requires a `path`.");
+			if (!find) return fail("action=edit requires `find` (the exact text to replace).");
+			const cur = await remoteFetch(env, `/vault/${encPath(p)}`, { headers: { Accept: "text/markdown" } });
+			if (cur.status === 404) return fail(`Note not found: ${p}`);
+			if (cur.status >= 400) return fail(`Obsidian remote error reading: HTTP ${cur.status}`);
+			const edited = applyEdit(await cur.text(), find, String(args?.replace ?? ""), args?.all === true);
+			if ("error" in edited) return fail(`${edited.error} in ${p}`);
+			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "PUT", headers: { "Content-Type": "text/markdown" }, body: edited.text });
+			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}`);
+			await cachePut(env, noteKey(p), { body: edited.text, sha: null, at: Date.now(), src: "remote" });
+			return ok(JSON.stringify({ ok: true, path: p, replaced: edited.count }, null, 2));
+		}
+		if (action === "delete") {
+			const p = String(args?.path ?? "").trim();
+			if (!p) return fail("action=delete requires a `path`.");
+			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "DELETE" });
+			if (resp.status === 404) return fail(`Note not found: ${p}`);
+			if (resp.status >= 400) return fail(`Obsidian remote delete error: HTTP ${resp.status}`);
+			await cacheDel(env, noteKey(p));
+			return ok(JSON.stringify({ ok: true, deleted: p }, null, 2));
+		}
+		return fail(`Unknown action '${action}'. Use list | read | search | append | write | edit | delete | tools | call.`);
 	} catch (e) {
 		return fail(`obsidian remote (${action}) failed: ${String((e as Error).message ?? e)}`);
 	}
@@ -123,16 +225,19 @@ export const obsidian: Fn = {
 	name: "obsidian",
 	cost: 2,
 	description:
-		"Work with Obsidian markdown notes. action: list (notes, optionally under `path`) | read (a note by `path`) | search (`query`) | append (add `content` to a note at `path`, creating it if absent). backend: git (default) — a GitHub-backed vault (async, versioned; OBSIDIAN_VAULT_REPO='owner/repo', optional OBSIDIAN_VAULT_BRANCH/OBSIDIAN_VAULT_DIR; GITHUB_TOKEN for private repos + writes); remote — the LIVE vault via Obsidian's Local REST API over a public HTTPS URL (Tailscale Funnel; OBSIDIAN_REMOTE_URL + OBSIDIAN_REMOTE_KEY). remote also wraps the vault's built-in MCP server: action=tools lists its ~15 vault tools and action=call runs one (tool + tool_args) — the full surface beyond list/read/search/append. local — same API on localhost, unreachable from the cloud Worker (use remote).",
+		"Work with Obsidian markdown notes. action: list (notes, optionally under `path`) | read (a note by `path`) | search (`query`) | append (add `content` to a note at `path`, creating it if absent) | write (create/overwrite a note with `content`) | edit (surgical find/replace: `find` + `replace`, unique match unless `all`) | delete (remove a note). backend: git (default) — a GitHub-backed vault; every write is a commit, so git history is the undo (OBSIDIAN_VAULT_REPO='owner/repo', optional OBSIDIAN_VAULT_BRANCH/OBSIDIAN_VAULT_DIR; GITHUB_TOKEN for private repos + writes); remote — the LIVE vault via Obsidian's Local REST API over a public HTTPS URL (Tailscale Funnel; OBSIDIAN_REMOTE_URL + OBSIDIAN_REMOTE_KEY). remote also wraps the vault's built-in MCP server: action=tools lists its ~15 vault tools and action=call runs one (tool + tool_args). local — same API on localhost, unreachable from the cloud Worker (use remote). Reads are KV-cached: git reads validate against the vault HEAD sha; remote reads write through and fall back to the cached copy when the Mac is unreachable.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["action"],
 		properties: {
-			action: { type: "string", enum: ["list", "read", "search", "append", "tools", "call"] },
-			path: { type: "string", description: "Note path within the vault (for read/append; a folder filter for list)." },
+			action: { type: "string", enum: ["list", "read", "search", "append", "write", "edit", "delete", "tools", "call"] },
+			path: { type: "string", description: "Note path within the vault (read/append/write/edit/delete; a folder filter for list)." },
 			query: { type: "string", description: "Search query (action=search)." },
-			content: { type: "string", description: "Markdown to append (action=append)." },
+			content: { type: "string", description: "Markdown content (action=append/write)." },
+			find: { type: "string", description: "Exact text to replace (action=edit); must match exactly once unless `all` is set." },
+			replace: { type: "string", description: "Replacement text (action=edit; empty string deletes the match)." },
+			all: { type: "boolean", description: "Replace every occurrence of `find` (action=edit)." },
 			tool: { type: "string", description: "MCP tool name (remote, action=call). Run action=tools to list them." },
 			tool_args: { type: "object", additionalProperties: true, description: "Arguments for the MCP tool (remote, action=call)." },
 			backend: { type: "string", enum: ["git", "remote", "local"], default: "git" },
@@ -154,21 +259,34 @@ export const obsidian: Fn = {
 
 		try {
 			if (action === "list") {
+				const filter = args?.path ? inVault(String(args.path)) : dir;
+				const head = env.OAUTH_KV ? await vaultHead(env, repo, branch) : null;
+				if (head) {
+					const hit = await cacheGet(env, listKey(filter));
+					if (hit?.sha === head && typeof hit.payload === "string") return ok(hit.payload);
+				}
 				const { status, json } = await ghJson(env, `${GH}/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`);
 				if (status >= 400) return fail(`GitHub error listing vault: ${json?.message ?? `HTTP ${status}`}`);
-				const filter = args?.path ? inVault(String(args.path)) : dir;
 				const notes = (json?.tree ?? [])
 					.filter((n: any) => n?.type === "blob" && typeof n.path === "string" && n.path.endsWith(".md") && (!filter || n.path.startsWith(filter)))
 					.map((n: any) => n.path);
-				return ok(JSON.stringify({ repo, branch, count: notes.length, notes }, null, 2));
+				const payload = JSON.stringify({ repo, branch, count: notes.length, notes }, null, 2);
+				if (head) await cachePut(env, listKey(filter), { payload, sha: head, at: Date.now() });
+				return ok(payload);
 			}
 			if (action === "read") {
 				const p = String(args?.path ?? "").trim();
 				if (!p) return fail("action=read requires a `path`.");
+				const head = env.OAUTH_KV ? await vaultHead(env, repo, branch) : null;
+				if (head) {
+					const hit = await cacheGet(env, noteKey(p));
+					if (hit?.sha === head && typeof hit.body === "string") return ok(hit.body);
+				}
 				const { status, json } = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(inVault(p))}?ref=${encodeURIComponent(branch)}`);
 				if (status === 404) return fail(`Note not found: ${p}`);
 				if (status >= 400) return fail(`GitHub error reading note: ${json?.message ?? `HTTP ${status}`}`);
 				const text = json?.content ? new TextDecoder().decode(fromB64(String(json.content).replace(/\n/g, ""))) : "";
+				if (head) await cachePut(env, noteKey(p), { body: text, sha: head, at: Date.now(), src: "git" });
 				return ok(text);
 			}
 			if (action === "search") {
@@ -193,9 +311,55 @@ export const obsidian: Fn = {
 				const body = JSON.stringify({ message: `sux: append to ${p}`, content: toB64(new TextEncoder().encode(merged)), branch, ...(sha ? { sha } : {}) });
 				const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
 				if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (append needs a GITHUB_TOKEN with write access).`);
+				await noteWritten(env, p, merged, put.json?.commit?.sha);
 				return ok(JSON.stringify({ ok: true, path: p, bytes: merged.length, commit: put.json?.commit?.sha }, null, 2));
 			}
-			return fail(`Unknown action '${action}'. Use list | read | search | append.`);
+			if (action === "write") {
+				const p = String(args?.path ?? "").trim();
+				const content = String(args?.content ?? "");
+				if (!p) return fail("action=write requires a `path`.");
+				if (!content) return fail("action=write requires `content`.");
+				const full = inVault(p);
+				const cur = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(branch)}`);
+				const sha = cur.status === 200 ? cur.json?.sha : undefined;
+				const body = JSON.stringify({ message: `sux: write ${p}`, content: toB64(new TextEncoder().encode(content)), branch, ...(sha ? { sha } : {}) });
+				const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
+				if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (write needs a GITHUB_TOKEN with write access).`);
+				await noteWritten(env, p, content, put.json?.commit?.sha);
+				return ok(JSON.stringify({ ok: true, path: p, bytes: content.length, created: cur.status === 404, commit: put.json?.commit?.sha }, null, 2));
+			}
+			if (action === "edit") {
+				const p = String(args?.path ?? "").trim();
+				const find = String(args?.find ?? "");
+				if (!p) return fail("action=edit requires a `path`.");
+				if (!find) return fail("action=edit requires `find` (the exact text to replace).");
+				const full = inVault(p);
+				const cur = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(branch)}`);
+				if (cur.status === 404) return fail(`Note not found: ${p}`);
+				if (cur.status >= 400) return fail(`GitHub error reading note: ${cur.json?.message ?? `HTTP ${cur.status}`}`);
+				const existing = cur.json?.content ? new TextDecoder().decode(fromB64(String(cur.json.content).replace(/\n/g, ""))) : "";
+				const edited = applyEdit(existing, find, String(args?.replace ?? ""), args?.all === true);
+				if ("error" in edited) return fail(`${edited.error} in ${p}`);
+				const body = JSON.stringify({ message: `sux: edit ${p}`, content: toB64(new TextEncoder().encode(edited.text)), branch, sha: cur.json?.sha });
+				const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
+				if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (edit needs a GITHUB_TOKEN with write access).`);
+				await noteWritten(env, p, edited.text, put.json?.commit?.sha);
+				return ok(JSON.stringify({ ok: true, path: p, replaced: edited.count, commit: put.json?.commit?.sha }, null, 2));
+			}
+			if (action === "delete") {
+				const p = String(args?.path ?? "").trim();
+				if (!p) return fail("action=delete requires a `path`.");
+				const full = inVault(p);
+				const cur = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(branch)}`);
+				if (cur.status === 404) return fail(`Note not found: ${p}`);
+				if (cur.status >= 400) return fail(`GitHub error reading note: ${cur.json?.message ?? `HTTP ${cur.status}`}`);
+				const body = JSON.stringify({ message: `sux: delete ${p}`, sha: cur.json?.sha, branch });
+				const del = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "DELETE", body });
+				if (del.status >= 400) return fail(`GitHub delete error: ${del.json?.message ?? `HTTP ${del.status}`} (delete needs a GITHUB_TOKEN with write access).`);
+				await noteWritten(env, p, null, del.json?.commit?.sha);
+				return ok(JSON.stringify({ ok: true, deleted: p, commit: del.json?.commit?.sha }, null, 2));
+			}
+			return fail(`Unknown action '${action}'. Use list | read | search | append | write | edit | delete.`);
 		} catch (e) {
 			return fail(`obsidian (${action}) failed: ${String((e as Error).message ?? e)}`);
 		}

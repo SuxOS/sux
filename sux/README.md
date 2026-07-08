@@ -304,7 +304,7 @@ fn, not a separate tool.
 ### Notes / knowledge (1)
 | fn | one-liner |
 |---|---|
-| `obsidian` | Work an Obsidian vault — list/read/search/append. **git backend live** (GitHub-backed private repo `colinxs/obsidian-vault` via `OBSIDIAN_VAULT_REPO`); `remote` backend wraps the vault's Local REST API + its built-in MCP tools. |
+| `obsidian` | Work an Obsidian vault — list/read/search/append/write/edit/delete (edit = surgical find/replace, unique match unless `all`). **git backend live** (GitHub-backed private repo `colinxs/obsidian-vault` via `OBSIDIAN_VAULT_REPO`); `remote` backend wraps the vault's Local REST API + its built-in MCP tools. Reads are KV-cached (git validated by vault HEAD sha; remote falls back to the cached copy when the Mac is unreachable). |
 
 ---
 

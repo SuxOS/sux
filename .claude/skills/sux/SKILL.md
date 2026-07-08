@@ -141,7 +141,7 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Same tool over many inputs, optionally reduced | `batch` (`over` + `args` template, `reduce: concat\|summarize`, or `reduce_with` a tool) |
 | Stash/retrieve blobs (content-addressed R2) | `store` |
 | Small persistent key-values | `kv_put`, `kv_get`, `kv_list`, `kv_delete` |
-| Obsidian vault: list/read/search/append notes | `obsidian` (default `backend: git`; `remote` reaches the live vault and its vault tools via `action: tools`/`call`) |
+| Obsidian vault: list/read/search/append/write/edit/delete notes | `obsidian` (default `backend: git`; `edit` = surgical find/replace; `remote` reaches the live vault and its vault tools via `action: tools`/`call`; reads KV-cached with git-HEAD validation + Mac-asleep fallback) |
 
 ## Infrastructure & meta
 
