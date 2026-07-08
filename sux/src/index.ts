@@ -197,6 +197,12 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
 
 		const started = Date.now();
+		// Short per-call correlation id, threaded onto env so every downstream
+		// smartFetch of this tools/call can tag its egress-audit Loki line with the
+		// same reqId — grouping a call's outbound hops in the Loki stream without
+		// touching the ~20 smartFetch call sites. Inert unless Grafana is configured
+		// (shipEgress no-ops otherwise).
+		env._egress = { ctx, reqId: crypto.randomUUID().slice(0, 8) };
 		const key = fn.cacheable ? await cacheKey(summarize ? `${name}::summarize` : name, args) : null;
 		// The close path for one successful run: normalize the text output, optionally
 		// summarize it, then schedule the (single) cache write and return the cleaned
