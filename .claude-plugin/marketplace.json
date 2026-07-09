@@ -1,6 +1,6 @@
 {
   "name": "sux",
-  "description": "Single-plugin marketplace for the sux MCP server — one install adds the canonical `sux` skill AND registers the sux MCP connector.",
+  "description": "Marketplace for the sux MCP connectors: one universal connector (web/data/compute) plus per-domain personal connectors (vault knowledge store; email/JMAP to follow) — each a focused endpoint on the same OAuth-gated Worker, so the universal `sux` surface stays non-personal.",
   "owner": {
     "name": "colinxs"
   },
@@ -8,8 +8,14 @@
     {
       "name": "sux-router",
       "source": "./plugins/sux-router",
-      "description": "Installs the `sux` skill (intent→tool routing) AND the sux MCP connector (https://sux.colinxs.workers.dev/mcp) in one step — routing guidance plus the tools themselves (web search, scraping/rendering, papers, shopping, documents, transforms, pipe/batch composition). OAuth is completed in-browser via /mcp on first connect.",
+      "description": "The UNIVERSAL sux connector (https://sux.colinxs.workers.dev/mcp) + the `sux` routing skill: web search, scraping/rendering, papers, shopping, documents, transforms, pipe/batch composition. Domain-agnostic. OAuth in-browser via /mcp on first connect.",
       "version": "0.2.0"
+    },
+    {
+      "name": "sux-vault",
+      "source": "./plugins/sux-vault",
+      "description": "The PERSONAL Obsidian-vault connector (https://sux.colinxs.workers.dev/vault/mcp): read/write/edit/capture + daily notes over the git-backed knowledge store. A separate endpoint on the same Worker/OAuth so vault tools stay a clean namespace and sux-router stays universal.",
+      "version": "0.1.0"
     }
   ]
 }
