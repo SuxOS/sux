@@ -104,7 +104,7 @@ Both boxes run the **same** container. The sux `remote`/`vpc` backend's surface 
 
 - **Image (with the Electron web-app "bonus"):** `linuxserver/obsidian` or `sytone/obsidian-remote` — the real Obsidian Electron app under **KasmVNC**, browser UI on `:8080`/`:8443`. Install **Local REST API** + **obsidian-git** through the browser once (they persist in `/config`). amd64 on ghcr.io; ARM64 via the Docker Hub `:arm64` tag (so a home Pi and an amd64 cloud box both work). Footprint ~300–500 MB RAM, ~2 GB image.
 - **Make the REST API reachable:** set the plugin's **Binding Host** to `0.0.0.0` and publish `:27124` (the config lives in `.obsidian/plugins/obsidian-local-rest-api/data.json`; API key enforced in that mode). `cloudflared` then targets it.
-- **Vault = a git checkout** of `colinxs/vault`, bind-mounted in. **obsidian-git** does two-way sync (short interval — an uncommitted Obsidian write is the *one* thing GitHub can't recover). The disk is a disposable cache of git-truth; wipe it and it re-clones.
+- **Vault = a git checkout** of `colinxs/vault`, bind-mounted in. **obsidian-git** does two-way sync (short interval — an uncommitted Obsidian write is the *one* thing GitHub can't recover). The **notes** are a disposable cache of git-truth (wipe → re-clone), but **`.obsidian/plugins` is gitignored** — the REST key, obsidian-git config, and Sync's E2E material do NOT come back from a clone. Back up `.obsidian` (and keep Sync's E2E password recorded) if unattended recovery matters.
 - **Headless alternative (cloud, no VNC):** `shanehull/obsidian-remote` runs Obsidian headless (Xvfb) with a bundled Go MCP server on `:4000` — leaner, actively maintained. It fronts `/mcp` not the raw REST paths, so publish its internal `:27124` if you want the sux REST surface too. (`obsidian-headless`, the official CLI, is **sync-only** — no REST — so it doesn't replace the plugin.)
 
 Dropping Electron entirely (a non-Obsidian markdown MCP/REST server) is possible but **none** of those reimplement the `/vault/`+`/search/`+`/mcp/` contract — you'd retarget the Worker to its **git backend** (already built) or to a different MCP. Keeping the plugin is the zero-rewrite path.
@@ -178,7 +178,7 @@ Editable Excalidraw of the topology: [`diagrams/vpc-topology.excalidraw`](diagra
 0. **Home box first.** Spare Linux → KasmVNC Obsidian container → install Local REST API + obsidian-git → point at a `colinxs/vault` checkout → confirm the Electron UI in a browser and the REST API on `:27124`.
 1. **`cloudflared` on the home box** → named tunnel → `wrangler vpc service create obsidian-vault-home` → note the `service_id`.
 2. **`vpc` backend on the `obsidian` fn** — `env.OBSIDIAN_HOME.fetch(...)`, then cache/git fallback as today; add `OBSIDIAN_CLOUD` to the ladder. Wire the `vpc_services` bindings. Deploy.
-3. **Cut over + retire the Funnel** — point the Worker at `backend:vpc`, verify, then `tailscale funnel --https=8443 off` and drop `OBSIDIAN_REMOTE_URL`.
+3. **Cut over + retire the Funnel** — point the Worker at `backend:vpc`, verify, then `tailscale funnel --https=8443 off` and drop `OBSIDIAN_REMOTE_URL` (keep the bearer as `OBSIDIAN_HOME_KEY`).
 4. **Human web UI** — a `cloudflared` public hostname for the KasmVNC UI behind **Cloudflare Access** (SSO), so you reach the full Obsidian app from any browser.
 5. **Cloud failover** — Hetzner CX22, same container, second tunnel + `obsidian-vault-cloud` VPC Service, added to the ladder.
 
@@ -225,21 +225,26 @@ The cleanest working path reuses what already works: **the sux Worker is itself 
 
 **Answers baked in:** home box = x86_64, Docker-ready · CF zone exists · Obsidian Sync subscribed (box joins the existing ring) · tier-3 = second MCP endpoint on the sux Worker. Funnel/ACL fact (verified): tailnet ACLs gate which nodes may *enable* Funnel (`nodeAttrs` `funnel`), never who may *visit* — Funnel visitors are the anonymous public internet, which is why tier 3 cannot be Funnel.
 
-### Phase A — ship tier 1 (no hardware; release mechanics only)
-1. Unlock 1Password → push `feat/obsidian-store-ops` (`1c2b3ba`) + `docs/knowledge-core`.
+> **Critique fixes folded in (2026-07-08, plan-critique workflow — 2 HIGH, 2 MED).**
+> **(A0) Rotate the leaked REST key first** — it was pasted in a chat and is the only lock on the *public* `:8443` Funnel, which stays live through Phases A–B. **(B) Demote the Mac's obsidian-git the instant the box's goes live** — otherwise two auto-commit+auto-push writers on `colinxs/vault`, coupled by Sync, produce merge-conflict files that Sync replicates everywhere. **(C) Never delete `OBSIDIAN_REMOTE_KEY`** — Workers VPC gives reachability only; the bearer is still required, and home/cloud plugins mint *different* keys, so split it per box. **(D) The disk is NOT fully disposable** — `.obsidian/plugins` (the REST key, obsidian-git config) is gitignored, so a re-clone restores notes but not plugin state; back up `.obsidian` if you want unattended recovery.
+
+### Phase A — ship tier 1 + the vault connector (no hardware; release mechanics)
+0. **Rotate the Local REST API key** (leaked in chat): regenerate it in the Mac plugin, then re-sync the three consumers — `wrangler secret put OBSIDIAN_REMOTE_KEY`, the `Authorization` bearer in `~/.claude.json`, and mcp-gate's `bearerFile` (re-read per request; no restart). Do this before anything else touches the public Funnel.
+1. Unlock 1Password → push `feat/obsidian-store-ops` + `docs/knowledge-core`. *(done 2026-07-08)*
 2. Merge PR #28 (code) and #29 (docs). `wrangler deploy --config sux/wrangler.jsonc`.
-3. `wrangler secret put DROPBOX_TOKEN` (App-folder app). Post-deploy: selftest + obsidian write→read→edit→delete round-trip + one real `ingest`.
+3. `wrangler secret put DROPBOX_TOKEN` (App-folder app). Post-deploy: selftest + git-backend write→read→edit→delete round-trip + one real `ingest`. **Add `https://<worker>/vault/mcp` as a custom connector in claude.ai** — it needs only the git store, so it ships here (§8 addendum).
 
 ### Phase B — the home box (hardware; no Worker changes)
-1. Docker up → `ghcr.io/sytone/obsidian-remote` (KasmVNC) with `/vaults` = a fresh `colinxs/vault` clone, `/config` persisted; `DOCKER_MODS=linuxserver/mods:universal-git`.
-2. In the browser UI: install + enable **Local REST API (with MCP)** and **obsidian-git**; set REST **Binding Host = 0.0.0.0**; publish `:27124`; note the API key. Log in to **Obsidian Sync** — the box joins the Mac/iPhone ring. obsidian-git keeps `colinxs/vault` = truth.
-3. `cloudflared` on the box → named tunnel (Workers VPC dashboard → Tunnels) → `npx wrangler vpc service create obsidian-vault-home --type http --tunnel-id <ID> --hostname localhost --https-port 27124 --cert-verification-mode disabled` → note `service_id`.
-4. `tailscale serve` for your own devices (identity-gated, tailnet-only) — replaces nothing yet; the Mac stays live until Phase C cutover.
+1. Docker up → `ghcr.io/sytone/obsidian-remote` (KasmVNC) with `/vaults` = a fresh `colinxs/vault` clone, `/config` persisted; `DOCKER_MODS=linuxserver/mods:universal-git`. **Change the container's default `abc/abc` basic-auth** (`CUSTOM_USER`/`PASSWORD`) before it's reachable by anything.
+2. In the browser UI: install + enable **Local REST API (with MCP)** and **obsidian-git**; set REST **Binding Host = 0.0.0.0**; publish `:27124`; note the API key. Log in to **Obsidian Sync** — the box joins the Mac/iPhone ring.
+3. **Atomically flip the git write-master to the box:** the moment the box's obsidian-git is auto-committing, **disable auto-commit/auto-push on the Mac's obsidian-git** (Mac becomes a Sync-only device). Exactly one git writer at all times — otherwise Sync + two committers = conflict-marker files replicated to every device.
+4. `cloudflared` on the box → named tunnel (Workers VPC dashboard → Tunnels) → `npx wrangler vpc service create obsidian-vault-home --type http --tunnel-id <ID> --hostname localhost --https-port 27124 --cert-verification-mode disabled` → note `service_id`.
+5. `tailscale serve` for your own devices (identity-gated, tailnet-only). Back up the box's `.obsidian` (plugin config incl. the REST key) — a bare re-clone won't restore it (finding D).
 
 ### Phase C — the `vpc` backend + cutover (code; the ultracode loop)
-1. `wrangler.jsonc`: `"vpc_services": [{ "binding": "OBSIDIAN_HOME", "service_id": "…", "remote": true }]` (+ `OBSIDIAN_CLOUD` later). Registry `Env` gains the binding type.
-2. `obsidian` fn: `backend: "vpc"` — same runRemote surface with `remoteFetch` swapped for `env.OBSIDIAN_HOME.fetch()` (bearer still injected); ladder home → (cloud) → KV fallback → suggest git. Make `vpc` the default when the binding exists.
-3. Implement → adversarial review workflow → fix → verify (the store-work loop). Deploy, run parallel against `remote` briefly, cut over, then `tailscale funnel --https=8443 off` and drop `OBSIDIAN_REMOTE_URL/KEY` from Worker secrets (key stays box-side only).
+1. `wrangler.jsonc`: `"vpc_services": [{ "binding": "OBSIDIAN_HOME", "service_id": "…", "remote": true }]` (+ `OBSIDIAN_CLOUD` later). Registry `Env` gains the binding + a **per-box key** (`OBSIDIAN_HOME_KEY`, later `OBSIDIAN_CLOUD_KEY`) — home and cloud plugins mint different keys.
+2. `obsidian` fn: `backend: "vpc"` — same runRemote surface with `remoteFetch` swapped for `env.OBSIDIAN_HOME.fetch()` (**bearer still injected — `env.OBSIDIAN_HOME_KEY`**); ladder home → (cloud) → KV fallback → suggest git. Make `vpc` the default when the binding exists. `vault_search` on the connector lights up here.
+3. Implement → adversarial review workflow → fix → verify (the store-work loop). Deploy, run parallel against `remote` briefly, cut over, then `tailscale funnel --https=8443 off` and **drop `OBSIDIAN_REMOTE_URL` only** — the bearer stays a Worker secret (as `OBSIDIAN_HOME_KEY`); deleting it 401s every vpc call.
 
 ### Phase D — tier 3: the `vault` connector (code, small)
 1. `apiRoute: "/mcp"` → `apiRoute: ["/mcp", "/vault/mcp"]` in the OAuthProvider config (verified: the sux Worker already uses `workers-oauth-provider` this way).
