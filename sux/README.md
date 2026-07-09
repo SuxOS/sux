@@ -301,10 +301,12 @@ fn, not a separate tool.
 | `stackexchange` | Stack Exchange Q&A across network sites (keyless; honors `STACKEXCHANGE_KEY`). |
 | `coingecko` | CoinGecko crypto prices and coin search (keyless). |
 
-### Notes / knowledge (1)
+### Notes / knowledge (3)
 | fn | one-liner |
 |---|---|
-| `obsidian` | Work an Obsidian vault — list/read/search/append. **git backend live** (GitHub-backed private repo `colinxs/obsidian-vault` via `OBSIDIAN_VAULT_REPO`); `remote` backend wraps the vault's Local REST API + its built-in MCP tools. |
+| `obsidian` | Work an Obsidian vault — list/read/search/append/write/edit/delete (edit = surgical find/replace, unique match unless `all`). Mutating actions refuse dot-prefixed/traversal paths (no `.github/`, `.obsidian/`). **git backend live** (GitHub-backed private repo `colinxs/obsidian-vault` via `OBSIDIAN_VAULT_REPO`); `remote` backend wraps the vault's Local REST API + its built-in MCP tools (`tools`/`call` are remote-only). Reads are KV-cached in separate git/remote namespaces (git validated by vault HEAD sha, trusted ≤10min when GitHub is unreachable; remote `read` falls back to its cached copy on fetch failure or 5xx — remote list/search are uncached). |
+| `ingest` | Capture into the vault: one of `url` (HTML → markdown; binaries become attachments; 32MB fetch cap) \| `text` \| `query` (search results) → a provenance-stamped note in `Inbox/`, never overwriting (slug collisions get a time suffix). Optional `summarize`/`compress` passes (skipped for binaries; degrade to verbatim without AI). Blobs ≤1MB commit into the vault repo; larger (or `blobs:'dropbox'`) upload to the Dropbox app folder and the note links the **public** shared URL (R2 fallback when `DROPBOX_TOKEN` unset). |
+| `dropbox` | Dropbox app-folder blob store (`DROPBOX_TOKEN`, App-folder scoped — can't see the rest of Dropbox): put/get/list (cursor-paginated)/delete/share; put returns a **public** 'anyone with the link' shared URL. `get` checks metadata first, so oversize files return a link instead of blowing the isolate. The human-facing twin of R2 `store` — files sync to every device. |
 
 ---
 

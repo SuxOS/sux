@@ -10,6 +10,13 @@ export function isHttpUrl(u: unknown): u is string {
 	return typeof u === "string" && /^https?:\/\//i.test(u);
 }
 
+/** The vault owner's LOCAL calendar day as YYYY-MM-DD (default Pacific). A Worker
+ * runs in UTC, so a plain toISOString() date rolls to tomorrow from ~5pm Pacific —
+ * wrong for daily-note targeting and capture filenames. en-CA renders ISO order. */
+export function vaultToday(tz?: string): string {
+	return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+}
+
 /** Truncate a string, appending a byte-count marker when it was cut. */
 export function clamp(s: string, maxBytes = 100_000): string {
 	return s.length > maxBytes ? `${s.slice(0, maxBytes)}\n… [truncated at ${maxBytes} bytes]` : s;

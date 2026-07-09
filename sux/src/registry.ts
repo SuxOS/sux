@@ -46,6 +46,17 @@ export type RtEnv = Env &
 		// Remote Obsidian backend: the Funnel'd Local REST API URL + its bearer key.
 		OBSIDIAN_REMOTE_URL?: string;
 		OBSIDIAN_REMOTE_KEY?: string;
+		// Dropbox app-folder blob store (dropbox fn + ingest blob routing), all
+		// App-folder-scoped (can only see /Apps/<app>/). Durable path: a long-lived
+		// REFRESH token + app key/secret → short-lived access tokens minted &
+		// KV-cached (fns/dropbox.ts). DROPBOX_TOKEN alone = a short-lived quick test.
+		DROPBOX_TOKEN?: string;
+		DROPBOX_REFRESH_TOKEN?: string;
+		DROPBOX_APP_KEY?: string;
+		DROPBOX_APP_SECRET?: string;
+
+		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
+		VAULT_TZ?: string;
 
 		EXA_API_KEY?: string;
 
