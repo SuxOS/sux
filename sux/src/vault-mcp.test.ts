@@ -12,7 +12,10 @@ import { handleVaultRpc, VAULT_TOOLS } from "./vault-mcp";
 const ENV = { OBSIDIAN_VAULT_REPO: "me/vault" } as any;
 const CTX = {} as any;
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
-const date = new Date().toISOString().slice(0, 10);
+// The vault owner's LOCAL day (default Pacific) — NOT UTC. Computing this the
+// same way the code does is the point: a UTC `date` here silently blessed the
+// evening-rollover bug the review caught.
+const date = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 
 const rpc = (method: string, params?: any) => ({ jsonrpc: "2.0", id: 1, method, params }) as any;
 const parse = async (r: Response) => {
@@ -117,5 +120,44 @@ describe("vault MCP server (/vault/mcp)", () => {
 
 	it("every tool schema is closed (additionalProperties: false)", () => {
 		for (const t of VAULT_TOOLS) expect((t.inputSchema as any).additionalProperties).toBe(false);
+	});
+
+	it("daily notes use the vault owner's local day, not UTC", async () => {
+		// The path must match Obsidian's local-time daily-notes plugin. Assert it's
+		// the Pacific day and never the UTC day when they differ.
+		let putPath = "";
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				putPath = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+				return new Response(JSON.stringify({ commit: { sha: "c" } }), { status: 201 });
+			}
+			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+		};
+		await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_daily_append", arguments: { content: "x" } }));
+		const pacific = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+		expect(putPath).toBe(`Daily/${pacific}.md`);
+	});
+
+	it("vault_capture allowlists fields — a stray `path` can't reach ingest's overwrite branch", async () => {
+		let putPath = "";
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				putPath = decodeURIComponent(url.split("/contents/")[1].split("?")[0]);
+				return new Response(JSON.stringify({ commit: { sha: "c" } }), { status: 201 });
+			}
+			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+		};
+		// `path: Home.md` is NOT in vault_capture's schema; it must be dropped, so the
+		// capture lands in Inbox/, never overwriting the Home MOC.
+		await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_capture", arguments: { text: "jot", title: "Jot", path: "Home.md" } }));
+		expect(putPath).toMatch(/^Inbox\//);
+		expect(putPath).not.toBe("Home.md");
+	});
+
+	it("rejects an over-large tools/call body", async () => {
+		const r = await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_read", arguments: { path: "x.md" } }), 5 * 1024 * 1024);
+		const out = await parse(r);
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toMatch(/too large/);
 	});
 });

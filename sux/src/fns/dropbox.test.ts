@@ -2,14 +2,49 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { dropbox } from "./dropbox";
 
 const ENV = { DROPBOX_TOKEN: "dbx" } as any;
+const fakeKV = (init: Record<string, string> = {}) => {
+	const store = new Map(Object.entries(init));
+	return { store, get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
+};
 
 describe("dropbox (app-folder blob store)", () => {
 	afterEach(() => vi.unstubAllGlobals());
 
-	it("reports when DROPBOX_TOKEN isn't configured", async () => {
+	it("reports when neither a token nor the refresh creds are configured", async () => {
 		const r = await dropbox.run({} as any, { op: "list" });
 		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/DROPBOX_TOKEN/);
+		expect(r.content[0].text).toMatch(/DROPBOX_REFRESH_TOKEN|DROPBOX_TOKEN/);
+	});
+
+	it("refresh flow: mints a short-lived token, caches it in KV, reuses on the next call", async () => {
+		const kv = fakeKV();
+		const env = { DROPBOX_REFRESH_TOKEN: "rt", DROPBOX_APP_KEY: "ak", DROPBOX_APP_SECRET: "as", OAUTH_KV: kv } as any;
+		let mints = 0;
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
+			const url = String(u);
+			if (url === "https://api.dropbox.com/oauth2/token") {
+				mints++;
+				expect(init.headers.Authorization).toBe(`Basic ${btoa("ak:as")}`);
+				expect(init.body).toContain("grant_type=refresh_token");
+				expect(init.body).toContain("refresh_token=rt");
+				return new Response(JSON.stringify({ access_token: "sl.minted", expires_in: 14400 }), { status: 200 });
+			}
+			expect(init.headers.Authorization).toBe("Bearer sl.minted"); // the minted token is used
+			return new Response(JSON.stringify({ entries: [], has_more: false }), { status: 200 });
+		}));
+		await dropbox.run(env, { op: "list" });
+		expect(mints).toBe(1);
+		expect(kv.store.get("sux:dropbox:token")).toBe("sl.minted");
+		await dropbox.run(env, { op: "list" }); // second op: cache hit, no re-mint
+		expect(mints).toBe(1);
+	});
+
+	it("refresh flow surfaces an auth failure clearly", async () => {
+		const env = { DROPBOX_REFRESH_TOKEN: "rt", DROPBOX_APP_KEY: "ak", OAUTH_KV: fakeKV() } as any;
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "invalid_grant", error_description: "refresh token revoked" }), { status: 400 })));
+		const r = await dropbox.run(env, { op: "list" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/refresh token revoked|invalid_grant/);
 	});
 
 	it("put uploads bytes and returns a fresh shared link", async () => {

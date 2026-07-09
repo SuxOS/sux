@@ -1,7 +1,9 @@
+import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
 import { obsidian } from "./fns/obsidian";
+import { vaultToday } from "./fns/_util";
 
 // The vault MCP server — our rolled-own obsidian-web-mcp (prior art:
 // github.com/jimprosser/obsidian-web-mcp), kept on OUR Workers implementation.
@@ -20,8 +22,7 @@ import { obsidian } from "./fns/obsidian";
 // temp+rename writes (git commits are atomic; live-vault writes go through
 // Obsidian's own adapter), its path guards (badVaultPath in fns/obsidian.ts).
 const DAILY_DIR = "Daily";
-const today = () => new Date().toISOString().slice(0, 10);
-const dailyPath = () => `${DAILY_DIR}/${today()}.md`;
+const dailyPath = (env: RtEnv) => `${DAILY_DIR}/${vaultToday(env.VAULT_TZ)}.md`;
 
 type VaultTool = {
 	name: string;
@@ -95,19 +96,27 @@ const TOOLS: VaultTool[] = [
 				compress: { type: "boolean", default: false },
 			},
 		},
-		run: (env, a) => ingest.run(env, a ?? {}),
+		// Allowlist the fields we forward — NEVER the raw args. A stray `path` key
+		// (models emit extras despite additionalProperties:false, which nothing
+		// enforces server-side) would hit ingest's explicit-path overwrite branch
+		// and clobber a named note, breaking this tool's never-overwrite promise.
+		run: (env, a) => {
+			const pick: Record<string, unknown> = {};
+			for (const k of ["url", "text", "query", "title", "tags", "summarize", "compress"]) if (a?.[k] !== undefined) pick[k] = a[k];
+			return ingest.run(env, pick);
+		},
 	},
 	{
 		name: "vault_daily_read",
-		description: "Read today's daily note.",
+		description: "Read today's daily note (the vault owner's local day).",
 		inputSchema: { type: "object", additionalProperties: false, properties: {} },
-		run: (env) => obsidian.run(env, git({ action: "read", path: dailyPath() })),
+		run: (env) => obsidian.run(env, git({ action: "read", path: dailyPath(env) })),
 	},
 	{
 		name: "vault_daily_append",
 		description: "Append to today's daily note (created if absent) — the quick-capture surface for tasks and jots.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["content"], properties: { content: { type: "string", description: "Markdown to add, e.g. '- [ ] call the plumber'." } } },
-		run: (env, a) => obsidian.run(env, git({ action: "append", path: dailyPath(), content: a?.content })),
+		run: (env, a) => obsidian.run(env, git({ action: "append", path: dailyPath(env), content: a?.content })),
 	},
 ];
 
@@ -116,11 +125,19 @@ export const VAULT_TOOLS = TOOLS;
 // Mirrors handleRpc's protocol shell (initialize / notifications / tools) with
 // the vault registry instead of FUNCTIONS. Stateless per request, like the main
 // server: the MCP session is a per-call formality, all state lives in the store.
-export async function handleVaultRpc(env: RtEnv, _ctx: ExecutionContext, rpc: JsonRpc | undefined): Promise<Response> {
+// Above this, refuse a tools/call body outright. The vault handler dispatches
+// tools directly (not through the main /mcp checkArgs), so it enforces its own
+// coarse ceiling — a note body can be large, but not unbounded.
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+export async function handleVaultRpc(env: RtEnv, _ctx: ExecutionContext, rpc: JsonRpc | undefined, bodyBytes = 0): Promise<Response> {
 	const method = rpc?.method;
 	const id = rpc?.id ?? null;
 
 	if (!method) return new Response(null, { status: 202 });
+	if (method === "tools/call" && bodyBytes > MAX_BODY_BYTES) {
+		return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Request too large (${bodyBytes} bytes > ${MAX_BODY_BYTES}).` }], isError: true } });
+	}
 	if (method === "initialize") {
 		return sseResponse({
 			jsonrpc: "2.0",
@@ -140,8 +157,14 @@ export async function handleVaultRpc(env: RtEnv, _ctx: ExecutionContext, rpc: Js
 		const name = String(rpc?.params?.name ?? "");
 		const tool = TOOLS.find((t) => t.name === name);
 		if (!tool) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
+		const args = rpc?.params?.arguments ?? {};
+		// The same dispatch rails the main /mcp path enforces (this handler doesn't
+		// go through handleRpc): reject a pathological args blob, and never let one
+		// tool hang the isolate.
+		const argErr = checkArgs(args, MAX_BODY_BYTES, 64);
+		if (argErr) return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `${name} rejected: ${argErr}` }], isError: true } });
 		try {
-			const result = await tool.run(env, rpc?.params?.arguments ?? {});
+			const result = await withDeadline(name, FN_DEADLINE_MS, tool.run(env, args));
 			return sseResponse({ jsonrpc: "2.0", id, result });
 		} catch (e) {
 			return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `${name} failed: ${String((e as Error).message ?? e)}` }], isError: true } });

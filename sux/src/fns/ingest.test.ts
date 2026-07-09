@@ -10,7 +10,7 @@ vi.mock("../proxy", () => ({
 import { ingest } from "./ingest";
 
 const ENV = { OBSIDIAN_VAULT_REPO: "me/vault" } as any;
-const date = new Date().toISOString().slice(0, 10);
+const date = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 
 /** GitHub contents mock capturing PUTs. GETs 404 unless the path is in `existing`
  * (which is how vaultPut's failIfExists collision check sees a taken filename). */

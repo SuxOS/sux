@@ -38,7 +38,7 @@ const inflight = new Map<string, Promise<CleanResult>>();
 //     payload and must not gain a marker).
 //   • MAX_ARG_BYTES / MAX_ARG_DEPTH — reject a pathological args blob before it
 //     reaches normalizeArgs/run (memory/CPU DoS, or stack blowup on deep nesting).
-const FN_DEADLINE_MS = 60_000;
+export const FN_DEADLINE_MS = 60_000;
 const MAX_OUTPUT_CHARS = 1_000_000;
 const MAX_ARG_BYTES = 256_000;
 const MAX_ARG_DEPTH = 64;
@@ -337,12 +337,17 @@ export const rtServer = {
 		}
 
 		const isBodyless = request.method === "GET" || request.method === "HEAD";
-		const rpc = parseJsonRpc(isBodyless ? undefined : await request.text());
+		const bodyText = isBodyless ? undefined : await request.text();
+		const rpc = parseJsonRpc(bodyText);
 		// The vault MCP server (fns/vault tools over the cloud git store) rides the
 		// same OAuth gate at its own path — a second connector, no second provider.
-		if (new URL(request.url).pathname === "/vault/mcp") {
+		// Match a trailing slash too: the OAuth provider authorizes any path that
+		// startsWith('/vault/mcp'), so an exact-only check would let '/vault/mcp/'
+		// silently fall through to the research-tools server (wrong tools, authed).
+		const pathname = new URL(request.url).pathname;
+		if (pathname === "/vault/mcp" || pathname.startsWith("/vault/mcp/")) {
 			const { handleVaultRpc } = await import("./vault-mcp");
-			return handleVaultRpc(env, ctx, rpc);
+			return handleVaultRpc(env, ctx, rpc, bodyText?.length ?? 0);
 		}
 		// Weighted rate limit: expensive tools (render/Kagi/SerpAPI/Workers AI)
 		// consume extra tokens beyond the base 1 charged above, so a burst of paid

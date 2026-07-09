@@ -1,6 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { htmlToMd } from "./_markup";
-import { clamp, loadBytes, putBlob } from "./_util";
+import { clamp, loadBytes, putBlob, vaultToday } from "./_util";
 import { dropboxPut } from "./dropbox";
 import { type VaultCfg, vaultCfg, vaultPut } from "./obsidian";
 
@@ -103,7 +103,7 @@ export const ingest: Fn = {
 		const query = typeof args?.query === "string" && args.query.trim() ? String(args.query).trim() : undefined;
 		if ([url, text, query].filter(Boolean).length !== 1) return fail("Provide exactly one source: `url`, `text`, or `query`.");
 		const tags = Array.isArray(args?.tags) ? args.tags.map(String) : [];
-		const date = new Date().toISOString().slice(0, 10);
+		const date = vaultToday(env.VAULT_TZ);
 
 		try {
 			let title = String(args?.title ?? "").trim();

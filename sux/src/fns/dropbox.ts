@@ -1,4 +1,4 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { fromB64, toB64 } from "./_util";
 
 // Dropbox as the human-facing blob store (R2 `store` is the machine-facing
@@ -8,6 +8,36 @@ import { fromB64, toB64 } from "./_util";
 // §2-dropbox). All paths here are relative to the app-folder root.
 const API = "https://api.dropboxapi.com/2";
 const CONTENT = "https://content.dropboxapi.com/2";
+const OAUTH_TOKEN_URL = "https://api.dropbox.com/oauth2/token";
+const TOKEN_KEY = "sux:dropbox:token";
+
+// Dropbox access tokens are SHORT-LIVED (~4h `sl.` tokens) — a static
+// DROPBOX_TOKEN would expire mid-day. The durable path mirrors fns/kroger.ts:
+// store a long-lived REFRESH token + the app key/secret, mint short-lived
+// access tokens on demand, and cache them in KV until just before they expire.
+// A static DROPBOX_TOKEN is still honored as a quick-test fallback.
+async function dropboxToken(env: RtEnv): Promise<string> {
+	if (env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY) {
+		const cached = await env.OAUTH_KV?.get(TOKEN_KEY);
+		if (cached) return cached;
+		const basic = btoa(`${env.DROPBOX_APP_KEY}:${env.DROPBOX_APP_SECRET ?? ""}`);
+		const resp = await fetch(OAUTH_TOKEN_URL, {
+			method: "POST",
+			headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" },
+			body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(String(env.DROPBOX_REFRESH_TOKEN))}`,
+			signal: AbortSignal.timeout(20_000),
+		});
+		const j: any = await resp.json().catch(() => null);
+		if (!resp.ok || !j?.access_token) throw new Error(`Dropbox token refresh HTTP ${resp.status}: ${j?.error_description ?? j?.error ?? "no access_token"}`);
+		const ttl = Math.max(60, (Number(j?.expires_in) || 14_400) - 60); // clamp to KV's 60s floor
+		await env.OAUTH_KV?.put(TOKEN_KEY, String(j.access_token), { expirationTtl: ttl });
+		return String(j.access_token);
+	}
+	if (env.DROPBOX_TOKEN) return String(env.DROPBOX_TOKEN);
+	throw new Error("Dropbox not configured. Set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY (+ DROPBOX_APP_SECRET) for the durable refresh flow, or DROPBOX_TOKEN for a short-lived quick test.");
+}
+
+const hasDropbox = (env: RtEnv): boolean => Boolean((env.DROPBOX_REFRESH_TOKEN && env.DROPBOX_APP_KEY) || env.DROPBOX_TOKEN);
 const TEXT_EXT = /\.(md|txt|json|csv|tsv|ya?ml|xml|html?|js|ts|css)$/i;
 /** Above this, get returns metadata + a share hint instead of inlining bytes. */
 const MAX_INLINE_BYTES = 4 * 1024 * 1024;
@@ -24,11 +54,12 @@ const norm = (p: unknown): string => {
 };
 
 // Direct fetch throughout: Dropbox is a public API — no residential-proxy
-// routing needed (same call as obsidian's remoteFetch to its Funnel).
-async function rpc(env: any, path: string, body: unknown): Promise<{ status: number; json: any }> {
+// routing needed (same call as obsidian's remoteFetch to its Funnel). Callers
+// pass a resolved bearer (dropboxToken) so one refresh serves a whole op.
+async function rpc(token: string, path: string, body: unknown): Promise<{ status: number; json: any }> {
 	const resp = await fetch(`${API}${path}`, {
 		method: "POST",
-		headers: { Authorization: `Bearer ${env.DROPBOX_TOKEN}`, "Content-Type": "application/json" },
+		headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
 		body: JSON.stringify(body),
 		signal: AbortSignal.timeout(20_000),
 	});
@@ -37,11 +68,11 @@ async function rpc(env: any, path: string, body: unknown): Promise<{ status: num
 }
 
 /** Create a shared link for a path, reusing the existing one on 409. */
-async function sharedLink(env: any, path: string): Promise<string | undefined> {
-	const mk = await rpc(env, "/sharing/create_shared_link_with_settings", { path });
+async function sharedLink(token: string, path: string): Promise<string | undefined> {
+	const mk = await rpc(token, "/sharing/create_shared_link_with_settings", { path });
 	if (mk.status === 200 && mk.json?.url) return mk.json.url;
 	if (String(mk.json?.error_summary ?? "").includes("shared_link_already_exists")) {
-		const ls = await rpc(env, "/sharing/list_shared_links", { path, direct_only: true });
+		const ls = await rpc(token, "/sharing/list_shared_links", { path, direct_only: true });
 		return ls.json?.links?.[0]?.url;
 	}
 	return undefined;
@@ -51,12 +82,13 @@ async function sharedLink(env: any, path: string): Promise<string | undefined> {
  * Default overwrites the exact path (op=put semantics: the caller named it). Pass
  * overwrite:false for a never-clobber upload — Dropbox autorenames on collision
  * (e.g. "report (1).pdf") and the returned `path` reflects the actual name. */
-export async function dropboxPut(env: any, path: string, bytes: Uint8Array, opts?: { overwrite?: boolean }): Promise<{ path: string; size: number; url?: string } | { error: string }> {
+export async function dropboxPut(env: RtEnv, path: string, bytes: Uint8Array, opts?: { overwrite?: boolean }): Promise<{ path: string; size: number; url?: string } | { error: string }> {
+	const token = await dropboxToken(env);
 	const clobber = opts?.overwrite !== false;
 	const resp = await fetch(`${CONTENT}/files/upload`, {
 		method: "POST",
 		headers: {
-			Authorization: `Bearer ${env.DROPBOX_TOKEN}`,
+			Authorization: `Bearer ${token}`,
 			"Content-Type": "application/octet-stream",
 			"Dropbox-API-Arg": headerSafeJson({ path, mode: clobber ? "overwrite" : "add", autorename: !clobber, mute: true }),
 		},
@@ -66,7 +98,7 @@ export async function dropboxPut(env: any, path: string, bytes: Uint8Array, opts
 	const json: any = await resp.json().catch(() => null);
 	if (resp.status >= 400) return { error: `Dropbox upload error: ${json?.error_summary ?? `HTTP ${resp.status}`}` };
 	const stored = json?.path_display ?? path;
-	return { path: stored, size: json?.size ?? bytes.length, url: await sharedLink(env, stored) };
+	return { path: stored, size: json?.size ?? bytes.length, url: await sharedLink(token, stored) };
 }
 
 export const dropbox: Fn = {
@@ -89,12 +121,13 @@ export const dropbox: Fn = {
 	cacheable: false,
 	raw: true,
 	run: async (env, args) => {
-		if (!env.DROPBOX_TOKEN) {
-			return fail("Dropbox not configured. Register a Dropbox app with App-folder permission and set DROPBOX_TOKEN (the app's access token) as a worker secret.");
+		if (!hasDropbox(env)) {
+			return fail("Dropbox not configured. Set DROPBOX_REFRESH_TOKEN + DROPBOX_APP_KEY (+ DROPBOX_APP_SECRET) — the durable refresh flow (short-lived access tokens are minted and KV-cached) — or DROPBOX_TOKEN for a short-lived quick test. The app needs the files.content.read/write, files.metadata.read, and sharing.read/write scopes.");
 		}
 		const op = String(args?.op ?? "");
 		const path = norm(args?.path);
 		try {
+			const token = await dropboxToken(env);
 			if (op === "put") {
 				if (!path) return fail("op=put requires a `path`.");
 				let bytes: Uint8Array;
@@ -109,7 +142,7 @@ export const dropbox: Fn = {
 				if (!path) return fail("op=get requires a `path`.");
 				// Metadata first: an oversize file must never be buffered into the
 				// isolate (128MB limit) just to learn it is too big.
-				const meta = await rpc(env, "/files/get_metadata", { path });
+				const meta = await rpc(token, "/files/get_metadata", { path });
 				if (meta.status >= 400) return fail(`Dropbox error: ${meta.json?.error_summary ?? `HTTP ${meta.status}`} (${path})`);
 				if (meta.json?.[".tag"] === "folder") return fail(`'${path}' is a folder — use op=list.`);
 				// Trust the metadata size as the gate; if it is absent (anomalous — a
@@ -117,11 +150,11 @@ export const dropbox: Fn = {
 				const size = Number(meta.json?.size);
 				if (!Number.isFinite(size)) return fail(`Dropbox returned no size for '${path}'; refusing to download an unbounded body.`);
 				if (size > MAX_INLINE_BYTES) {
-					return ok(JSON.stringify({ path, size, too_large_to_inline: true, url: await sharedLink(env, path) }, null, 2));
+					return ok(JSON.stringify({ path, size, too_large_to_inline: true, url: await sharedLink(token, path) }, null, 2));
 				}
 				const resp = await fetch(`${CONTENT}/files/download`, {
 					method: "POST",
-					headers: { Authorization: `Bearer ${env.DROPBOX_TOKEN}`, "Dropbox-API-Arg": headerSafeJson({ path }) },
+					headers: { Authorization: `Bearer ${token}`, "Dropbox-API-Arg": headerSafeJson({ path }) },
 					signal: AbortSignal.timeout(60_000),
 				});
 				if (resp.status >= 400) return fail(`Dropbox download error: ${(await resp.text().catch(() => "")).slice(0, 200) || `HTTP ${resp.status}`}`);
@@ -131,8 +164,8 @@ export const dropbox: Fn = {
 			}
 			if (op === "list") {
 				const { status, json } = args?.cursor
-					? await rpc(env, "/files/list_folder/continue", { cursor: String(args.cursor) })
-					: await rpc(env, "/files/list_folder", { path, recursive: false, limit: 500 });
+					? await rpc(token, "/files/list_folder/continue", { cursor: String(args.cursor) })
+					: await rpc(token, "/files/list_folder", { path, recursive: false, limit: 500 });
 				if (status >= 400) return fail(`Dropbox list error: ${json?.error_summary ?? `HTTP ${status}`}`);
 				const entries = (json?.entries ?? []).map((e: any) => ({ kind: e?.[".tag"], name: e?.name, path: e?.path_display, size: e?.size }));
 				const hasMore = json?.has_more === true;
@@ -140,13 +173,13 @@ export const dropbox: Fn = {
 			}
 			if (op === "delete") {
 				if (!path) return fail("op=delete requires a `path`.");
-				const { status, json } = await rpc(env, "/files/delete_v2", { path });
+				const { status, json } = await rpc(token, "/files/delete_v2", { path });
 				if (status >= 400) return fail(`Dropbox delete error: ${json?.error_summary ?? `HTTP ${status}`} (${path})`);
 				return ok(JSON.stringify({ ok: true, deleted: json?.metadata?.path_display ?? path }, null, 2));
 			}
 			if (op === "share") {
 				if (!path) return fail("op=share requires a `path`.");
-				const url = await sharedLink(env, path);
+				const url = await sharedLink(token, path);
 				if (!url) return fail(`Could not create a shared link for ${path}.`);
 				return ok(JSON.stringify({ path, url }, null, 2));
 			}
