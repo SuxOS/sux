@@ -1,3 +1,13 @@
+---
+title: Vault backends, tasks & citations
+status: designed
+cluster: namespaces
+type: proposal
+summary: "Locks four vault backends + git-as-the-sync-bus; adds 3-way task sync (vault-Todoist-JMAP) and citation management on the same store verbs."
+tags: [sux, namespaces, designed]
+updated: 2026-07-09
+---
+
 # Vault backends, task-management, and citation-management
 
 Status: proposal / design lock
@@ -532,3 +542,11 @@ citeable surface; the PDF stays a blob behind a handle.
   `env.OBSIDIAN_HOME` (Obsidian never public).
 - **E** — cloud failover (Hetzner CX22) + task-management (`todoist` fn + `task_sync` cron +
   id-map) + citation-management (`References/` schema, MOC, BibTeX/CSL export, capture flow).
+
+## Related
+
+- [[vault-backends-matrix]]
+- [[vpc-hosting]]
+- [[vault-stack]]
+- [[handle-discipline]]
+- [[Namespaces-MOC]]

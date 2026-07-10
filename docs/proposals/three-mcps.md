@@ -1,3 +1,13 @@
+---
+title: Three MCP namespaces
+status: designed
+cluster: namespaces
+type: proposal
+summary: "One Worker, N per-domain /mcp connectors — vault (shipped, 9 tools), mail (planned); the lifecycle + oracle are Claude-side skills, not server verbs."
+tags: [sux, namespaces, designed]
+updated: 2026-07-09
+---
+
 # Three MCP namespaces — vault · mail · sux
 
 **Corrected 2026-07-09 after reading the branch.** The earlier draft proposed 3 separate workers and a parallel verb vocabulary; both were wrong. The real architecture is Colin's (commit 220ed15) and the vault namespace is already built (`sux/src/vault-mcp.ts`). This doc now reflects reality.
@@ -81,3 +91,11 @@ No namespace calls another; Claude composes. `vault_capture` from a `mail` read;
 5. **`/mail/mcp`** — the sux-mail plugin + JMAP tools; wire into capture + ask.
 
 The vault namespace is real and usable today; the work left is the search primitive + the skills + the mail namespace.
+
+## Related
+
+- [[namespace-architecture]]
+- [[connector-surface-policy]]
+- [[vault-stack]]
+- [[mail]]
+- [[Namespaces-MOC]]

@@ -1,3 +1,13 @@
+---
+title: Enterprise ops — cross-store write/act
+status: designed
+cluster: operations
+type: proposal
+summary: "The cross-store WRITE/ACT layer (mirror of oracle's read) — pass-by-reference + batch verbs + Claude-Code scheduler + skills; heavy operate substrate deferred."
+tags: [sux, operations, designed]
+updated: 2026-07-09
+---
+
 # Enterprise search & operations — the cross-store WRITE / ACT layer
 
 **Status:** proposal · **Scope:** the cross-cutting operations layer that ties the four
@@ -344,3 +354,10 @@ Until a workload hits one of these, `operate` stays on paper. The four namespace
 
 No workflow step invents a verb outside the four designs; every gap is a **batch form** of an
 existing verb, named in §4.
+
+## Related
+
+- [[handle-discipline]]
+- [[oracle-supersession]]
+- [[six-verb-lifecycle]]
+- [[Namespaces-MOC]]

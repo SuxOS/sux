@@ -1,3 +1,13 @@
+---
+title: sux verb vocabulary
+status: designed
+cluster: namespaces
+type: proposal
+summary: "Collapses ~90 leaf fns into ten front-door verbs + batch/pipe; handle discipline (references-not-payloads) makes the shared fan-out/reduce cheap."
+tags: [sux, namespaces, designed]
+updated: 2026-07-09
+---
+
 # sux Verb Vocabulary — the /mcp universal namespace
 
 **Status:** proposal · **Scope:** the stateless query plane of the four-namespace system
@@ -644,3 +654,11 @@ paired `suggest` fn does not exist in the registry (dangling reference, noted).
    plane (vs. oracle calling the mail MCP as a client).
 4. **`execute` surfacing** — should `execute` be a per-call arg on every web verb, or
    only on `oracle` (the one verb with a co-locate payoff today)?
+
+## Related
+
+- [[handle-discipline]]
+- [[Functions-MOC]]
+- [[namespace-architecture]]
+- [[oracle-supersession]]
+- [[Namespaces-MOC]]

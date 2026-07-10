@@ -1,3 +1,13 @@
+---
+title: Claude profile snippet
+status: reference
+cluster: meta
+type: reference
+summary: "Compact snippet to paste into the claude.ai Profile so chats without skills can still route to sux tools."
+tags: [sux, meta, reference]
+updated: 2026-07-09
+---
+
 # Claude profile snippet — sux routing
 
 Paste the block below into claude.ai → **Settings → Profile → "What personal
@@ -21,3 +31,8 @@ I have a personal MCP connector, **sux** (91 web/data/compute tools). When a tas
 - **Compute:** `compress`, `archive` (zip), `encode` (base64/hex/url), `hash`, `fontcase` (case + unicode fonts), `pack` (JSON rows → token-cheap TSV).
 - **Compose & persist:** chain steps server-side with `pipe`; map over many inputs with `batch` (reduce:"summarize" to get one answer back); stash blobs in `store`; small key-values via `kv_put`/`kv_get`/`kv_list`/`kv_delete`; my Obsidian vault via `obsidian`; capture url/text/search-results into the vault with `ingest` (big blobs auto-route to Dropbox); Dropbox app-folder files via `dropbox`.
 - **Infra / meta:** `selftest` (which fetch-ladder rungs are up), `controld` (DNS view), `tailscale` (tailnet view). Prefer as:"url" delivery for big/binary outputs to keep the chat light. If a sux tool misbehaves, log it with `issue`.
+
+## Related
+
+- [[Functions-MOC]]
+- [[sux-verbs]]

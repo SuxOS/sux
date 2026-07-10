@@ -1,3 +1,13 @@
+---
+title: mail — Fastmail verbs
+status: designed
+cluster: namespaces
+type: proposal
+summary: "A dozen ergonomic mail_* verbs over the jmap conduit — scheduled send, remote search, batching, pagination; open 13-fns-vs-one decision."
+tags: [sux, namespaces, designed]
+updated: 2026-07-09
+---
+
 # sux design: the Fastmail MCP — ergonomic verbs over the `jmap` conduit (`/mail/mcp` + the `sux-mail` plugin)
 
 Companion to [`jmap.md`](./jmap.md). That doc designs the **raw conduit**: one `jmap` verb that forwards a JMAP `Request` byte-exact and adds the five things an edge proxy is uniquely positioned to add (injected auth, cached Session discovery, limit-safe batching/pagination, mutation gates, sux-algebra composability). This doc designs the **product surface on top of it**: a small set of ergonomic verbs served at `/mail/mcp`, packaged as the `sux-mail` plugin, that make the 80% path one call — while the `jmap` verb underneath guarantees the **superset** property (anything JMAP or the Fastmail API can express is still reachable even when unwrapped).
@@ -479,3 +489,11 @@ Before coding, confirm these `FLAG`ged items against a live Fastmail Session (a 
 ## Why this shape
 
 The existing 29-tool Fastmail connector is a *translation layer*: flat tools that lose back-references, can't reach MaskedEmail, and burn 29 context slots. This design is a **two-layer** answer: a raw `jmap` **transport** that guarantees total JMAP+Fastmail coverage (the superset floor), plus a **thin ergonomic skin** of a dozen handle-passing verbs for the 80% path — both compiling to the same `_jmap.ts` engine, both obeying the reference-not-payload rule so an agent does bulk mail work in a few calls with zero bodies in context. The four superpowers Colin required are first-class and grounded in verified spec: **scheduled send** is the corrected `envelope.mailFrom.parameters.HOLDFOR/HOLDUNTIL` (capability-gated), **remote search** is server-side `Email/query`+`SearchSnippet` with a stable cursor, **batching** is native one-request back-references (`mail_batch`), and **variable pagination** is the full `anchor`/`position`/`collapseThreads`+`queryState` surface. Nothing is invented; everything unwrapped is still reachable.
+
+## Related
+
+- [[jmap-conduit]]
+- [[jmap]]
+- [[handle-discipline]]
+- [[unblocked-gated-law]]
+- [[Namespaces-MOC]]

@@ -1,3 +1,13 @@
+---
+title: files — the blob namespace
+status: designed
+cluster: namespaces
+type: proposal
+summary: "The files blob namespace — unblocked App-folder workspace (Mode A) + gated in-place corpus ops (Mode B); files_operate moves zero bytes through the model."
+tags: [sux, namespaces, designed]
+updated: 2026-07-09
+---
+
 # files — the blob namespace: a synced workspace + operations over the whole corpus
 
 **The problem, stated once:** Colin wants "personalized cloud file storage and search" — but two structurally different things wear that one name, and conflating them is the trap every file connector falls into. There is the **workspace** Colin and Claude actively share (deliverables, exchange, a drop-a-file inbox — small, bidirectional, safe to leave unblocked), and there is the **corpus** — the whole Dropbox account and the local disk — which must be *operated on in place*, never mirrored wholesale into the workspace. Colin's refinement is the whole design in one sentence:
@@ -237,3 +247,11 @@ So the build is **mostly wiring**: a `files-mcp.ts` protocol shell + tool table 
 | **`ingest` fn** | size-based blob routing; the `/Apps/sux/` inbox seam | Mode A capture path (§3); the vault-attachment seam (§9) |
 | **[domains.md](domains.md) §1 law** | unblocked where an undo/wall protects; gated where the world can't be un-done | Mode A unblocked vs Mode B gated (§2) |
 | **vault ladder / consolidate** | provenance rule (blobs are cheap-to-refetch); content-addressed staleness validation | vault boundary (§9); full-text `rev`-validation (§8) |
+
+## Related
+
+- [[unblocked-gated-law]]
+- [[handle-discipline]]
+- [[vault-stack]]
+- [[namespace-architecture]]
+- [[Namespaces-MOC]]
