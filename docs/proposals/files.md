@@ -1,6 +1,6 @@
 ---
 title: files — the blob namespace
-status: designed
+status: shipped
 cluster: namespaces
 type: proposal
 summary: "The files blob namespace — unblocked App-folder workspace (Mode A) + gated in-place corpus ops (Mode B); files_operate moves zero bytes through the model."

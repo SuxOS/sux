@@ -1,10 +1,10 @@
 ---
 title: Three MCP namespaces
-status: designed
+status: shipped
 cluster: namespaces
 type: proposal
-summary: "One Worker, N per-domain /mcp connectors — vault (shipped, 9 tools), mail (planned); the lifecycle + oracle are Claude-side skills, not server verbs."
-tags: [sux, namespaces, designed]
+summary: "One Worker, N per-domain /mcp connectors — vault, mail, and files all shipped + live; the lifecycle + oracle (recall) are Claude-side skills / a server verb."
+tags: [sux, namespaces, shipped]
 updated: 2026-07-09
 ---
 
@@ -19,8 +19,9 @@ updated: 2026-07-09
 | Endpoint | Domain | Plugin | Status |
 |---|---|---|---|
 | `/mcp` | **sux** — universal web search + utilities (non-personal) | sux-router | live |
-| `/vault/mcp` | **vault** — personal Obsidian store | sux-vault | **built** (`vault-mcp.ts`) |
-| `/mail/mcp` | **mail** — Fastmail full JMAP | sux-mail | planned |
+| `/vault/mcp` | **vault** — personal Obsidian store | sux-vault | **live** (`vault-mcp.ts`) |
+| `/mail/mcp` | **mail** — Fastmail full JMAP | sux-mail | **live** (`mail-mcp.ts` + raw `jmap`) |
+| `/files/mcp` | **files** — Dropbox blobs (Mode A + gated Mode B) | sux-files | **live** (`files-mcp.ts` + raw `dropbox`) |
 
 All behind the same `workers-oauth-provider` flow, so each appears as its own connector in claude.ai with zero new public surface / zero new infra. Plugins auto-register connectors in **Claude Code**; the claude.ai web/mobile app still needs a manual connector add.
 

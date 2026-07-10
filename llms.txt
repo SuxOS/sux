@@ -7,12 +7,12 @@
 ## Docs by cluster
 
 ### namespaces
-- [[files]] (designed) — The files blob namespace — unblocked App-folder workspace (Mode A) + gated in-place corpus ops (Mode B); files_operate moves zero bytes through the model.
-- [[jmap]] (designed) — The full JMAP protocol as one typed conduit verb forwarding raw batches to Fastmail; _jmap.ts session/limit engine; MaskedEmail/Contacts/Calendars.
-- [[mail]] (designed) — A dozen ergonomic mail_* verbs over the jmap conduit — scheduled send, remote search, batching, pagination; open 13-fns-vs-one decision.
+- [[files]] (shipped) — The files blob namespace — unblocked App-folder workspace (Mode A) + gated in-place corpus ops (Mode B); files_operate moves zero bytes through the model.
+- [[jmap]] (shipped) — The full JMAP protocol as one typed conduit verb forwarding raw batches to Fastmail; _jmap.ts session/limit engine; MaskedEmail/Contacts/Calendars.
+- [[mail]] (shipped) — A dozen ergonomic mail_* verbs over the jmap conduit — scheduled send, remote search, batching, pagination; open 13-fns-vs-one decision.
+- [[three-mcps]] (shipped) — One Worker, N per-domain /mcp connectors — vault, mail, and files all shipped + live; the lifecycle + oracle (recall) are Claude-side skills / a server verb.
 - [[domains]] (designed) — Maps nine personal-data domains onto vault-hub + conduit verbs; derives the unblocked/gated law from reversibility; three transport classes.
 - [[sux-verbs]] (designed) — Collapses ~90 leaf fns into ten front-door verbs + batch/pipe; handle discipline (references-not-payloads) makes the shared fan-out/reduce cheap.
-- [[three-mcps]] (designed) — One Worker, N per-domain /mcp connectors — vault (shipped, 9 tools), mail (planned); the lifecycle + oracle are Claude-side skills, not server verbs.
 - [[vault-backends]] (designed) — Locks four vault backends + git-as-the-sync-bus; adds 3-way task sync (vault-Todoist-JMAP) and citation management on the same store verbs.
 
 ### knowledge

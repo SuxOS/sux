@@ -1,6 +1,6 @@
 ---
 title: mail — Fastmail verbs
-status: designed
+status: shipped
 cluster: namespaces
 type: proposal
 summary: "A dozen ergonomic mail_* verbs over the jmap conduit — scheduled send, remote search, batching, pagination; open 13-fns-vs-one decision."

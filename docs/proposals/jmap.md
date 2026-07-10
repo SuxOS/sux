@@ -1,6 +1,6 @@
 ---
 title: jmap — the JMAP conduit
-status: designed
+status: shipped
 cluster: namespaces
 type: proposal
 summary: "The full JMAP protocol as one typed conduit verb forwarding raw batches to Fastmail; _jmap.ts session/limit engine; MaskedEmail/Contacts/Calendars."
