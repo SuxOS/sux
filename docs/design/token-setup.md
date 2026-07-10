@@ -29,6 +29,33 @@ mail/files secrets, **reconnect the connector** so the client re-reads `tools/li
 
 ---
 
+## Status & the fast path
+
+- **Fastmail (`FASTMAIL_TOKEN`) — ✅ DONE (2026-07-10):** full read/write scope —
+  `mail`, `submission` (send), `contacts`, `maskedemail`. The mail namespace is live,
+  send included. *(Housekeeping: an earlier read-only `sux` token can be revoked at
+  Fastmail → Settings → Privacy & Security → API tokens → `sux` → Remove access.)*
+- **Everything else — needs generating**, each behind its own login/2FA (the sections
+  below), then set in one sweep.
+
+**The one-command setter — `scripts/set-secrets.sh`:** once you generate a token and save
+it to 1Password, this pipes it into the Worker via `op read | wrangler` — the value is
+never printed, never in shell history, Touch-ID-gated:
+
+```
+# unlock the 1Password app (Settings → Developer → Integrate with 1Password CLI)
+./scripts/set-secrets.sh --dry-run   # check which op:// refs resolve
+./scripts/set-secrets.sh             # set every secret that resolves
+./scripts/set-secrets.sh --list      # confirm what's set on the Worker
+```
+
+Edit the `MAP` at the top of the script so each `op://vault/item/field` points at your
+real 1Password item + field. That IS the 1Password integration: **generate → save to
+1Password → run the script.** (Login records aren't API tokens — the script only reads
+token/key fields you point it at.)
+
+---
+
 ## 1. Fastmail — `FASTMAIL_TOKEN` (mail / calendars / contacts, JMAP)
 
 **Where:** [fastmail.com](https://www.fastmail.com) → **Settings → Privacy & Security
