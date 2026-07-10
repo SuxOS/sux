@@ -5,11 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn() } }));
 vi.mock("./search", () => ({ search: { run: vi.fn() } }));
 vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
+vi.mock("./_dropbox-full", () => ({ hasDropboxFull: vi.fn(() => false), searchFull: vi.fn(), readFull: vi.fn() }));
 
 import { recall } from "./recall";
 import { obsidian } from "./obsidian";
 import { search } from "./search";
 import { jmap } from "./jmap";
+import { hasDropboxFull, readFull, searchFull } from "./_dropbox-full";
 
 const okR = (text: string) => ({ content: [{ type: "text", text }] });
 const errR = (text: string) => ({ content: [{ type: "text", text }], isError: true });
@@ -18,6 +20,9 @@ const parse = (r: any) => JSON.parse(r.content[0].text);
 const obs = obsidian.run as unknown as ReturnType<typeof vi.fn>;
 const web = search.run as unknown as ReturnType<typeof vi.fn>;
 const mail = jmap.run as unknown as ReturnType<typeof vi.fn>;
+const dbxHas = hasDropboxFull as unknown as ReturnType<typeof vi.fn>;
+const dbxSearch = searchFull as unknown as ReturnType<typeof vi.fn>;
+const dbxRead = readFull as unknown as ReturnType<typeof vi.fn>;
 
 let aiRun: ReturnType<typeof vi.fn>;
 const env = () => ({ AI: { run: aiRun } }) as any;
@@ -76,6 +81,28 @@ describe("recall", () => {
 		expect(out.answer).toContain("couldn't find anything");
 		expect(out.citations).toEqual([]);
 		expect(aiRun).not.toHaveBeenCalled();
+	});
+
+	it("adds files (Mode B) as a source when configured: inlines a small text hit, cites [files:…]", async () => {
+		dbxHas.mockReturnValue(true);
+		dbxSearch.mockResolvedValue({ matches: [{ path: "/Health/labs.md", size: 400, modified: "2026-02-01" }, { path: "/Health/scan.pdf", size: 9_000_000 }] });
+		dbxRead.mockResolvedValue({ path: "/Health/labs.md", text: "CA-125 trending down per Dr. Chen." });
+		const out = parse(await recall.run(env(), { question: "labs?", sources: ["files"] }));
+		expect(dbxSearch).toHaveBeenCalled();
+		expect(dbxRead).toHaveBeenCalledTimes(1); // only the small .md is read; the 9MB pdf is cited by handle, not inlined
+		expect(out.sources.files).toBe("2 hit(s)");
+		expect(out.citations).toEqual(expect.arrayContaining(["files:/Health/labs.md", "files:/Health/scan.pdf"]));
+		const user = aiRun.mock.calls[0][1].messages[1].content;
+		expect(user).toContain("CA-125 trending down"); // the small text file's content rode the fenced data
+		expect(user).toContain("[files:/Health/scan.pdf]"); // the pdf is cited by handle (metadata only) — never read/inlined
+	});
+
+	it("files source degrades to nothing when Mode B is unconfigured", async () => {
+		dbxHas.mockReturnValue(false);
+		const out = parse(await recall.run(env(), { question: "labs?", sources: ["files", "vault"] }));
+		expect(dbxSearch).not.toHaveBeenCalled();
+		expect(out.sources.files).toBe("no matches");
+		expect(out.sources.vault).toBe("1 hit(s)"); // the other source still answers
 	});
 
 	it("honors the sources filter (personal-only skips the web)", async () => {
