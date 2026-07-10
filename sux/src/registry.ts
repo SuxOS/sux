@@ -96,6 +96,11 @@ export type RtEnv = Env &
 		EBAY_CLIENT_ID?: string;
 		EBAY_CLIENT_SECRET?: string;
 
+		// Todoist REST v2 (todoist fn) — a personal API token (Todoist → Settings →
+		// Integrations → Developer → API token), used as a Bearer directly. Absent → the
+		// fn returns not_configured; nothing about it runs until the token is set.
+		TODOIST_TOKEN?: string;
+
 		// Fastmail JMAP conduit (jmap fn + /mail/mcp namespace). A JMAP-scoped API
 		// token (Fastmail → Settings → Privacy & Security → API tokens), NOT an MCP
 		// token. Scope it read-only for read/compose workflows so send/destroy are
