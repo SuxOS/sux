@@ -82,6 +82,15 @@ export type RtEnv = Env &
 		EBAY_CLIENT_ID?: string;
 		EBAY_CLIENT_SECRET?: string;
 
+		// Fastmail JMAP conduit (jmap fn + /mail/mcp namespace). A JMAP-scoped API
+		// token (Fastmail → Settings → Privacy & Security → API tokens), NOT an MCP
+		// token. Scope it read-only for read/compose workflows so send/destroy are
+		// impossible at the credential layer. accountId/session URL are derived from
+		// the Session; the two overrides are escape hatches.
+		FASTMAIL_TOKEN?: string;
+		FASTMAIL_ACCOUNT_ID?: string;
+		FASTMAIL_SESSION_URL?: string;
+
 
 		TAVILY_API_KEY?: string;
 

@@ -63,6 +63,7 @@ import { fontcase } from "./fontcase";
 import { homedepot } from "./homedepot";
 import { html } from "./html";
 import { ingest } from "./ingest";
+import { jmap } from "./jmap";
 import { json } from "./json";
 import { kroger } from "./kroger";
 import { linkedin } from "./linkedin";
@@ -156,6 +157,7 @@ export const FUNCTIONS: Fn[] = [
 	homedepot,
 	html,
 	ingest,
+	jmap,
 	json,
 	kroger,
 	linkedin,
