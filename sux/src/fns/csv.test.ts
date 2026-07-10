@@ -17,6 +17,11 @@ describe("csv (JSON array -> CSV)", () => {
 		expect(out).toContain('"he said ""hi"""');
 	});
 
+	it("escapes a header key that contains the delimiter (no column misalignment)", async () => {
+		const out = await crun({ data: '[{"a,b":1,"c":2}]' });
+		expect(out).toBe('"a,b",c\n1,2'); // 2-column header over a 2-column row, round-trippable
+	});
+
 	it("supports a custom delimiter and rejects non-arrays", async () => {
 		expect(await crun({ data: '[{"a":1,"b":2}]', delimiter: ";" })).toBe("a;b\n1;2");
 		expect((await csv.run({} as any, { data: '{"a":1}' })).isError).toBe(true);
