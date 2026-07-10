@@ -30,9 +30,6 @@ TODOIST_TOKEN                op://Private/Todoist API/token
 DROPBOX_APP_KEY              op://Private/Dropbox sux app/app_key
 DROPBOX_APP_SECRET           op://Private/Dropbox sux app/app_secret
 DROPBOX_REFRESH_TOKEN        op://Private/Dropbox sux app/refresh_token
-GMAIL_CLIENT_ID              op://Private/Gmail sux OAuth/client_id
-GMAIL_CLIENT_SECRET          op://Private/Gmail sux OAuth/client_secret
-GMAIL_REFRESH_TOKEN          op://Private/Gmail sux OAuth/refresh_token
 OBSIDIAN_REST_TOKEN          op://Private/Obsidian Local REST/api_key
 REDDIT_CLIENT_ID             op://Private/Reddit sux app/client_id
 REDDIT_CLIENT_SECRET         op://Private/Reddit sux app/client_secret
@@ -93,3 +90,5 @@ echo
 echo "done: ${set_n} set · ${skip_n} not in 1Password · ${fail_n} failed"
 [ "$MODE" = "dry" ] && echo "(dry run — nothing was written)"
 echo "verify with: ./scripts/set-secrets.sh --list"
+# Propagate per-secret failures so `&&` chains / CI stop instead of silently passing.
+exit $(( fail_n > 0 ? 1 : 0 ))

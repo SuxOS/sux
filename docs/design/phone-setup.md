@@ -39,7 +39,7 @@ the GitHub login in the browser sheet. Repeat per connector:
 - **files** — deployed; activates once a Dropbox token is set (see [[token-setup]]).
 
 Not yet wired (need a token — see [[token-setup]] + run `./scripts/set-secrets.sh`):
-tasks (Todoist), Gmail, health (Epic/Apple), and the dormant retail/social APIs.
+tasks (Todoist), health (Epic/Apple), and the dormant retail/social APIs.
 
 ## Drive it: the memory workflow
 

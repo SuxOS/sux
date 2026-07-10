@@ -127,30 +127,7 @@ npm run secret:sux TODOIST_TOKEN
 
 ---
 
-## 4. Gmail — `GMAIL_CLIENT_ID` + `GMAIL_CLIENT_SECRET` + `GMAIL_REFRESH_TOKEN`
-
-**Where:** [console.cloud.google.com](https://console.cloud.google.com).
-
-**Steps:**
-1. **New project** → **APIs & Services → Library → enable "Gmail API"**.
-2. **OAuth consent screen** → **External** → add yourself under **Test users**.
-3. **Credentials → Create credentials → OAuth client ID → Desktop app** → copy the
-   **client id** + **client secret**.
-4. Do the one-time consent for a **refresh token** with the scope you want:
-   - **Read-only:** `https://www.googleapis.com/auth/gmail.readonly`.
-   - **Read + modify (no send):** `https://www.googleapis.com/auth/gmail.modify`.
-   - **Read/write incl. send:** `https://mail.google.com/` (full) — or `gmail.modify`
-     + `https://www.googleapis.com/auth/gmail.send`.
-
-```
-npm run secret:sux GMAIL_CLIENT_ID
-npm run secret:sux GMAIL_CLIENT_SECRET
-npm run secret:sux GMAIL_REFRESH_TOKEN
-```
-
----
-
-## 5. Obsidian — `OBSIDIAN_REST_TOKEN` (live-vault REST)
+## 4. Obsidian — `OBSIDIAN_REST_TOKEN` (live-vault REST)
 
 **Where:** the **Obsidian desktop app** (not a website) → **Settings → Community plugins
 → Local REST API → API Key** (install the "Local REST API" plugin first if absent).
@@ -167,7 +144,7 @@ npm run secret:sux OBSIDIAN_REST_TOKEN
 
 ---
 
-## 6. Health — `APPLE_HEALTH_TOKEN` and/or `EPIC_FHIR_CLIENT_ID`
+## 5. Health — `APPLE_HEALTH_TOKEN` and/or `EPIC_FHIR_CLIENT_ID`
 
 Two independent sources; both are **read-only** by nature.
 
@@ -188,7 +165,7 @@ Two independent sources; both are **read-only** by nature.
 
 ---
 
-## 7. Facebook — `FACEBOOK_TOKEN`
+## 6. Facebook — `FACEBOOK_TOKEN`
 
 **Where:** [developers.facebook.com](https://developers.facebook.com) → **My Apps →
 Create App** (type: *Other / None*).
@@ -205,7 +182,7 @@ npm run secret:sux FACEBOOK_TOKEN
 
 ---
 
-## 8. Reddit — `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET`
+## 7. Reddit — `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET`
 
 **Where:** [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) → **create another
 app…**.
@@ -221,7 +198,7 @@ npm run secret:sux REDDIT_CLIENT_SECRET
 
 ---
 
-## 9. eBay — `EBAY_CLIENT_ID` + `EBAY_CLIENT_SECRET`
+## 8. eBay — `EBAY_CLIENT_ID` + `EBAY_CLIENT_SECRET`
 
 **Where:** [developer.ebay.com](https://developer.ebay.com) → register (developer account)
 → **My Account → Application Keys**.
@@ -244,7 +221,6 @@ npm run secret:sux EBAY_CLIENT_SECRET
 | Fastmail | `FASTMAIL_TOKEN` | yes (pick at creation) | ✅ |
 | Dropbox | `DROPBOX_REFRESH_TOKEN` + `_APP_KEY` + `_APP_SECRET` | yes (permissions tab) | ✅ (+ 1 curl) |
 | Todoist | `TODOIST_TOKEN` | no (full only) | ✅ |
-| Gmail | `GMAIL_CLIENT_ID` + `_SECRET` + `_REFRESH_TOKEN` | yes (scope choice) | ✅ (+ mint) |
 | Obsidian | `OBSIDIAN_REST_TOKEN` | no (full) | ❌ desktop app |
 | Health | `APPLE_HEALTH_TOKEN` / `EPIC_FHIR_CLIENT_ID` | read-only | phone / ✅ |
 | Facebook | `FACEBOOK_TOKEN` | read-only | ✅ |

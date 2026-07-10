@@ -238,7 +238,7 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "mail_send",
-		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text; cc/bcc/from optional; sendAt (ISO) schedules delivery if the server supports it. This dispatches mail immediately.",
+		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text; cc/bcc/from optional. Dispatches immediately — there is no scheduled send and no undo, so review before sending.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,

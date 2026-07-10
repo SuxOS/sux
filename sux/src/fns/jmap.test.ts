@@ -304,4 +304,19 @@ describe("review-fix regressions", () => {
 		const cur = JSON.parse(Buffer.from(out.cursor, "base64").toString());
 		expect(cur.anchor).toBe("e3"); // last EMITTED id, not the loop overshoot "e4"
 	});
+
+	it("paginate rejects a resumed cursor whose filter changed (filterHash guard)", async () => {
+		installFetch({
+			onApi: (body) => {
+				if (body.methodCalls[0][0] === "Email/query") return json({ methodResponses: [["Email/query", { ids: ["e1", "e2"], queryState: "qs" }, "q"]], sessionState: "s1" });
+				return json({ methodResponses: [["Email/get", { list: [] }, "g"]], sessionState: "s1" });
+			},
+		});
+		const first = parse(await jmap.run(env(), { paginate: true, max_results: 2, calls: [["Email/query", { filter: { inMailbox: "a" } }, "q"]] as any }));
+		expect(first.cursor).toBeTruthy();
+		// Resume the cursor against a DIFFERENT filter → filterHash mismatch → bad_input, never a silent wrong-set.
+		const r = await jmap.run(env(), { paginate: true, cursor: first.cursor, calls: [["Email/query", { filter: { inMailbox: "DIFFERENT" } }, "q"]] as any });
+		expect(r.isError).toBe(true);
+		expect(text(r)).toContain("[bad_input]");
+	});
 });

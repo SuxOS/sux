@@ -418,6 +418,10 @@ export async function runPaginate(
 		queryState = c.queryState;
 		for (const id of c.ids ?? []) ids.add(id);
 	}
+	// Ids carried in from the cursor are already-emitted. Budget max_results (and the
+	// emit slice) against only ids NEWLY fetched this call, so a fixed-max_results resume
+	// advances by up to max_results per call instead of deadlocking on the preloaded set.
+	const seeded = ids.size;
 
 	const remaining = () => SOFT_DEADLINE_MS - (Date.now() - opts.startedAt);
 	let truncated = false;
@@ -474,7 +478,15 @@ export async function runPaginate(
 			anchor = pageIds[pageIds.length - 1];
 			anchorOffset = 1;
 		}
-		if (pageIds.length < pageLimit) break; // last page
+		if (pageIds.length < pageLimit) {
+			// Last page — but it can still return more NEW ids than max_results; flag
+			// truncated so a resume cursor is emitted rather than silently dropping the tail.
+			if (ids.size - seeded > opts.maxResults) {
+				truncated = true;
+				reason = "max_results";
+			}
+			break;
+		}
 		if (ids.size === before) {
 			// A full page that added no NEW ids → the server isn't advancing; stop
 			// rather than spin (protects against a stuck anchor / all-duplicate page).
@@ -482,7 +494,7 @@ export async function runPaginate(
 			reason = "no_progress";
 			break;
 		}
-		if (ids.size >= opts.maxResults) {
+		if (ids.size - seeded >= opts.maxResults) {
 			truncated = true;
 			reason = "max_results";
 			break;
@@ -494,7 +506,7 @@ export async function runPaginate(
 		}
 	}
 
-	const idList = [...ids].slice(0, opts.maxResults);
+	const idList = [...ids].slice(0, seeded + opts.maxResults);
 	const payload: Record<string, unknown> = { ids: idList, queryState, total: idList.length, partial: truncated, paged: true };
 	if (truncated) {
 		// Anchor the resume cursor on the LAST EMITTED id, not the loop's raw anchor.
