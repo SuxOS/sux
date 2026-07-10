@@ -49,6 +49,7 @@ import { ace } from "./ace";
 import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { bestbuy } from "./bestbuy";
+import { citation } from "./citation";
 import { coingecko } from "./coingecko";
 import { controld } from "./controld";
 import { costco } from "./costco";
@@ -145,6 +146,7 @@ export const FUNCTIONS: Fn[] = [
 	amazon,
 	arxiv,
 	bestbuy,
+	citation,
 	coingecko,
 	controld,
 	costco,
