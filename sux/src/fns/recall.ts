@@ -33,24 +33,30 @@ const pj = (s: string): any => {
 
 type Gathered = { material: string; refs: string[] };
 
-/** Vault: GitHub-code-search the notes, read the top matches, excerpt them. */
+/** Vault: search the notes, read the top matches, excerpt them. Prefers the remote backend
+ *  (Local REST /search/simple actually searches the live vault) — the git backend's GitHub
+ *  code-search returns items:[] on a PRIVATE vault repo, so on git it silently finds nothing.
+ *  vault-mcp.ts §18/50-53 is why there's no vault_search verb: git can't full-text a private repo. */
 async function fromVault(env: RtEnv, question: string): Promise<Gathered> {
-	const r = await obsidian.run(env, { action: "search", query: question, backend: "git" });
+	const remote = Boolean((env as { OBSIDIAN_REMOTE_URL?: string; OBSIDIAN_REMOTE_KEY?: string }).OBSIDIAN_REMOTE_URL && (env as { OBSIDIAN_REMOTE_KEY?: string }).OBSIDIAN_REMOTE_KEY);
+	const backend = remote ? "remote" : "git";
+	const r = await obsidian.run(env, { action: "search", query: question, backend });
 	if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault search failed");
 	const hits = (pj(r.content?.[0]?.text ?? "")?.hits ?? []) as Array<{ path?: string }>;
 	// Git code-search returns REPO-relative paths (they include any OBSIDIAN_VAULT_DIR
 	// prefix), but obsidian `read` expects a VAULT-relative path and re-applies the dir
 	// itself — strip the dir here so the read doesn't double-prefix into a 404 that would
-	// silently drop the whole vault source.
+	// silently drop the whole vault source. (Remote search paths are already vault-relative,
+	// so the strip is a no-op there.)
 	const dir = String((env as { OBSIDIAN_VAULT_DIR?: string }).OBSIDIAN_VAULT_DIR ?? "").replace(/^\/+|\/+$/g, "");
 	const parts: string[] = [];
 	const refs: string[] = [];
 	for (const h of hits.slice(0, 3)) {
 		let path = h?.path;
 		if (!path) continue;
-		if (dir && path.startsWith(`${dir}/`)) path = path.slice(dir.length + 1);
+		if (backend === "git" && dir && path.startsWith(`${dir}/`)) path = path.slice(dir.length + 1);
 		try {
-			const rd = await obsidian.run(env, { action: "read", path, backend: "git" });
+			const rd = await obsidian.run(env, { action: "read", path, backend });
 			if (!rd.isError) {
 				parts.push(`[vault:${path}]\n${(rd.content?.[0]?.text ?? "").slice(0, 1500)}`);
 				refs.push(`vault:${path}`);
