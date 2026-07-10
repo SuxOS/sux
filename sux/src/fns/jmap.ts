@@ -135,9 +135,16 @@ export const jmap: Fn = {
 				const queries = calls.filter((c) => /\/query$/.test(c[0]));
 				if (queries.length !== 1) return failWith("bad_input", "paginate:true needs exactly one Foo/query in the batch.");
 				const queryCall = queries[0];
-				const getCall = calls.find((c) => /\/get$/.test(c[0]) && c !== queryCall);
+				const qId = queryCall[2];
+				// Only hydrate a Foo/get that actually back-references THIS query (its
+				// callId), not just any /get in the batch — else an unrelated Mailbox/get
+				// gets mis-fed the query's ids.
+				const backRefsQuery = (a: any): boolean =>
+					!!a && typeof a === "object" && Object.entries(a).some(([k, v]) => k.startsWith("#") && !!v && typeof v === "object" && (v as any).resultOf === qId);
+				const getCall = calls.find((c) => /\/get$/.test(c[0]) && c !== queryCall && backRefsQuery(c[1]));
 				const maxResults = Math.min(10000, Math.max(1, Number(args.max_results) || 500));
-				const { payload, session } = await runPaginate(env, queryCall, getCall, { maxResults, cursor: args.cursor ? String(args.cursor) : undefined, sessionRefresh: args.session_refresh === true, startedAt });
+				const using = Array.isArray(args.using) ? args.using : undefined;
+				const { payload, session } = await runPaginate(env, queryCall, getCall, { maxResults, cursor: args.cursor ? String(args.cursor) : undefined, sessionRefresh: args.session_refresh === true, startedAt, using });
 				return ok(jstr({ ...payload, sessionState: session.state }));
 			}
 

@@ -268,3 +268,40 @@ describe("jmap fn", () => {
 		expect(out.data).toBe(Buffer.from("hi").toString("base64"));
 	});
 });
+
+// Regressions for the confirmed adversarial-review findings.
+describe("review-fix regressions", () => {
+	it("detectDestroy catches a back-referenced #destroy (gate-bypass fix)", () => {
+		expect(detectDestroy([["Email/set", { "#destroy": { resultOf: "q", name: "Email/query", path: "/ids" } }, "d"]])).toBe(true);
+		expect(detectSend([["EmailSubmission/set", { "#create": { resultOf: "q", name: "x", path: "/y" } }, "s"]])).toBe(true);
+	});
+
+	it("gates a query→#destroy bulk-expunge behind allow_destroy", async () => {
+		installFetch();
+		const batch = { calls: [["Email/query", { filter: {} }, "q"], ["Email/set", { "#destroy": { resultOf: "q", name: "Email/query", path: "/ids" } }, "d"]] as any };
+		const blocked = await jmap.run(env(), batch);
+		expect(blocked.isError).toBe(true);
+		expect(text(blocked)).toContain("allow_destroy");
+		expect((await jmap.run(env(), { ...batch, allow_destroy: true })).isError).toBeFalsy();
+	});
+
+	it("paginate cursor anchors on the last EMITTED id after a max_results cap (silent-gap fix)", async () => {
+		let q = 0;
+		installFetch({
+			onApi: (body) => {
+				if (body.methodCalls[0][0] === "Email/query") {
+					q++;
+					// pageLimit=2 (maxObjectsInGet). Two full pages overshoot max_results=3.
+					const page = q === 1 ? { ids: ["e1", "e2"], queryState: "qs1" } : { ids: ["e3", "e4"], queryState: "qs1" };
+					return json({ methodResponses: [["Email/query", page, "q"]], sessionState: "s1" });
+				}
+				return json({ methodResponses: [["Email/get", { list: [] }, "g"]], sessionState: "s1" });
+			},
+		});
+		const out = parse(await jmap.run(env(), { paginate: true, max_results: 3, calls: [["Email/query", { filter: { inMailbox: "x" } }, "q"]] as any }));
+		expect(out.ids).toEqual(["e1", "e2", "e3"]); // capped at 3, not 4
+		expect(out.partial).toBe(true);
+		const cur = JSON.parse(Buffer.from(out.cursor, "base64").toString());
+		expect(cur.anchor).toBe("e3"); // last EMITTED id, not the loop overshoot "e4"
+	});
+});

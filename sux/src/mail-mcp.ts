@@ -318,7 +318,15 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 		const sentId = roleId("sent");
 		if (!draftsId) return fail("no Drafts mailbox found on this account.");
 		const fromWanted = a?.from ? String(a.from).toLowerCase() : "";
-		const identity = (fromWanted && identities.find((i: any) => String(i?.email).toLowerCase() === fromWanted)) || identities[0];
+		let identity: any;
+		if (fromWanted) {
+			// An explicit `from` that matches no identity must FAIL — never silently
+			// send from a different (primary) address than the caller asked for.
+			identity = identities.find((i: any) => String(i?.email).toLowerCase() === fromWanted);
+			if (!identity) return fail(`no sending identity for from address '${fromWanted}' — check mail_identities.`);
+		} else {
+			identity = identities[0];
+		}
 		if (!identity) return fail("no sending identity found.");
 		const addrs = (xs: string[]) => xs.map((e) => ({ email: String(e) }));
 

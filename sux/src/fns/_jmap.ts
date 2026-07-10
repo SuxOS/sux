@@ -210,21 +210,31 @@ export function validateCalls(calls: unknown): asserts calls is Invocation[] {
 	}
 }
 
-/** True if the batch would dispatch mail (an EmailSubmission/set with a non-empty `create`). */
+// A JMAP arg can be back-referenced by renaming it with a `#` prefix + a
+// ResultReference (RFC 8620 §3.7) — e.g. `#destroy:{resultOf:'q',…}` is the
+// canonical "expunge everything a query matched" pattern. Its resolved value is
+// opaque to us, so the gates must treat a `#`-prefixed mutation key as present:
+// checking only the literal key let a back-referenced destroy/send slip the gate.
+const hasMutArg = (args: any, key: string): boolean => {
+	const lit = args?.[key];
+	if (Array.isArray(lit) ? lit.length > 0 : lit != null && typeof lit === "object" && Object.keys(lit).length > 0) return true;
+	return args?.[`#${key}`] != null; // back-referenced — can't verify empty, so gate conservatively
+};
+
+/** True if the batch would dispatch mail (an EmailSubmission/set create — literal or back-referenced). */
 export function detectSend(calls: Invocation[]): boolean {
-	return calls.some(([method, args]) => method === "EmailSubmission/set" && args?.create && Object.keys(args.create).length > 0);
+	return calls.some(([method, args]) => method === "EmailSubmission/set" && hasMutArg(args, "create"));
 }
 
 /** True if the batch contains an irreversible / persistent-egress mutation (§10). */
 export function detectDestroy(calls: Invocation[]): boolean {
 	return calls.some(([method, args]) => {
 		if (!args || typeof args !== "object") return false;
-		if (Array.isArray(args.destroy) && args.destroy.length > 0) return true; // Foo/set destroy (permanent)
-		if (method === "Mailbox/set" && args.onDestroyRemoveEmails === true) return true;
-		if (method === "VacationResponse/set" && args.update && Object.keys(args.update).length > 0) return true;
-		if (method === "VacationResponse/set" && args.create && Object.keys(args.create).length > 0) return true;
-		if (/\/(Rule|Sieve|Filter|Forwarding)/i.test(method) || /^(Rule|Sieve|Filter|Forwarding)\//i.test(method)) {
-			if ((args.create && Object.keys(args.create).length) || (args.update && Object.keys(args.update).length) || (Array.isArray(args.destroy) && args.destroy.length)) return true;
+		if (hasMutArg(args, "destroy")) return true; // Foo/set destroy (permanent) — literal OR #back-ref
+		if (method === "Mailbox/set" && (args.onDestroyRemoveEmails === true || args["#onDestroyRemoveEmails"] != null)) return true;
+		if (method === "VacationResponse/set" && (hasMutArg(args, "update") || hasMutArg(args, "create"))) return true;
+		if (/(^|\/)(Rule|Sieve|Filter|Forwarding)/i.test(method)) {
+			if (hasMutArg(args, "create") || hasMutArg(args, "update") || hasMutArg(args, "destroy")) return true;
 		}
 		return false;
 	});
@@ -245,7 +255,13 @@ type ApiResponse = { methodResponses: any[]; sessionState?: string; createdIds?:
 
 /** POST one batch to apiUrl with a deadline-aware abort; map transport failures to JmapError. */
 async function postOnce(env: RtEnv, apiUrl: string, body: unknown, remainingMs: number, retry: boolean): Promise<ApiResponse> {
-	const timeout = Math.max(1_000, Math.min(POST_TIMEOUT_MS, remainingMs));
+	// When retry is on, withRetry may run up to 3 attempts (proxy MAX_ATTEMPTS) — divide
+	// the remaining budget across them so the whole sequence stays inside the soft
+	// deadline. A fixed 30s per attempt could stack 3×30s past the 60s FN_DEADLINE
+	// wrapper, defeating the deadline-aware design and hard-killing the fn with no
+	// clean timeout FailCode (D17).
+	const perAttempt = retry ? Math.floor(remainingMs / 3) : remainingMs;
+	const timeout = Math.max(1_000, Math.min(POST_TIMEOUT_MS, perAttempt));
 	const doFetch = () => fetch(apiUrl, { method: "POST", headers: authHeaders(env), body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) });
 	let resp: Response;
 	try {
@@ -312,8 +328,12 @@ export async function runBatch(
 		return postOnce(env, s.apiUrl, { using, methodCalls }, remaining(), retry);
 	};
 
+	// Retry only READ-ONLY batches. Retrying a batch containing a /set (or /import|
+	// /copy) after a timeout risks double-applying a non-idempotent mutation — a
+	// duplicate send is the worst case. Reads are idempotent and safe to retry.
+	const readOnly = !calls.some((c) => /\/(set|import|copy)$/i.test(String(c[0])));
 	try {
-		const response = await post(session, remaining() > POST_TIMEOUT_MS);
+		const response = await post(session, readOnly && remaining() > POST_TIMEOUT_MS);
 		maybeInvalidateOnStateDrift(env, session, response);
 		return { response, session };
 	} catch (e) {
@@ -378,7 +398,7 @@ export async function runPaginate(
 	env: RtEnv,
 	queryCall: Invocation,
 	getCall: Invocation | undefined,
-	opts: { maxResults: number; cursor?: string; sessionRefresh?: boolean; startedAt: number },
+	opts: { maxResults: number; cursor?: string; sessionRefresh?: boolean; startedAt: number; using?: string[] },
 ): Promise<{ payload: Record<string, unknown>; session: JmapSession }> {
 	const [method, baseArgs] = queryCall;
 	const session = await getSession(env, opts.sessionRefresh);
@@ -427,7 +447,7 @@ export async function runPaginate(
 		} else {
 			qArgs.position = ids.size; // first page(s) before we have an anchor
 		}
-		const using = deriveUsing([method], session);
+		const using = deriveUsing([method], session, opts.using);
 		const resp = await postOnce(env, session.apiUrl, { using, methodCalls: [[method, qArgs, "q"]] }, remaining(), false).catch((e) => {
 			// anchorNotFound (a live inbox mutated) → degrade to partial, never error.
 			if (e instanceof JmapError && e.code === "upstream_error" && /anchorNotFound/i.test(e.message)) return null;
@@ -477,7 +497,14 @@ export async function runPaginate(
 	const idList = [...ids].slice(0, opts.maxResults);
 	const payload: Record<string, unknown> = { ids: idList, queryState, total: idList.length, partial: truncated, paged: true };
 	if (truncated) {
-		const cursor: Cursor = { anchor, anchorOffset, queryState, method, filterHash: fh, ids: idList };
+		// Anchor the resume cursor on the LAST EMITTED id, not the loop's raw anchor.
+		// A page is accumulated whole (pageLimit at a time) but idList is sliced to
+		// maxResults, so on a max_results/output_ceiling break the loop anchor can sit
+		// past the emitted tail (e.g. anchor=id#600 while idList ends at #500) — resuming
+		// from it would silently skip the #501–#600 gap. Anchoring on idList's last id
+		// closes the gap; for the other reasons idList[last] already equals the anchor.
+		const lastEmitted = idList[idList.length - 1];
+		const cursor: Cursor = { anchor: lastEmitted ?? anchor, anchorOffset: lastEmitted ? 1 : anchorOffset, queryState, method, filterHash: fh, ids: idList };
 		payload.cursor = b64json(cursor);
 		payload.truncated_reason = reason;
 	}
@@ -496,7 +523,7 @@ export async function runPaginate(
 			const chunk = idList.slice(i, i + chunkSize);
 			const gArgs: Record<string, any> = { ...getArgs, accountId: getArgs?.accountId ?? acct, ids: chunk };
 			delete gArgs["#ids"]; // discard the caller's ResultReference; hydrate explicitly
-			const gUsing = deriveUsing([getMethod], session);
+			const gUsing = deriveUsing([getMethod], session, opts.using);
 			const gr = await postOnce(env, session.apiUrl, { using: gUsing, methodCalls: [[getMethod, gArgs, "g"]] }, remaining(), false);
 			const gmr = gr.methodResponses?.[0];
 			if (gmr && gmr[0] !== "error" && gmr[1]) {

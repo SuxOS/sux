@@ -151,7 +151,7 @@ export const dropbox: Fn = {
 				if (!path) return fail("op=put requires a `path`.");
 				let bytes: Uint8Array;
 				if (typeof args?.base64 === "string" && args.base64) bytes = fromB64(args.base64);
-				else if (typeof args?.data === "string" && args.data) bytes = new TextEncoder().encode(args.data);
+				else if (typeof args?.data === "string") bytes = new TextEncoder().encode(args.data); // "" is a valid empty upload
 				else return fail("op=put requires `data` (utf-8) or `base64` (binary).");
 				const r = await dropboxPut(env, path, bytes);
 				if ("error" in r) return fail(r.error);
