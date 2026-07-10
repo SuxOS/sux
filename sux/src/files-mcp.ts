@@ -2,14 +2,17 @@ import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
 import { dropbox } from "./fns/dropbox";
+import { hasDropboxFull, listFull, readFull, searchFull } from "./fns/_dropbox-full";
 
 // The files MCP server — the personal blob workspace, served at /files/mcp behind
 // the same workers-oauth-provider flow (a fourth connector; zero new infra). Mirrors
 // vault-mcp / mail-mcp: tight, handle-disciplined tools over the built `dropbox` fn
 // (App-folder scoped — it can ONLY see /Apps/<app>/, so scope is the safety wall).
 // The raw `dropbox` fn is exposed here as the escape hatch. Design: docs/proposals/files.md
-// (Mode A — the bidirectional app workspace; the whole-Dropbox Mode B is a later,
-// separately-credentialed namespace and is deliberately NOT in this v1).
+// (Mode A — the bidirectional app workspace). Mode B (whole-Dropbox) is layered in
+// READ-ONLY behind a SEPARATE full-scope credential (_dropbox-full.ts): files_search +
+// files_read/files_list `full:true`. Whole-account MUTATION is deliberately deferred —
+// the injection-reachable delete/overwrite surface needs its own gate first.
 //
 // The rule (files.md): markdown → vault, blobs → files. This is where PDFs, images,
 // and exports live; the vault holds the *note* about them. list/read return references
@@ -35,10 +38,15 @@ const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.s
 const TOOLS: FileTool[] = [
 	{
 		name: "files_list",
-		description: "List a folder in your file workspace (default root). Returns entries (name, path, kind, size); paginate with `cursor` when has_more.",
-		inputSchema: { type: "object", additionalProperties: false, properties: { path: { type: "string", description: "Folder path (relative to the workspace root)." }, cursor: { type: "string", description: "Continue a paginated listing." } } },
+		description: "List a folder. Default: the app-folder workspace (root). `full:true` lists an absolute folder in your WHOLE Dropbox ('' = account root) — needs the full-Dropbox credential (DROPBOX_FULL_*). Returns entries (name, path, kind, size, rev); paginate with `cursor` when has_more.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { path: { type: "string", description: "Folder path (app-folder-relative, or absolute when full:true)." }, cursor: { type: "string", description: "Continue a paginated listing." }, full: { type: "boolean", description: "List the whole Dropbox (Mode B) instead of the app folder." } } },
 		run: async (env, a) => {
 			try {
+				if (a?.full === true) {
+					if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) not configured — set DROPBOX_FULL_*. Without it, files_* covers the app-folder workspace only.");
+					const r = await listFull(env, String(a?.path ?? ""), a?.cursor ? String(a.cursor) : undefined);
+					return ok({ scope: "full-dropbox", dir: a?.path || "/", count: r.entries.length, has_more: r.has_more, ...(r.cursor ? { cursor: r.cursor } : {}), entries: r.entries });
+				}
 				return ok(await dbx(env, { op: "list", ...(a?.path ? { path: a.path } : {}), ...(a?.cursor ? { cursor: a.cursor } : {}) }));
 			} catch (e) {
 				return fail(errMsg(e));
@@ -46,12 +54,41 @@ const TOOLS: FileTool[] = [
 		},
 	},
 	{
+		name: "files_search",
+		description: "Search your WHOLE Dropbox by filename + content (Mode B). Returns file REFERENCES only (path, name, size, rev, modified) — never bytes; read one with files_read full:true. Filter by ext / path_prefix (omit = whole account). Needs the separate full-Dropbox credential (DROPBOX_FULL_*) — the app-folder files_* tools don't need it.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				query: { type: "string", description: "Search text (matches filename and content)." },
+				path_prefix: { type: "string", description: "Scope to a folder, e.g. '/Documents' (omit = whole account)." },
+				ext: { type: "array", items: { type: "string" }, description: "Filter by extensions, e.g. ['pdf','docx']." },
+				max_results: { type: "integer", minimum: 1, maximum: 1000, default: 100 },
+				cursor: { type: "string", description: "Continue a paginated search." },
+			},
+		},
+		run: async (env, a) => {
+			if (!a?.query && !a?.cursor) return fail("files_search requires a `query`.");
+			if (!hasDropboxFull(env)) return fail("full-Dropbox search (Mode B) not configured — set DROPBOX_FULL_* (a separate full-scope Dropbox app). The app-folder files_* tools don't need it.");
+			try {
+				const r = await searchFull(env, { query: String(a?.query ?? ""), path_prefix: a?.path_prefix ? String(a.path_prefix) : undefined, ext: Array.isArray(a?.ext) ? a.ext.map(String) : undefined, max_results: Number(a?.max_results) || 100, cursor: a?.cursor ? String(a.cursor) : undefined });
+				return ok({ scope: "full-dropbox", count: r.matches.length, has_more: r.has_more, ...(r.cursor ? { cursor: r.cursor } : {}), matches: r.matches });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
 		name: "files_read",
-		description: "Read a file — text for textual formats, else base64 bytes. Large files return metadata + a shareable link instead of inlining. The one deliberate 'return the bytes' verb.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string" } } },
+		description: "Read a file — text for textual formats, else base64 bytes. Large files return metadata + a link instead of inlining. Default: the app-folder workspace. `full:true` reads an ABSOLUTE path in your whole Dropbox (Mode B, read-only) — oversize there returns a TEMPORARY expiring link, never a public share. The one deliberate 'return the bytes' verb.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string", description: "File path (app-folder-relative, or absolute when full:true)." }, full: { type: "boolean", description: "Read from the whole Dropbox (Mode B) instead of the app folder." } } },
 		run: async (env, a) => {
 			if (!a?.path) return fail("files_read requires a `path`.");
 			try {
+				if (a?.full === true) {
+					if (!hasDropboxFull(env)) return fail("full-Dropbox (Mode B) not configured — set DROPBOX_FULL_*. Without it, files_read covers the app-folder workspace only.");
+					return ok({ scope: "full-dropbox", ...(await readFull(env, String(a.path))) });
+				}
 				return ok(await dbx(env, { op: "get", path: String(a.path) }));
 			} catch (e) {
 				return fail(errMsg(e));

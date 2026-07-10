@@ -64,6 +64,38 @@ describe("files_* tools", () => {
 	});
 });
 
+describe("full-Dropbox (Mode B) gating — dormant without DROPBOX_FULL_*", () => {
+	it("files_search fails closed with a config hint and never touches dropbox", async () => {
+		const r = await tool("files_search").run(env(), { query: "invoice" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/DROPBOX_FULL_|not configured/);
+		expect(runMock).not.toHaveBeenCalled();
+	});
+
+	it("files_search still validates query before the config gate", async () => {
+		const r = await tool("files_search").run(env(), {});
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/requires a `query`/);
+	});
+
+	it("files_read full:true fails closed but plain reads still route to Mode A", async () => {
+		const gated = await tool("files_read").run(env(), { path: "/x.pdf", full: true });
+		expect(gated.isError).toBe(true);
+		expect(gated.content[0].text).toMatch(/DROPBOX_FULL_|not configured/);
+		expect(runMock).not.toHaveBeenCalled();
+		const modeA = parse(await tool("files_read").run(env(), { path: "a.pdf" }));
+		expect(modeA).toMatchObject({ op: "get", path: "a.pdf" }); // Mode A untouched
+	});
+
+	it("files_list full:true fails closed while plain listing routes to Mode A", async () => {
+		const gated = await tool("files_list").run(env(), { path: "/Documents", full: true });
+		expect(gated.isError).toBe(true);
+		expect(gated.content[0].text).toMatch(/DROPBOX_FULL_|not configured/);
+		const modeA = parse(await tool("files_list").run(env(), {}));
+		expect(modeA).toMatchObject({ op: "list" });
+	});
+});
+
 describe("handleFilesRpc protocol shell", () => {
 	const call = (rpc: any) => handleFilesRpc(env(), {} as any, rpc, 0);
 	const sseJson = async (r: Response) => {
@@ -81,6 +113,7 @@ describe("handleFilesRpc protocol shell", () => {
 		const body = await sseJson(await call({ jsonrpc: "2.0", id: 2, method: "tools/list" }));
 		const names = body.result.tools.map((t: any) => t.name);
 		expect(names).toContain("files_list");
+		expect(names).toContain("files_search");
 		expect(names).toContain("dropbox");
 	});
 

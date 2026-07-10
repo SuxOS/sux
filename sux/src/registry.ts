@@ -55,6 +55,15 @@ export type RtEnv = Env &
 		DROPBOX_APP_KEY?: string;
 		DROPBOX_APP_SECRET?: string;
 
+		// Full-Dropbox (Mode B) — a SEPARATE full-scope credential for read/search over
+		// the WHOLE Dropbox (fns/_dropbox-full.ts), kept distinct from the App-folder
+		// token above so Mode A stays the /Apps/<app>/ safety wall. PKCE public client:
+		// omit DROPBOX_FULL_APP_SECRET (Worker holds no secret). Absent → Mode B dormant.
+		DROPBOX_FULL_REFRESH_TOKEN?: string;
+		DROPBOX_FULL_APP_KEY?: string;
+		DROPBOX_FULL_APP_SECRET?: string;
+		DROPBOX_FULL_TOKEN?: string;
+
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
 
