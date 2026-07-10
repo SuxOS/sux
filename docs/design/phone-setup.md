@@ -36,7 +36,7 @@ the GitHub login in the browser sheet. Repeat per connector:
 - **vault** — live (git-backed Obsidian store; every write is a revertible commit).
 - **mail** — **live with full scope**: read, search, thread, **send**, draft, archive,
   move, masked-email, contacts (`FASTMAIL_TOKEN` set 2026-07-10).
-- **files** — deployed; activates once a Dropbox token is set (see [[token-setup]]).
+- **files** — **live**: list/read/write/upload/share over the app-folder Dropbox (PKCE, no secret).
 
 Not yet wired (need a token — see [[token-setup]] + run `./scripts/set-secrets.sh`):
 tasks (Todoist), health (Epic/Apple), and the dormant retail/social APIs.

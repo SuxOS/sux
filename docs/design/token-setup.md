@@ -35,6 +35,9 @@ mail/files secrets, **reconnect the connector** so the client re-reads `tools/li
   `mail`, `submission` (send), `contacts`, `maskedemail`. The mail namespace is live,
   send included. *(Housekeeping: an earlier read-only `sux` token can be revoked at
   Fastmail → Settings → Privacy & Security → API tokens → `sux` → Remove access.)*
+- **Dropbox (`DROPBOX_APP_KEY` + `DROPBOX_REFRESH_TOKEN`) — ✅ DONE (2026-07-10):** App-folder app
+  `sux-files-mcp-colinxs`, set via **PKCE** so the Worker holds **no app secret** — only the public
+  key + refresh token. `/files/mcp` is live, scoped to `/Apps/sux-files-mcp-colinxs/`.
 - **Everything else — needs generating**, each behind its own login/2FA (the sections
   below), then set in one sweep.
 
