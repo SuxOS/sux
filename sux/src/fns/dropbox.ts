@@ -131,7 +131,7 @@ export const dropbox: Fn = {
 	name: "dropbox",
 	cost: 2,
 	description:
-		"Dropbox app-folder blob store — the human-facing twin of R2 `store`: files land in /Apps/<app>/ and sync to every device (the App-folder token cannot see the rest of Dropbox). op: put (`path` + `data` utf-8 or `base64` binary → uploads and returns the shared link) | get (`path` → text for textual extensions, else base64; large files return metadata + shared link) | list (`path` folder, default root; paginate with `cursor`) | delete (`path`) | share (`path` → shared link, created or reused). Shared links are PUBLIC 'anyone with the link' URLs. Paths are relative to the app-folder root. Needs DROPBOX_TOKEN (App-folder scoped access token).",
+		"Dropbox app-folder blob store — the human-facing twin of R2 `store`: files land in /Apps/<app>/ and sync to every device (the App-folder token cannot see the rest of Dropbox). op: put (`path` + `data` utf-8 or `base64` binary → uploads and returns the shared link) | get (`path` → text for textual extensions, else base64; large files return metadata + shared link) | list (`path` folder, default root; paginate with `cursor`) | delete (`path` + `confirm:true` — deletes go to recoverable Dropbox 'Deleted files') | share (`path` → shared link, created or reused). Shared links are PUBLIC 'anyone with the link' URLs. Paths are relative to the app-folder root. Needs DROPBOX_TOKEN (App-folder scoped access token).",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -142,6 +142,7 @@ export const dropbox: Fn = {
 			cursor: { type: "string", description: "list: continue a paginated listing (returned as `cursor` when has_more)." },
 			data: { type: "string", description: "put: UTF-8 text to upload." },
 			base64: { type: "string", description: "put: base64 bytes to upload (binary)." },
+			confirm: { type: "boolean", description: "delete: REQUIRED — must be true. A deliberate two-step (the file lands in recoverable Dropbox 'Deleted files', but delete is never fire-at-will)." },
 		},
 	},
 	cacheable: false,
@@ -198,6 +199,7 @@ export const dropbox: Fn = {
 			}
 			if (op === "delete") {
 				if (!path) return fail("op=delete requires a `path`.");
+				if (args?.confirm !== true) return fail("op=delete requires confirm:true (the file goes to recoverable Dropbox 'Deleted files', but delete is a deliberate two-step — never fire-at-will).");
 				const { status, json } = await rpc(env, "/files/delete_v2", { path });
 				if (status >= 400) return fail(`Dropbox delete error: ${json?.error_summary ?? `HTTP ${status}`} (${path})`);
 				return ok(JSON.stringify({ ok: true, deleted: json?.metadata?.path_display ?? path }, null, 2));

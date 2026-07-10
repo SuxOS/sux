@@ -209,19 +209,28 @@ describe("dropbox (app-folder blob store)", () => {
 		expect(out.warning).toMatch(/no shared link/);
 	});
 
-	it("deletes a path", async () => {
+	it("deletes a path (with confirm:true)", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL, init?: any) => {
 			expect(String(u)).toContain("/files/delete_v2");
 			expect(JSON.parse(init.body).path).toBe("/a.pdf");
 			return new Response(JSON.stringify({ metadata: { path_display: "/a.pdf" } }), { status: 200 });
 		}));
-		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf" });
+		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf", confirm: true });
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, deleted: "/a.pdf" });
+	});
+
+	it("delete without confirm:true is rejected and never calls Dropbox (no fire-at-will)", async () => {
+		const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await dropbox.run(ENV, { op: "delete", path: "a.pdf" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/confirm:true/);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("delete surfaces the real Dropbox error text (not a blanket 'Not found')", async () => {
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error_summary: "path_lookup/not_found/" }), { status: 409 })));
-		const r = await dropbox.run(ENV, { op: "delete", path: "missing.pdf" });
+		const r = await dropbox.run(ENV, { op: "delete", path: "missing.pdf", confirm: true });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toContain("path_lookup/not_found");
 		expect(r.content[0].text).toContain("missing.pdf");

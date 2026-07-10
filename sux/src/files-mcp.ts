@@ -142,7 +142,7 @@ const TOOLS: FileTool[] = [
 			if (!a?.path) return fail("files_delete requires a `path`.");
 			if (a?.confirm !== true) return fail("files_delete requires confirm:true.");
 			try {
-				return ok(await dbx(env, { op: "delete", path: String(a.path) }));
+				return ok(await dbx(env, { op: "delete", path: String(a.path), confirm: true }));
 			} catch (e) {
 				return fail(errMsg(e));
 			}
