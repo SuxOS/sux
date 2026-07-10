@@ -271,30 +271,38 @@ const TOOLS: MailTool[] = [
 		run: async (env, a) => draftOrSend(env, a, true),
 	},
 	{
+		name: "mail_schedule",
+		description: "Schedule an email for future delivery (SMTP FUTURERELEASE). Like mail_send but `sendAt` (ISO-8601) is required — the message is held until then, cancelable with mail_unschedule. Routes through stage-then-commit (stage:true previews, commit_token commits).",
+		inputSchema: { type: "object", additionalProperties: false, required: ["to", "subject", "text", "sendAt"], properties: { to: { type: "array", items: { type: "string" } }, cc: { type: "array", items: { type: "string" } }, bcc: { type: "array", items: { type: "string" } }, subject: { type: "string" }, text: { type: "string" }, from: { type: "string", description: "Exact identity or any address at an owned *@domain." }, sendAt: { type: "string", description: "ISO-8601 date-time to release the message." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => draftOrSend(env, { ...a, send_at: a?.sendAt }, true),
+	},
+	{
 		name: "mail_scheduled",
-		description: "Manage scheduled (FUTURERELEASE-held) sends. action: list — the pending scheduled sends (submission id, emailId, sendAt) | cancel ({id}) — flip a pending submission's undoStatus to canceled, stopping the send before it releases.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["action"], properties: { action: { type: "string", enum: ["list", "cancel"] }, id: { type: "string", description: "cancel: the submissionId (from mail_send's response or a mail_scheduled list)." } } },
-		run: async (env, a) => {
-			const action = String(a?.action ?? "");
+		description: "List your pending scheduled (FUTURERELEASE-held) sends — each { id (submissionId), emailId, sendAt }. Cancel one with mail_unschedule.",
+		inputSchema: { type: "object", additionalProperties: false, properties: {} },
+		run: async (env) => {
 			try {
-				if (action === "list") {
-					const resp = await jmapCall(env, {
-						calls: [
-							["EmailSubmission/query", { filter: { undoStatus: "pending" } }, "q"],
-							["EmailSubmission/get", { "#ids": { resultOf: "q", name: "EmailSubmission/query", path: "/ids" }, properties: ["id", "emailId", "sendAt", "undoStatus"] }, "g"],
-						],
-					});
-					const subs = resultFor(resp, "EmailSubmission/get")?.list ?? [];
-					return ok({ count: subs.length, scheduled: subs.map((s: any) => ({ id: s?.id, emailId: s?.emailId, sendAt: s?.sendAt })) });
-				}
-				if (action === "cancel") {
-					if (!a?.id) return fail("mail_scheduled cancel requires the submission `id`.");
-					const resp = await jmapCall(env, { calls: [["EmailSubmission/set", { update: { [String(a.id)]: { undoStatus: "canceled" } } }, "u"]] });
-					const setR = resultFor(resp, "EmailSubmission/set");
-					if (Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, String(a.id))) return ok({ canceled: String(a.id) });
-					return fail(`cancel failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
-				}
-				return fail("mail_scheduled action must be 'list' or 'cancel'.");
+				const resp = await jmapCall(env, { calls: [["EmailSubmission/query", { filter: { undoStatus: "pending" } }, "q"], ["EmailSubmission/get", { "#ids": { resultOf: "q", name: "EmailSubmission/query", path: "/ids" }, properties: ["id", "emailId", "sendAt", "undoStatus"] }, "g"]] });
+				const subs = resultFor(resp, "EmailSubmission/get")?.list ?? [];
+				return ok({ count: subs.length, scheduled: subs.map((s: any) => ({ id: s?.id, emailId: s?.emailId, sendAt: s?.sendAt })) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_unschedule",
+		description: "Cancel a pending scheduled send by its submission id (undoStatus → canceled) before it releases. Idempotent: a submission that's already canceled or released reports success rather than erroring.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: "The submissionId from mail_send/mail_schedule or a mail_scheduled list." } } },
+		run: async (env, a) => {
+			if (!a?.id) return fail("mail_unschedule requires the submission `id`.");
+			try {
+				const id = String(a.id);
+				const resp = await jmapCall(env, { calls: [["EmailSubmission/set", { update: { [id]: { undoStatus: "canceled" } } }, "u"]] });
+				const setR = resultFor(resp, "EmailSubmission/set");
+				if (Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) return ok({ unscheduled: id });
+				if (setR?.notUpdated?.[id]?.type === "notFound") return ok({ unscheduled: id, note: "already canceled or released." });
+				return fail(`unschedule failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
 			} catch (e) {
 				return fail(errMsg(e));
 			}

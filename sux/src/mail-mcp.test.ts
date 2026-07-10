@@ -166,13 +166,19 @@ describe("mail_* ergonomic tools", () => {
 		expect(r.content[0].text).toMatch(/future/);
 	});
 
-	it("mail_scheduled lists pending sends and cancels one", async () => {
+	it("mail_schedule schedules via FUTURERELEASE (sendAt → send_at)", async () => {
 		installFetch();
-		const list = parse(await tool("mail_scheduled").run(env(), { action: "list" }));
+		const out = parse(await tool("mail_schedule").run(env(), { to: ["x@y.com"], subject: "s", text: "t", sendAt: "2999-01-01T00:00:00Z" }));
+		expect(out).toMatchObject({ scheduled: true, send_at: "2999-01-01T00:00:00Z" });
+	});
+
+	it("mail_scheduled lists pending sends; mail_unschedule cancels one (idempotent)", async () => {
+		installFetch();
+		const list = parse(await tool("mail_scheduled").run(env(), {}));
 		expect(list.count).toBe(1);
 		expect(list.scheduled[0]).toMatchObject({ id: "sub-1", emailId: "e1", sendAt: "2026-07-11T09:00:00Z" });
-		const cancel = parse(await tool("mail_scheduled").run(env(), { action: "cancel", id: "sub-1" }));
-		expect(cancel).toMatchObject({ canceled: "sub-1" });
+		const cancel = parse(await tool("mail_unschedule").run(env(), { id: "sub-1" }));
+		expect(cancel).toMatchObject({ unscheduled: "sub-1" });
 	});
 
 	it("mail_archive moves messages out of the inbox", async () => {
