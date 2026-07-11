@@ -28,12 +28,13 @@ describe("scrape", () => {
 		expect(r.content[0].text).toContain("<h1>Hi</h1>");
 	});
 
-	it("truncates bodies to 100k characters", async () => {
+	it("truncates bodies to 100k characters with a truncation marker", async () => {
 		const big = "x".repeat(150_000);
 		vi.mocked(smartFetch).mockResolvedValueOnce(new Response(big, { status: 200 }));
 		const r = await scrape.run({} as any, { url: "https://example.com/big" });
 		const body = r.content[0].text.split("\n\n").slice(1).join("\n\n");
-		expect(body.length).toBe(100_000);
+		expect(body.startsWith("x".repeat(100_000))).toBe(true); // cut at the 100k cap
+		expect(body).toContain("[truncated at 100000 bytes]"); // and signalled, not silently ended
 	});
 
 	it("surfaces a non-200 status from the upstream response", async () => {
