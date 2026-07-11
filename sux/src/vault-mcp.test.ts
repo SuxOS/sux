@@ -47,6 +47,7 @@ describe("vault MCP server (/vault/mcp)", () => {
 			"vault_daily_append",
 			"vault_backlinks",
 			"vault_query",
+			"vault_patch",
 			"vault_tags",
 		]);
 		expect(names).not.toContain("vault_search"); // live-dependent — deferred to the vpc phase
@@ -86,6 +87,32 @@ describe("vault MCP server (/vault/mcp)", () => {
 
 		const t = await call("vault_tags", {});
 		expect(t.tags.map((x: any) => x.tag).sort()).toEqual(["idea", "project"]);
+	});
+
+	it("vault_query JsonLogic filter + vault_patch on the git backend (§obsidian)", async () => {
+		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
+		const notes: Record<string, string> = {
+			"P/a.md": "---\ntype: project\nstatus: active\n---\n# Log\nold",
+			"P/b.md": "---\ntype: note\nstatus: active\n---\nx",
+		};
+		let putBody = "";
+		routes.handler = (url, init) => {
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (init?.method === "PUT") {
+				putBody = Buffer.from(JSON.parse(init.body).content, "base64").toString("utf8");
+				return new Response(JSON.stringify({ commit: { sha: "c1" } }), { status: 201 });
+			}
+			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "s1" }), { status: 200 });
+		};
+		const q = await call("vault_query", { filter: { and: [{ "==": ["type", "project"] }, { "==": ["status", "active"] }] } });
+		expect(q.notes.map((x: any) => x.path)).toEqual(["P/a.md"]); // only a.md is a project AND active
+
+		const p = await call("vault_patch", { path: "P/a.md", heading: "Log", mode: "replace", content: "new entry" });
+		expect(p.changed).toBe(true);
+		expect(putBody).toContain("# Log\nnew entry"); // section body replaced, heading kept
 	});
 
 	it("vault_daily_append targets today's daily note", async () => {
