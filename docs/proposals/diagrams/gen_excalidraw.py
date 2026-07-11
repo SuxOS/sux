@@ -151,7 +151,7 @@ s.box("lc", 70, 70, 150, 60, "Local Claude", fill=BLUE_F, stroke=BLUE_S)
 s.box("cc", 240, 70, 140, 60, "Cloud / Mobile\nClaude", fill=BLUE_F, stroke=BLUE_S)
 
 s.frame(420, 30, 400, 260, "sux Worker — Cloudflare edge")
-s.box("fns", 470, 70, 300, 46, "dispatch  ·  91 fns", fill=GRAY_F, stroke=GRAY_S)
+s.box("fns", 470, 70, 300, 46, "dispatch  ·  95 fns", fill=GRAY_F, stroke=GRAY_S)
 s.box("obs", 450, 150, 180, 56, "obsidian · ingest", fill=GREEN_F, stroke=GREEN_S)
 s.box("dbx", 660, 150, 130, 56, "dropbox", fill=GREEN_F, stroke=GREEN_S)
 s.box("kv", 470, 230, 180, 46, "Workers KV\ncache:vault:*", shape="ellipse", fill=YELLOW_F, stroke=YELLOW_S, font_size=13)
