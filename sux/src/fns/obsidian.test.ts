@@ -133,6 +133,23 @@ describe("obsidian (git backend)", () => {
 		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("z y z");
 	});
 
+	it("edit PUTs the read-time sha and surfaces a 409 as 'note changed since read'", async () => {
+		// A concurrent write landed between our read (sha s6) and our write, so GitHub
+		// rejects the stale-sha PUT with 409 — must be a clear conflict, never a clobber.
+		let putSha: string | undefined;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				putSha = JSON.parse(init.body).sha;
+				return new Response(JSON.stringify({ message: "does not match" }), { status: 409 });
+			}
+			return new Response(JSON.stringify({ content: b64("- [ ] task\nrest"), sha: "s6" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "edit", path: "d.md", find: "- [ ] task", replace: "- [x] task" });
+		expect(putSha).toBe("s6"); // PUT carried the READ-TIME sha, not a re-fetched HEAD
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/changed since read/);
+	});
+
 	it("edit fails cleanly when the find text is absent", async () => {
 		routes.handler = () => new Response(JSON.stringify({ content: b64("body"), sha: "s4" }), { status: 200 });
 		const r = await obsidian.run(ENV, { action: "edit", path: "d.md", find: "nope", replace: "x" });

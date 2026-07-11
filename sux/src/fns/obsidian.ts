@@ -111,20 +111,30 @@ export async function vaultPut(
 	path: string,
 	content: string | Uint8Array,
 	message: string,
-	opts?: { failIfExists?: boolean },
-): Promise<{ ok: true; commit?: string; created: boolean } | { ok: false; error: string; exists?: boolean }> {
+	opts?: { failIfExists?: boolean; sha?: string },
+): Promise<{ ok: true; commit?: string; created: boolean } | { ok: false; error: string; exists?: boolean; conflict?: boolean }> {
 	const bad = badVaultPath(path);
 	if (bad) return { ok: false, error: bad };
 	const full = cfg.inVault(normPath(path));
-	const cur = await ghJson(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`);
-	if (opts?.failIfExists && cur.status === 200) return { ok: false, error: `already exists: ${path}`, exists: true };
-	const sha = cur.status === 200 ? cur.json?.sha : undefined;
+	// A caller that threads a READ-TIME sha (edit/patch) wants THAT exact sha in the
+	// PUT, so a concurrent write between read and write collides (409) instead of
+	// being silently overwritten. Re-fetching HEAD-at-write here would fetch the
+	// concurrent writer's sha and defeat GitHub's optimistic-concurrency check.
+	let sha = opts?.sha;
+	let created = false;
+	if (sha === undefined) {
+		const cur = await ghJson(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`);
+		if (opts?.failIfExists && cur.status === 200) return { ok: false, error: `already exists: ${path}`, exists: true };
+		sha = cur.status === 200 ? cur.json?.sha : undefined;
+		created = cur.status === 404;
+	}
 	const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
 	const body = JSON.stringify({ message, content: toB64(bytes), branch: cfg.branch, ...(sha ? { sha } : {}) });
 	const put = await ghJson(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
+	if (put.status === 409) return { ok: false, error: `note changed since read — re-read and retry: ${path}`, conflict: true };
 	if (put.status >= 400) return { ok: false, error: `GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (writes need a GITHUB_TOKEN with write access).` };
 	await noteWritten(env, cfg, path, typeof content === "string" ? content : null, put.json?.commit?.sha);
-	return { ok: true, commit: put.json?.commit?.sha, created: cur.status === 404 };
+	return { ok: true, commit: put.json?.commit?.sha, created };
 }
 
 /** Read a note's decoded body + sha from GitHub, refetching raw for >1MB files.
@@ -132,7 +142,7 @@ export async function vaultPut(
  * content:""), so every git reader — read, append, edit — must go through here;
  * decoding content directly would silently see an empty body and (on append)
  * destroy the note. Returns status 404 with an empty body for a missing note. */
-async function readGitContents(env: any, cfg: VaultCfg, full: string): Promise<{ status: number; sha?: string; body: string; error?: string }> {
+export async function readGitContents(env: any, cfg: VaultCfg, full: string): Promise<{ status: number; sha?: string; body: string; error?: string }> {
 	const cur = await ghJson(env, `${GH}/repos/${cfg.repo}/contents/${encodeURIComponent(full)}?ref=${encodeURIComponent(cfg.branch)}`);
 	if (cur.status === 404) return { status: 404, body: "" };
 	if (cur.status >= 400) return { status: cur.status, body: "", error: `GitHub error reading note: ${cur.json?.message ?? `HTTP ${cur.status}`}` };
@@ -429,11 +439,11 @@ export const obsidian: Fn = {
 				if (cur.error) return fail(cur.error);
 				const edited = applyEdit(cur.body, find, String(args?.replace ?? ""), args?.all === true);
 				if ("error" in edited) return fail(`${edited.error} in ${p}`);
-				const body = JSON.stringify({ message: `sux: edit ${p}`, content: toB64(new TextEncoder().encode(edited.text)), branch, sha: cur.sha });
-				const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
-				if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (edit needs a GITHUB_TOKEN with write access).`);
-				await noteWritten(env, cfg, p, edited.text, put.json?.commit?.sha);
-				return ok(JSON.stringify({ ok: true, path: p, replaced: edited.count, commit: put.json?.commit?.sha }, null, 2));
+				// PUT with the READ-TIME sha (optimistic concurrency): a concurrent write
+				// since this read yields a 409 "note changed" instead of a silent clobber.
+				const w = await vaultPut(env, cfg, p, edited.text, `sux: edit ${p}`, { sha: cur.sha });
+				if (!w.ok) return fail(w.error);
+				return ok(JSON.stringify({ ok: true, path: p, replaced: edited.count, commit: w.commit }, null, 2));
 			}
 			if (action === "delete") {
 				const p = String(args?.path ?? "").trim();

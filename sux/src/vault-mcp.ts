@@ -1,9 +1,9 @@
 import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { fingerprint, ledger } from "./ledger";
 import { type JsonRpc, sseResponse } from "./mcp-util";
-import { fail, ok, type RtEnv, type ToolResult } from "./registry";
+import { fail, failWith, ok, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
-import { obsidian } from "./fns/obsidian";
+import { obsidian, readGitContents, vaultCfg, vaultPut } from "./fns/obsidian";
 import { vaultToday } from "./fns/_util";
 import { evalFilter, extractTags, extractWikilinks, type Filter, frontmatterMatches, linkResolvesTo, parseFrontmatter, patchBlockRef, patchFrontmatter, patchHeadingSection, type PatchMode } from "./vault-graph";
 
@@ -104,7 +104,7 @@ const TOOLS: VaultTool[] = [
 		name: "vault_delete",
 		description: "Delete a note (git history keeps it recoverable). Requires confirm:true.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["path", "confirm"], properties: { path: { type: "string" }, confirm: { type: "boolean", description: "Must be true — a deliberate two-step, stolen from obsidian-web-mcp." } } },
-		run: (env, a) => (a?.confirm === true ? obsidian.run(env, git({ action: "delete", path: a?.path })) : Promise.resolve(fail("vault_delete requires confirm:true."))),
+		run: (env, a) => (a?.confirm === true ? obsidian.run(env, git({ action: "delete", path: a?.path })) : Promise.resolve(failWith("bad_input", "vault_delete requires confirm:true."))),
 	},
 	{
 		name: "vault_capture",
@@ -148,7 +148,7 @@ const TOOLS: VaultTool[] = [
 		},
 		run: async (env, a) => {
 			const items = Array.isArray(a?.items) ? a.items : [];
-			if (!items.length) return fail("vault_batch_append requires a non-empty `items` [{path, content}].");
+			if (!items.length) return failWith("bad_input", "vault_batch_append requires a non-empty `items` [{path, content}].");
 			const dryRun = a?.dry_run === true;
 			const led = ledger(env, "vault_append");
 			const results: Array<Record<string, unknown>> = [];
@@ -196,7 +196,7 @@ const TOOLS: VaultTool[] = [
 		description: "List notes that [[link]] to a target note — the backlinks Obsidian shows in its side panel. Resolves wikilinks by basename. Scans the vault (KV-cached); `cap` bounds how many notes are read.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["path"], properties: { path: { type: "string", description: "Target note path, e.g. Projects/sux.md" }, cap: { type: "integer", minimum: 1, maximum: 2000, description: "Max notes to scan (default 500)." } } },
 		run: async (env, a) => {
-			if (!a?.path) return fail("vault_backlinks requires a `path`.");
+			if (!a?.path) return failWith("bad_input", "vault_backlinks requires a `path`.");
 			try {
 				const { records, total, truncated } = await scanVault(env, undefined, clampCap(a?.cap));
 				const target = String(a.path);
@@ -215,12 +215,12 @@ const TOOLS: VaultTool[] = [
 		run: async (env, a) => {
 			const filter = a?.filter as Filter | undefined;
 			const field = typeof a?.field === "string" ? a.field : undefined;
-			if (!filter && !field) return fail("vault_query needs either `field` (simple form) or `filter` (JsonLogic).");
+			if (!filter && !field) return failWith("bad_input", "vault_query needs either `field` (simple form) or `filter` (JsonLogic).");
 			let matches: (fm: Record<string, unknown>) => boolean;
 			try {
 				matches = filter ? (fm) => evalFilter(fm, filter) : (fm) => frontmatterMatches(fm, field!, a?.value);
 			} catch (e) {
-				return fail(`invalid filter: ${String((e as Error)?.message ?? e)}`);
+				return failWith("bad_input", `invalid filter: ${String((e as Error)?.message ?? e)}`);
 			}
 			try {
 				const { records, total, truncated } = await scanVault(env, a?.folder ? String(a.folder) : undefined, clampCap(a?.cap));
@@ -229,7 +229,7 @@ const TOOLS: VaultTool[] = [
 					try {
 						if (matches(r.fm)) notes.push({ path: r.path, frontmatter: r.fm });
 					} catch (e) {
-						return fail(`invalid filter: ${String((e as Error)?.message ?? e)}`); // a bad filter throws on the first note
+						return failWith("bad_input", `invalid filter: ${String((e as Error)?.message ?? e)}`); // a bad filter throws on the first note
 					}
 				}
 				return ok(JSON.stringify({ ...(field ? { field } : {}), ...(a?.value !== undefined ? { value: a.value } : {}), ...(filter ? { filter } : {}), count: notes.length, notes, scanned: records.length, total, truncated }, null, 2));
@@ -245,25 +245,29 @@ const TOOLS: VaultTool[] = [
 		inputSchema: { type: "object", additionalProperties: false, required: ["path", "content"], properties: { path: { type: "string" }, heading: { type: "string", description: "Target the section under this heading (by its text)." }, block: { type: "string", description: "Target the block anchored by this id (`^id`, caret optional)." }, frontmatter_field: { type: "string", description: "Target this top-level frontmatter key; `content` is the value to set." }, mode: { type: "string", enum: ["replace", "append", "prepend"], default: "replace", description: "For heading/block targets." }, content: { type: "string", description: "Text to write (section/block text, or the frontmatter value)." } } },
 		run: async (env, a) => {
 			const path = typeof a?.path === "string" ? a.path.trim() : "";
-			if (!path) return fail("vault_patch requires a `path`.");
-			if (typeof a?.content !== "string") return fail("vault_patch requires `content`.");
+			if (!path) return failWith("bad_input", "vault_patch requires a `path`.");
+			if (typeof a?.content !== "string") return failWith("bad_input", "vault_patch requires `content`.");
 			const targets = ["heading", "block", "frontmatter_field"].filter((k) => typeof a?.[k] === "string" && a[k]);
-			if (targets.length !== 1) return fail("vault_patch needs exactly one target: `heading`, `block`, or `frontmatter_field`.");
+			if (targets.length !== 1) return failWith("bad_input", "vault_patch needs exactly one target: `heading`, `block`, or `frontmatter_field`.");
 			const mode = (["replace", "append", "prepend"].includes(a?.mode) ? a.mode : "replace") as PatchMode;
-			const read = await obsidian.run(env, git({ action: "read", path }));
-			if (read.isError) return read;
-			const cur = read.content[0].text;
+			const cfg = vaultCfg(env);
+			if ("error" in cfg) return failWith("not_configured", cfg.error);
+			// Read note + its sha, transform, then write PUTting THAT read-time sha:
+			// a concurrent modification collides (409) instead of a silent lost update.
+			const cur = await readGitContents(env, cfg, cfg.inVault(path));
+			if (cur.status === 404) return failWith("not_found", `Note not found: ${path}`);
+			if (cur.error) return fail(cur.error);
 			let patched: { content: string; changed: boolean };
 			try {
-				if (targets[0] === "frontmatter_field") patched = patchFrontmatter(cur, a.frontmatter_field, a.content);
-				else if (targets[0] === "heading") patched = patchHeadingSection(cur, a.heading, mode, a.content);
-				else patched = patchBlockRef(cur, a.block, mode, a.content);
+				if (targets[0] === "frontmatter_field") patched = patchFrontmatter(cur.body, a.frontmatter_field, a.content);
+				else if (targets[0] === "heading") patched = patchHeadingSection(cur.body, a.heading, mode, a.content);
+				else patched = patchBlockRef(cur.body, a.block, mode, a.content);
 			} catch (e) {
-				return fail(`vault_patch: ${String((e as Error)?.message ?? e)}`);
+				return failWith("bad_input", `vault_patch: ${String((e as Error)?.message ?? e)}`);
 			}
 			if (!patched.changed) return ok(JSON.stringify({ ok: true, path, changed: false, note: "target already holds this value" }, null, 2));
-			const wrote = await obsidian.run(env, git({ action: "write", path, content: patched.content }));
-			if (wrote.isError) return wrote;
+			const wrote = await vaultPut(env, cfg, path, patched.content, `sux: patch ${path}`, { sha: cur.sha });
+			if (!wrote.ok) return fail(wrote.error);
 			return ok(JSON.stringify({ ok: true, path, changed: true, target: targets[0], ...(targets[0] === "frontmatter_field" ? {} : { mode }) }, null, 2));
 		},
 	},
