@@ -3,7 +3,7 @@ import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
 import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
-import { doUpload, jstr } from "./fns/_jmap";
+import { doUpload, jstr, scopeProbe } from "./fns/_jmap";
 
 // The mail MCP server — the ergonomic Fastmail surface, served at /mail/mcp behind
 // the same workers-oauth-provider flow, so it appears as its own "mail" connector in
@@ -78,6 +78,38 @@ function multipartBody(text: string, parts: ResolvedPart[]): Record<string, unkn
  *  the stage→commit token to the exact attachment set without writing anything at preview time. */
 function attachDescriptors(atts: AttachmentSpec[]): Array<Record<string, unknown>> {
 	return atts.map((x) => ({ name: x?.name ?? null, type: x?.type ?? null, source: x?.blobId ? "blob" : x?.ref ? "ref" : x?.data ? "data" : "?" }));
+}
+
+/** Gate a scope-dependent verb: probe the token's reachable capabilities; return a not_configured
+ *  message if `cap` isn't granted (contacts/vacation/quota live on a re-scoped FASTMAIL_TOKEN), else null. */
+async function scopeGate(env: RtEnv, cap: "contacts" | "vacationresponse" | "quota"): Promise<string | null> {
+	const scope = (await scopeProbe(env)) as Record<string, boolean>;
+	if (scope[cap]) return null;
+	const label = cap === "vacationresponse" ? "vacation responder" : cap;
+	return `The current FASTMAIL_TOKEN doesn't grant the '${cap}' JMAP capability, so ${label} isn't reachable. Re-mint the token with ${cap} scope (Fastmail → Settings → Privacy & Security → API tokens) and retry — the verb is otherwise ready.`;
+}
+
+/** Shape a JMAP Contact record to a token-cheap reference. */
+function shapeContact(c: any): Record<string, unknown> {
+	const name = [c?.firstName, c?.lastName].filter(Boolean).join(" ") || c?.company || c?.emails?.[0]?.value || "(no name)";
+	return {
+		id: c?.id,
+		name,
+		...(c?.company ? { company: c.company } : {}),
+		emails: Array.isArray(c?.emails) ? c.emails.map((e: any) => e?.value).filter(Boolean) : [],
+		phones: Array.isArray(c?.phones) ? c.phones.map((p: any) => p?.value).filter(Boolean) : [],
+	};
+}
+
+/** Map ergonomic contact args (plain strings) to a JMAP Contact card patch — only the provided fields. */
+function contactCard(a: any): Record<string, unknown> {
+	const card: Record<string, unknown> = {};
+	if (a?.firstName !== undefined) card.firstName = String(a.firstName);
+	if (a?.lastName !== undefined) card.lastName = String(a.lastName);
+	if (a?.company !== undefined) card.company = String(a.company);
+	if (Array.isArray(a?.emails)) card.emails = a.emails.map((e: string) => ({ type: "other", value: String(e) }));
+	if (Array.isArray(a?.phones)) card.phones = a.phones.map((p: string) => ({ type: "other", value: String(p) }));
+	return card;
 }
 
 const ATTACHMENTS_SCHEMA = {
@@ -434,6 +466,157 @@ const TOOLS: MailTool[] = [
 				const resp = await jmapCall(env, { method: "MaskedEmail/get", args: {} });
 				const list = resultFor(resp, "MaskedEmail/get")?.list ?? [];
 				return ok({ count: list.length, masked: list.map((m: any) => ({ id: m?.id, email: m?.email, state: m?.state, forDomain: m?.forDomain, description: m?.description })) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_vacation",
+		description:
+			"Get or set the Fastmail vacation auto-responder. action:'get' (default) returns the current responder; action:'set' updates it (enabled + subject + text; optional fromDate/toDate ISO-8601) and routes through stage-then-commit. Needs a FASTMAIL_TOKEN scoped for vacationresponse.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { action: { type: "string", enum: ["get", "set"] }, enabled: { type: "boolean" }, subject: { type: "string" }, text: { type: "string", description: "Plain-text auto-reply body." }, fromDate: { type: "string", description: "ISO-8601 start (optional)." }, toDate: { type: "string", description: "ISO-8601 end (optional)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "vacationresponse");
+			if (gate) return fail(gate);
+			try {
+				if ((a?.action ?? "get") === "get") {
+					const resp = await jmapCall(env, { calls: [["VacationResponse/get", { ids: ["singleton"] }, "g"]] });
+					return ok({ vacation: resultFor(resp, "VacationResponse/get")?.list?.[0] ?? null });
+				}
+				if (typeof a?.enabled !== "boolean" || !a?.subject || a?.text === undefined) return fail("mail_vacation set needs enabled (bool), subject, and text.");
+				const patch: Record<string, unknown> = { isEnabled: a.enabled, subject: String(a.subject), textBody: String(a.text), fromDate: a?.fromDate ?? null, toDate: a?.toDate ?? null };
+				const mutate = async () => {
+					const resp = await jmapCall(env, { allow_destroy: true, calls: [["VacationResponse/set", { update: { singleton: patch } }, "s"]] });
+					const setR = resultFor(resp, "VacationResponse/set");
+					if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, "singleton")) throw new Error(`vacation set failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+					return { vacation: patch, updated: true };
+				};
+				const out = await staged(env, "mail_vacation", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, patch, { action: "set vacation responder", ...patch }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_quota",
+		description: "Report mailbox storage quota — used vs total bytes per quota resource. Read-only. Needs a FASTMAIL_TOKEN scoped for quota.",
+		inputSchema: { type: "object", additionalProperties: false, properties: {} },
+		run: async (env) => {
+			const gate = await scopeGate(env, "quota");
+			if (gate) return fail(gate);
+			try {
+				const resp = await jmapCall(env, { calls: [["Quota/get", {}, "g"]] });
+				const list = resultFor(resp, "Quota/get")?.list ?? [];
+				return ok({ count: list.length, quotas: list.map((q: any) => ({ id: q?.id, name: q?.name, used: q?.used, limit: q?.limit, scope: q?.scope, resourceType: q?.resourceType })) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_search",
+		description: "Search your Fastmail contacts by free text (name/email). Returns references {id, name, emails, phones} — never the full card. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { text: { type: "string", description: "Free-text query over name/email." }, limit: { type: "integer", minimum: 1, maximum: 100 } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			try {
+				const limit = clamp(a?.limit, 1, 100, 25);
+				const filter = a?.text ? { text: String(a.text) } : {};
+				const resp = await jmapCall(env, { calls: [["Contact/query", { filter, limit }, "q"], ["Contact/get", { "#ids": { resultOf: "q", name: "Contact/query", path: "/ids" } }, "g"]] });
+				const list = resultFor(resp, "Contact/get")?.list ?? [];
+				return ok({ count: list.length, contacts: list.map(shapeContact) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_get",
+		description: "Read one contact card in full by id. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			if (!a?.id) return fail("contact_get requires an `id`.");
+			try {
+				const resp = await jmapCall(env, { calls: [["Contact/get", { ids: [String(a.id)] }, "g"]] });
+				const c = resultFor(resp, "Contact/get")?.list?.[0];
+				if (!c) return fail(`No contact '${a.id}'.`);
+				return ok({ ...shapeContact(c), raw: c });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_create",
+		description: "Create a contact. Provide firstName/lastName/company + emails[]/phones[] (plain strings). Routes through stage-then-commit. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			try {
+				const card = contactCard(a);
+				if (!Object.keys(card).length) return fail("contact_create needs at least one of firstName/lastName/company/emails/phones.");
+				const mutate = async () => {
+					const resp = await jmapCall(env, { calls: [["Contact/set", { create: { c: card } }, "s"]] });
+					const created = resultFor(resp, "Contact/set")?.created?.c;
+					if (!created) throw new Error(`contact create failed: ${JSON.stringify(resultFor(resp, "Contact/set")?.notCreated ?? {})}`);
+					return { created: { id: created.id, ...shapeContact({ ...card, id: created.id }) } };
+				};
+				const out = await staged(env, "contact_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, card, { action: "create contact", ...card }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_update",
+		description: "Update a contact by id — pass only the fields to change (firstName/lastName/company/emails[]/phones[]). Routes through stage-then-commit. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			if (!a?.id) return fail("contact_update requires an `id`.");
+			try {
+				const id = String(a.id);
+				const patch = contactCard(a);
+				if (!Object.keys(patch).length) return fail("contact_update needs at least one field to change.");
+				const mutate = async () => {
+					const resp = await jmapCall(env, { calls: [["Contact/set", { update: { [id]: patch } }, "s"]] });
+					const setR = resultFor(resp, "Contact/set");
+					if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) throw new Error(`contact update failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+					return { updated: id, patch };
+				};
+				const out = await staged(env, "contact_update", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id, patch }, { action: "update contact", id, ...patch }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_delete",
+		description: "Delete a contact by id (permanent). Routes through stage-then-commit and needs allow_destroy at the JMAP layer. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			if (!a?.id) return fail("contact_delete requires an `id`.");
+			try {
+				const id = String(a.id);
+				const mutate = async () => {
+					const resp = await jmapCall(env, { allow_destroy: true, calls: [["Contact/set", { destroy: [id] }, "s"]] });
+					const setR = resultFor(resp, "Contact/set");
+					if (!(setR?.destroyed ?? []).includes(id)) throw new Error(`contact delete failed: ${JSON.stringify(setR?.notDestroyed ?? {})}`);
+					return { deleted: id };
+				};
+				const out = await staged(env, "contact_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id }, { action: "delete contact (permanent)", id }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
 			} catch (e) {
 				return fail(errMsg(e));
 			}

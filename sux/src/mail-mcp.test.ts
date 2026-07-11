@@ -56,13 +56,27 @@ function answer([method, args]: any): any {
 	if (method === "EmailSubmission/get") return [method, { list: [{ id: "sub-1", emailId: "e1", sendAt: "2026-07-11T09:00:00Z", undoStatus: "pending" }] }, "x"];
 	if (method === "MaskedEmail/get") return [method, { list: [{ id: "m1", email: "x@fastmail.com", state: "enabled", forDomain: "shop.com" }] }, "x"];
 	if (method === "MaskedEmail/set") return [method, { created: args?.create ? { m: { id: "m2", email: "y@fastmail.com", forDomain: "new.com" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
+	if (method === "VacationResponse/get") return [method, { list: [{ id: "singleton", isEnabled: false, subject: "Away", textBody: "OOO" }] }, "x"];
+	if (method === "VacationResponse/set") return [method, { updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
+	if (method === "Quota/get") return [method, { list: [{ id: "q1", name: "Mail", used: 100, limit: 1000, scope: "account", resourceType: "octets" }] }, "x"];
+	if (method === "Contact/query") return [method, { ids: ["c1"] }, "x"];
+	if (method === "Contact/get") return [method, { list: [{ id: "c1", firstName: "Ada", lastName: "Lovelace", emails: [{ type: "personal", value: "ada@x.com" }], phones: [] }] }, "x"];
+	if (method === "Contact/set") return [method, { created: args?.create ? { c: { id: "c2" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined, destroyed: args?.destroy ?? undefined }, "x"];
 	return [method, {}, "x"];
 }
 
-function installFetch() {
+// A token re-scoped for contacts/vacation/quota (P2) — same account, extra capabilities.
+const SESSION_SCOPED = {
+	...SESSION,
+	accounts: { u1: { name: "me@fastmail.com", accountCapabilities: { "urn:ietf:params:jmap:mail": {}, "https://www.fastmail.com/dev/maskedemail": {}, "urn:ietf:params:jmap:contacts": {}, "urn:ietf:params:jmap:vacationresponse": {}, "urn:ietf:params:jmap:quota": {} } } },
+	capabilities: { ...SESSION.capabilities, "urn:ietf:params:jmap:contacts": {}, "urn:ietf:params:jmap:vacationresponse": {}, "urn:ietf:params:jmap:quota": {} },
+	primaryAccounts: { ...SESSION.primaryAccounts, "urn:ietf:params:jmap:contacts": "u1", "urn:ietf:params:jmap:vacationresponse": "u1", "urn:ietf:params:jmap:quota": "u1" },
+};
+
+function installFetch(session: any = SESSION) {
 	const f = vi.fn(async (input: any, init?: any) => {
 		const url = String(input?.url ?? input);
-		if (url.includes("/jmap/session")) return json(SESSION);
+		if (url.includes("/jmap/session")) return json(session);
 		if (url.includes("/jmap/upload/")) return json({ blobId: "blob-99", type: init?.headers?.["Content-Type"] ?? "application/octet-stream", size: 3 });
 		if (url.includes("/jmap/api")) {
 			const body = init?.body ? JSON.parse(init.body) : {};
@@ -250,6 +264,36 @@ describe("mail_* ergonomic tools", () => {
 		const bs = lastEmailSet.create.draft.bodyStructure;
 		expect(bs.type).toBe("multipart/mixed");
 		expect(bs.subParts[1]).toMatchObject({ blobId: "blob-99", disposition: "attachment", name: "hi.txt" }); // uploaded blob referenced
+	});
+
+	it("P2 verbs are gated not_configured when the token lacks the scope (§2)", async () => {
+		installFetch(); // default token grants no contacts/vacation/quota
+		for (const [name, args] of [["mail_vacation", {}], ["mail_quota", {}], ["contact_search", { text: "x" }]] as const) {
+			const r = await tool(name).run(env(), args);
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/capability|re-mint|scope/i); // clear, flip-on-ready message
+		}
+	});
+
+	it("mail_vacation get/set + mail_quota on a re-scoped token (§2)", async () => {
+		const e = env();
+		installFetch(SESSION_SCOPED);
+		expect(parse(await tool("mail_vacation").run(e, { action: "get" })).vacation).toMatchObject({ id: "singleton", subject: "Away" });
+		expect(parse(await tool("mail_quota").run(e, {})).quotas[0]).toMatchObject({ id: "q1", used: 100, limit: 1000 });
+		const st = parse(await tool("mail_vacation").run(e, { action: "set", enabled: true, subject: "OOO", text: "back Monday", stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "mail_vacation" });
+		const done = parse(await tool("mail_vacation").run(e, { action: "set", enabled: true, subject: "OOO", text: "back Monday", commit_token: st.commit_token }));
+		expect(done).toMatchObject({ updated: true });
+	});
+
+	it("contact_search/create/delete on a re-scoped token (§2)", async () => {
+		const e = env();
+		installFetch(SESSION_SCOPED);
+		expect(parse(await tool("contact_search").run(e, { text: "ada" })).contacts[0]).toMatchObject({ id: "c1", name: "Ada Lovelace", emails: ["ada@x.com"] });
+		const st = parse(await tool("contact_create").run(e, { firstName: "Grace", emails: ["grace@x.com"], stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "contact_create" });
+		expect(parse(await tool("contact_create").run(e, { firstName: "Grace", emails: ["grace@x.com"], commit_token: st.commit_token })).created).toMatchObject({ id: "c2" });
+		expect(parse(await tool("contact_delete").run(e, { id: "c1", stage: true }))).toMatchObject({ staged: true, kind: "contact_delete" });
 	});
 
 	it("exposes the raw jmap escape hatch", () => {

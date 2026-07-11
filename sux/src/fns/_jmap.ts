@@ -168,6 +168,7 @@ export function capForMethod(method: string, session?: JmapSession): string | nu
 	if (p === "MaskedEmail") return CAP_MASKEDEMAIL;
 	if (p === "Contact" || p === "AddressBook" || p === "ContactGroup") return session ? contactsCap(session) : CAP_CONTACTS;
 	if (p.startsWith("Calendar")) return CAP_CALENDARS;
+	if (p === "Quota") return CAP_QUOTA;
 	if (p === "Core") return CAP_CORE;
 	return null;
 }
