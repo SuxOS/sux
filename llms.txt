@@ -21,7 +21,7 @@
 - [[teach-ask]] (parked) — teach writes / ask reads over a per-topic KB with agentic acquisition + Obsidian projection; owns _kb.ts v3; supersedes and deletes oracle.
 
 ### infrastructure
-- [[architecture]] (shipped) — Diagrams of the SHIPPED vault system — hub-and-spoke Worker + ~91 fns, git-as-truth + KV read-through cache, two-transport routing, ingest dataflow.
+- [[architecture]] (shipped) — Diagrams of the SHIPPED vault system — hub-and-spoke Worker + ~95 fns, git-as-truth + KV read-through cache, two-transport routing, ingest dataflow.
 - [[vpc-hosting]] (designed) — Move the live vault off the sleeping Mac onto always-on boxes via Workers VPC; three tiers, phases A-E; routes tier-3 OAuth through the sux Worker.
 - [[platform-upgrades]] (parked) — Five infra upgrades as one substrate — notify/diff/job (scheduler + cron drain), mac-LLM tier, browse, Cloudflare Workflows, entity resolution.
 - [[keys]] (reference) — Canonical registry of every secret/binding sux uses + the ones the new plan needs, where each lives, and how to get it.

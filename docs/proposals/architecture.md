@@ -3,7 +3,7 @@ title: Architecture & dataflow
 status: shipped
 cluster: infrastructure
 type: proposal
-summary: "Diagrams of the SHIPPED vault system — hub-and-spoke Worker + ~91 fns, git-as-truth + KV read-through cache, two-transport routing, ingest dataflow."
+summary: "Diagrams of the SHIPPED vault system — hub-and-spoke Worker + ~95 fns, git-as-truth + KV read-through cache, two-transport routing, ingest dataflow."
 tags: [sux, infrastructure, shipped]
 updated: 2026-07-09
 ---
@@ -37,7 +37,7 @@ flowchart TB
 
     subgraph worker["sux Worker — Cloudflare edge"]
         direction LR
-        FNS["dispatch (91 fns)"]
+        FNS["dispatch (95 fns)"]
         OBS["obsidian · ingest"]
         DBX["dropbox"]
         KV[("Workers KV<br/>cache:vault:*")]
