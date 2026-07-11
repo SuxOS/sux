@@ -3,6 +3,7 @@ import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
 import { jmap } from "./fns/jmap";
 import { jstr } from "./fns/_jmap";
+import { htmlToMd } from "./fns/_markup";
 
 // The mail MCP server — the ergonomic Fastmail surface, served at /mail/mcp behind
 // the same workers-oauth-provider flow, so it appears as its own "mail" connector in
@@ -57,19 +58,24 @@ function shapeRef(e: any): Record<string, unknown> {
 	};
 }
 
-/** Extract plain-text body from a fetched Email (textBody parts → bodyValues). */
+/** Extract a readable plain-text body from a fetched Email. Prefers textBody
+ * parts; for an HTML-only message it falls back to htmlBody, converting the HTML
+ * to Markdown-ish text (readable, link-preserving) rather than dumping raw tags.
+ * The htmlBody parts only carry a `value` when the Email/get set fetchHTMLBodyValues —
+ * otherwise this fallback silently returned empty (the bug this fixes). */
 function extractBody(e: any): string {
 	const values = e?.bodyValues ?? {};
-	const parts = Array.isArray(e?.textBody) && e.textBody.length ? e.textBody : e?.htmlBody;
-	if (Array.isArray(parts)) {
-		const chunks = parts.map((p: any) => values[p?.partId]?.value).filter(Boolean);
-		if (chunks.length) return chunks.join("\n");
-	}
-	// Fall back to any bodyValue present.
+	const chunksFor = (parts: any): string[] => (Array.isArray(parts) ? parts.map((p: any) => values[p?.partId]?.value).filter(Boolean) : []);
+	const text = chunksFor(e?.textBody);
+	if (text.length) return text.join("\n");
+	const html = chunksFor(e?.htmlBody);
+	if (html.length) return htmlToMd(html.join("\n"));
+	// Last resort: any bodyValue present. Convert it if it looks like HTML.
 	const anyVal = Object.values(values)
 		.map((v: any) => v?.value)
-		.filter(Boolean);
-	return anyVal.join("\n");
+		.filter(Boolean)
+		.join("\n");
+	return /<[a-z!][\s\S]*>/i.test(anyVal) ? htmlToMd(anyVal) : anyVal;
 }
 
 /** Fetch the mailbox role→id map (inbox/drafts/sent/archive/trash/junk). */
@@ -158,7 +164,10 @@ const TOOLS: MailTool[] = [
 			try {
 				const resp = await jmapCall(env, {
 					method: "Email/get",
-					args: { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: false, maxBodyValueBytes: 200_000 },
+					// fetchHTMLBodyValues too: an HTML-only email has no textBody parts, so without
+					// its htmlBody values populated extractBody's fallback returns empty. maxBodyValueBytes
+					// caps both so a large HTML part can't blow the response.
+					args: { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: true, maxBodyValueBytes: 200_000 },
 				});
 				const e = resultFor(resp, "Email/get")?.list?.[0];
 				if (!e) return fail(`No message '${a.id}'.`);
