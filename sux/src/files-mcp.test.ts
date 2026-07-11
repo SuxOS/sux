@@ -83,6 +83,22 @@ describe("files_* tools", () => {
 	it("exposes the raw dropbox escape hatch", () => {
 		expect(tool("dropbox")).toBeTruthy();
 	});
+
+	it("codes error buckets via failWith: [bad_input] for missing required, [not_configured] for the Mode-B gate", async () => {
+		const missing = await tool("files_read").run(env(), {}); // missing required `path`
+		expect(missing.isError).toBe(true);
+		expect(missing.content[0].text).toMatch(/^\[bad_input\]/);
+		expect(missing.errorCode).toBe("bad_input");
+
+		const gate = await tool("files_search").run(env(), { query: "x" }); // Mode-B credential absent
+		expect(gate.isError).toBe(true);
+		expect(gate.content[0].text).toMatch(/^\[not_configured\]/);
+		expect(gate.errorCode).toBe("not_configured");
+
+		const flag = await tool("files_write").run(env(), { path: "a.txt", text: "x", overwrite: true }); // Mode-B-only flag on an app-folder write
+		expect(flag.isError).toBe(true);
+		expect(flag.errorCode).toBe("bad_input");
+	});
 });
 
 describe("files_batch_put (app-folder batch write, idempotent)", () => {
