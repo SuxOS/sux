@@ -62,6 +62,8 @@ The modes differ on exactly one axis, and it is the axis [domains.md](domains.md
 | **Undo** | Dropbox version history + R2 immutability | Dropbox version history + a **pre-op backup** the operate verb writes itself (§6) |
 | **Verbs** | `files_put` · `files_get` · `files_list` · `files_delete` · `files_move` · `files_share` | `files_search` · `files_read` · `files_operate` |
 
+> **Shipped verb names** (`files-mcp.ts`): the provisional `files_put`/`files_get` used throughout this doc landed split by input shape — **`files_write`** (text body) + **`files_upload`** (bytes/handle: URL, `/s/<uuid>`, or Dropbox path, fetched server-side) for the write side, and **`files_read`** for the single-read. `files_batch_put` is the batch form; `files_list`/`files_delete`/`files_move`/`files_share`/`files_search`/`files_operate`/`files_transform` kept their names. Read `files_put`→`files_write`/`files_upload` and `files_get`→`files_read` below.
+
 The split is not a nicety — it is the [domains.md](domains.md) §2-dropbox call made concrete: *"The broad whole-Dropbox reach stays for the rare 'find that file'; the sux app-folder fn never needs that scope."* Mode A **is** that app-folder fn, promoted to first-class verbs. Mode B **is** that broad reach, given the firewall it requires.
 
 ---
