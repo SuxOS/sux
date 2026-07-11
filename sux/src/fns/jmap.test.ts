@@ -109,6 +109,22 @@ describe("_jmap unit helpers", () => {
 		expect(u).toContain("custom:urn"); // unioned, never suppressed
 	});
 
+	it("deriveUsing emits the capability for each method family — else Fastmail rejects 'using not specified'", () => {
+		// Regression: Quota/get shipped without urn:…:quota because deriveUsing lacked the branch,
+		// even though capForMethod had it. A mock that ignores `using` can't catch this — the live
+		// server does. capForMethod and deriveUsing must agree for every method.
+		const cases: Array<[string, string]> = [
+			["Quota/get", "urn:ietf:params:jmap:quota"],
+			["VacationResponse/set", "urn:ietf:params:jmap:vacationresponse"],
+			["Contact/query", "urn:ietf:params:jmap:contacts"],
+			["CalendarEvent/get", "urn:ietf:params:jmap:calendars"],
+		];
+		for (const [method, cap] of cases) {
+			expect(deriveUsing([method], SESSION)).toContain(cap);
+			expect(capForMethod(method, SESSION)).toBe(cap); // the two stay in lockstep
+		}
+	});
+
 	it("accountIdFor resolves MaskedEmail via accountCapabilities (not primaryAccounts)", () => {
 		expect(accountIdFor(SESSION, "MaskedEmail/get")).toBe("u123");
 		expect(accountIdFor(SESSION, "Email/query")).toBe("u123");

@@ -187,6 +187,7 @@ export function deriveUsing(methods: string[], session: JmapSession, callerUsing
 		if (p === "MaskedEmail") set.add(CAP_MASKEDEMAIL);
 		if (p === "Contact" || p === "AddressBook" || p === "ContactGroup") set.add(contactsCap(session));
 		if (p.startsWith("Calendar")) set.add(CAP_CALENDARS);
+		if (p === "Quota") set.add(CAP_QUOTA);
 	}
 	for (const u of callerUsing ?? []) if (typeof u === "string" && u) set.add(u);
 	return [...set];
