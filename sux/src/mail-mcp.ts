@@ -3,7 +3,7 @@ import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
 import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
-import { jstr } from "./fns/_jmap";
+import { doUpload, jstr } from "./fns/_jmap";
 
 // The mail MCP server — the ergonomic Fastmail surface, served at /mail/mcp behind
 // the same workers-oauth-provider flow, so it appears as its own "mail" connector in
@@ -50,6 +50,42 @@ function resolveIdentity(identities: any[], from: string): any {
 	const f = from.toLowerCase();
 	return identities.find((i: any) => String(i?.email).toLowerCase() === f) || identities.find((i: any) => String(i?.email).startsWith("*@") && f.endsWith(String(i.email).slice(1).toLowerCase()));
 }
+
+type AttachmentSpec = { blobId?: string; ref?: string; data?: string; type?: string; name?: string; disposition?: string; cid?: string };
+type ResolvedPart = { blobId: string; type: string; name?: string; disposition?: string; cid?: string; size?: number };
+
+/** Resolve one attachment spec to a Fastmail blob: a {blobId} passes through; a {ref} (sux /s/<uuid> CAS
+ *  handle) or {data} (base64) is STREAMED to the JMAP uploadUrl via doUpload — bytes never round-trip
+ *  through the model context. Returns the blobId + metadata for the multipart part (workflow §1e). */
+async function resolveAttachment(env: RtEnv, x: AttachmentSpec): Promise<ResolvedPart> {
+	if (x?.blobId) return { blobId: String(x.blobId), type: String(x?.type ?? "application/octet-stream"), name: x?.name, disposition: x?.disposition, cid: x?.cid };
+	const src = x?.ref ?? x?.data;
+	if (!src) throw new Error("each attachment needs blobId, ref (a sux /s/<uuid> CAS handle), or data (base64).");
+	const up = (await doUpload(env, String(src), String(x?.type ?? "application/octet-stream"))) as any;
+	return { blobId: String(up.blobId), type: String(up.type ?? x?.type ?? "application/octet-stream"), size: up.size, name: x?.name, disposition: x?.disposition, cid: x?.cid };
+}
+
+/** A text body + resolved attachment parts → a multipart/mixed bodyStructure (RFC 8621 §4.1.4: a part
+ *  with a blobId references an uploaded blob; the text part keeps its partId + bodyValue). */
+function multipartBody(text: string, parts: ResolvedPart[]): Record<string, unknown> {
+	return {
+		bodyStructure: { type: "multipart/mixed", subParts: [{ type: "text/plain", partId: "b" }, ...parts.map((p) => ({ blobId: p.blobId, type: p.type, ...(p.name ? { name: p.name } : {}), disposition: p.disposition ?? "attachment", ...(p.cid ? { cid: p.cid } : {}) }))] },
+		bodyValues: { b: { value: text } },
+	};
+}
+
+/** A stage-safe descriptor of an attachment set — names/types + source kind, no bytes, no upload. Binds
+ *  the stage→commit token to the exact attachment set without writing anything at preview time. */
+function attachDescriptors(atts: AttachmentSpec[]): Array<Record<string, unknown>> {
+	return atts.map((x) => ({ name: x?.name ?? null, type: x?.type ?? null, source: x?.blobId ? "blob" : x?.ref ? "ref" : x?.data ? "data" : "?" }));
+}
+
+const ATTACHMENTS_SCHEMA = {
+	type: "array",
+	description:
+		"Attachments. Each item: {blobId} (an already-uploaded Fastmail blob), {ref} (a sux /s/<uuid> CAS handle — the primary path; the bytes stream R2→JMAP and never pass through the model context), or {data} (base64, small files only). Optional name, type, disposition ('attachment'|'inline'), cid (for inline images).",
+	items: { type: "object", additionalProperties: false, properties: { blobId: { type: "string" }, ref: { type: "string" }, data: { type: "string" }, type: { type: "string" }, name: { type: "string" }, disposition: { type: "string", enum: ["attachment", "inline"] }, cid: { type: "string" } } },
+};
 
 function shapeRef(e: any, boxNames?: Record<string, string>): Record<string, unknown> {
 	const addr = (a: any[]): string => (Array.isArray(a) ? a.map((x) => x?.email).filter(Boolean).join(", ") : "");
@@ -258,6 +294,7 @@ const TOOLS: MailTool[] = [
 				subject: { type: "string" },
 				text: { type: "string", description: "Plain-text body." },
 				from: { type: "string", description: "Sender address (defaults to your primary identity)." },
+				attachments: ATTACHMENTS_SCHEMA,
 			},
 		},
 		run: async (env, a) => draftOrSend(env, a, false),
@@ -279,6 +316,7 @@ const TOOLS: MailTool[] = [
 				send_at: { type: "string", description: "Schedule the send for this ISO-8601 date-time (e.g. '2026-07-11T09:00:00Z'). Held via FUTURERELEASE; omit to send now." },
 				stage: { type: "boolean", description: "Preview only: returns {preview, commit_token} and sends NOTHING. Re-call with the token to commit." },
 				commit_token: { type: "string", description: "Commit a previously staged send (the payload must match what was staged)." },
+				attachments: ATTACHMENTS_SCHEMA,
 			},
 		},
 		run: async (env, a) => draftOrSend(env, a, true),
@@ -286,7 +324,7 @@ const TOOLS: MailTool[] = [
 	{
 		name: "mail_schedule",
 		description: "Schedule an email for future delivery (SMTP FUTURERELEASE). Like mail_send but `sendAt` (ISO-8601) is required — the message is held until then, cancelable with mail_unschedule. Routes through stage-then-commit (stage:true previews, commit_token commits).",
-		inputSchema: { type: "object", additionalProperties: false, required: ["to", "subject", "text", "sendAt"], properties: { to: { type: "array", items: { type: "string" } }, cc: { type: "array", items: { type: "string" } }, bcc: { type: "array", items: { type: "string" } }, subject: { type: "string" }, text: { type: "string" }, from: { type: "string", description: "Exact identity or any address at an owned *@domain." }, sendAt: { type: "string", description: "ISO-8601 date-time to release the message." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		inputSchema: { type: "object", additionalProperties: false, required: ["to", "subject", "text", "sendAt"], properties: { to: { type: "array", items: { type: "string" } }, cc: { type: "array", items: { type: "string" } }, bcc: { type: "array", items: { type: "string" } }, subject: { type: "string" }, text: { type: "string" }, from: { type: "string", description: "Exact identity or any address at an owned *@domain." }, sendAt: { type: "string", description: "ISO-8601 date-time to release the message." }, attachments: ATTACHMENTS_SCHEMA, stage: { type: "boolean" }, commit_token: { type: "string" } } },
 		run: async (env, a) => draftOrSend(env, { ...a, send_at: a?.sendAt }, true),
 	},
 	{
@@ -316,6 +354,22 @@ const TOOLS: MailTool[] = [
 				if (Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) return ok({ unscheduled: id });
 				if (setR?.notUpdated?.[id]?.type === "notFound") return ok({ unscheduled: id, note: "already canceled or released." });
 				return fail(`unschedule failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_upload",
+		description:
+			"Upload bytes to Fastmail once and get back a reusable {blobId} — reference it in mail_send/mail_draft attachments (blobId path), avoiding re-upload. Give a `ref` (a sux /s/<uuid> CAS handle — the primary path; streams R2→JMAP) or `data` (base64, small only). Returns {blobId, type, size}.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { ref: { type: "string", description: "A sux /s/<uuid> CAS handle to stream up." }, data: { type: "string", description: "Base64 bytes (small files only)." }, type: { type: "string", description: "MIME type (default application/octet-stream)." }, name: { type: "string" } } },
+		run: async (env, a) => {
+			const src = a?.ref ?? a?.data;
+			if (!src) return fail("mail_upload needs `ref` (a sux /s/<uuid> handle) or `data` (base64).");
+			try {
+				const up = (await doUpload(env, String(src), String(a?.type ?? "application/octet-stream"))) as any;
+				return ok({ blobId: up.blobId, type: up.type ?? a?.type ?? "application/octet-stream", size: up.size, ...(a?.name ? { name: a.name } : {}) });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
@@ -432,11 +486,19 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			bodyValues: { b: { value: String(a.text) } },
 		};
 
+		const atts: AttachmentSpec[] = Array.isArray(a?.attachments) ? a.attachments : [];
+
 		if (!send) {
+			// Drafting IS the action — resolve (stream-upload) attachments inline, no stage gate.
+			if (atts.length) {
+				const parts: ResolvedPart[] = [];
+				for (const x of atts) parts.push(await resolveAttachment(env, x));
+				Object.assign(draft, multipartBody(String(a.text), parts));
+			}
 			const resp = await jmapCall(env, { calls: [["Email/set", { create: { draft } }, "c"]] });
 			const created = resultFor(resp, "Email/set")?.created?.draft;
 			if (!created) return fail(`draft failed: ${JSON.stringify(resultFor(resp, "Email/set")?.notCreated ?? {})}`);
-			return ok({ drafted: true, id: created.id });
+			return ok({ drafted: true, id: created.id, ...(atts.length ? { attachments: atts.length } : {}) });
 		}
 
 		// Scheduled send: hold via the SMTP FUTURERELEASE extension (RFC 4865) — a HOLDFOR (seconds)
@@ -455,6 +517,13 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 		// with NO Fastmail write; a commit_token commits the identical payload. The reads above
 		// (Identity/Mailbox get) are safe during a stage — only this closure writes.
 		const doSend = async () => {
+			// Resolve (stream-upload) attachments HERE, at commit — never during a stage preview.
+			const sendDraft: Record<string, unknown> = { ...draft };
+			if (atts.length) {
+				const parts: ResolvedPart[] = [];
+				for (const x of atts) parts.push(await resolveAttachment(env, x));
+				Object.assign(sendDraft, multipartBody(String(a.text), parts));
+			}
 			const onSuccess: Record<string, unknown> = { "keywords/$draft": null };
 			if (draftsId) onSuccess[`mailboxIds/${draftsId}`] = null;
 			if (sentId) onSuccess[`mailboxIds/${sentId}`] = true;
@@ -465,13 +534,15 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 					rcptTo: [...to, ...(Array.isArray(a?.cc) ? a.cc : []), ...(Array.isArray(a?.bcc) ? a.bcc : [])].map((e) => ({ email: String(e) })),
 				};
 			}
-			const resp = await jmapCall(env, { allow_send: true, calls: [["Email/set", { create: { draft } }, "c"], ["EmailSubmission/set", { create: { sub: subCreate }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"]] });
+			const resp = await jmapCall(env, { allow_send: true, calls: [["Email/set", { create: { draft: sendDraft } }, "c"], ["EmailSubmission/set", { create: { sub: subCreate }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"]] });
 			const submitted = resultFor(resp, "EmailSubmission/set")?.created?.sub;
 			if (!submitted) throw new Error(`send failed: ${JSON.stringify(resultFor(resp, "EmailSubmission/set")?.notCreated ?? {})}`);
-			return holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), submissionId: submitted.id, to, note: "held via FUTURERELEASE — cancel with mail_unschedule." } : { sent: true, submissionId: submitted.id, to };
+			const base = { submissionId: submitted.id, to, ...(atts.length ? { attachments: atts.length } : {}) };
+			return holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), ...base, note: "held via FUTURERELEASE — cancel with mail_unschedule." } : { sent: true, ...base };
 		};
-		const payload = { from: identity.email, to, cc: a?.cc ?? null, bcc: a?.bcc ?? null, subject: String(a.subject), text: String(a.text), send_at: a?.send_at ?? null };
-		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(a?.cc ? { cc: a.cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(a.subject), body_chars: String(a.text).length, ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
+		const attDesc = attachDescriptors(atts);
+		const payload = { from: identity.email, to, cc: a?.cc ?? null, bcc: a?.bcc ?? null, subject: String(a.subject), text: String(a.text), send_at: a?.send_at ?? null, attachments: attDesc };
+		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(a?.cc ? { cc: a.cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(a.subject), body_chars: String(a.text).length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
 		const out = await staged(env, "mail_send", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, preview, doSend);
 		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {

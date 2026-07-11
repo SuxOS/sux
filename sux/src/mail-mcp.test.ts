@@ -63,6 +63,7 @@ function installFetch() {
 	const f = vi.fn(async (input: any, init?: any) => {
 		const url = String(input?.url ?? input);
 		if (url.includes("/jmap/session")) return json(SESSION);
+		if (url.includes("/jmap/upload/")) return json({ blobId: "blob-99", type: init?.headers?.["Content-Type"] ?? "application/octet-stream", size: 3 });
 		if (url.includes("/jmap/api")) {
 			const body = init?.body ? JSON.parse(init.body) : {};
 			const methodResponses = (body.methodCalls ?? []).map((c: any) => {
@@ -226,6 +227,29 @@ describe("mail_* ergonomic tools", () => {
 		expect(parse(await tool("mail_masked").run(env(), { action: "enable", id: "m1" }))).toMatchObject({ id: "m1", state: "enabled" });
 		const st = parse(await tool("mail_masked").run(env(), { action: "delete", id: "m1", stage: true }));
 		expect(st).toMatchObject({ staged: true, kind: "mail_masked_delete" }); // soft-delete previews, no write
+	});
+
+	it("mail_upload streams bytes to a reusable blobId (§1e)", async () => {
+		installFetch();
+		const up = parse(await tool("mail_upload").run(env(), { data: btoa("abc"), type: "text/plain", name: "n.txt" }));
+		expect(up).toMatchObject({ blobId: "blob-99", type: "text/plain", size: 3, name: "n.txt" });
+	});
+
+	it("mail_send attachments: stage previews names WITHOUT uploading; commit builds multipart/mixed (§1e)", async () => {
+		const e = env();
+		const f = installFetch();
+		const att = [{ data: btoa("abc"), type: "text/plain", name: "hi.txt" }];
+		lastEmailSet = null;
+		const st = parse(await tool("mail_send").run(e, { to: ["x@y.com"], subject: "s", text: "b", attachments: att, stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "mail_send" });
+		expect(st.preview.attachments[0]).toMatchObject({ name: "hi.txt", source: "data" });
+		expect(lastEmailSet).toBeNull(); // stage sent nothing
+		expect(f.mock.calls.some((c: any) => String(c[0]?.url ?? c[0]).includes("/jmap/upload/"))).toBe(false); // and uploaded nothing
+		const done = parse(await tool("mail_send").run(e, { to: ["x@y.com"], subject: "s", text: "b", attachments: att, commit_token: st.commit_token }));
+		expect(done).toMatchObject({ sent: true, attachments: 1 });
+		const bs = lastEmailSet.create.draft.bodyStructure;
+		expect(bs.type).toBe("multipart/mixed");
+		expect(bs.subParts[1]).toMatchObject({ blobId: "blob-99", disposition: "attachment", name: "hi.txt" }); // uploaded blob referenced
 	});
 
 	it("exposes the raw jmap escape hatch", () => {
