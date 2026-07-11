@@ -123,7 +123,7 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 | function | status | test | summary |
 |---|---|---|---|
 | `ace` | ✅ | ✓ | Ace Hardware product search via the mac render backend (a residential patched browser that renders A… |
-| `amazon` | ✅ | ✓ | Amazon product search / product-detail via the mac render backend (a residential patched browser tha… |
+| `amazon` | ✅ | ✓ | Amazon product search / product-detail via a rendered browser (Amazon has no usable free API and wal… |
 | `arxiv` | ✅ | ✓ | Search arXiv (keyless, free) — physics, math, CS, quantitative biology, and more preprints |
 | `bestbuy` | ✅ | ✓ | Best Buy Products API (official, free) — product search and detail across Best Buy's catalog |
 | `citation` | ✅ | ✓ | Reference management over a vault References/ folder |

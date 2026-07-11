@@ -1,4 +1,6 @@
+import { getClientToken, mintClientToken, type OAuthClientCreds } from "./_oauth";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { errMsg } from "./_util";
 
 // Tailscale API (api.tailscale.com/api/v2) — official REST control-plane read.
 // Auth is OAuth2 client-credentials (TAILSCALE_OAUTH_CLIENT_ID/SECRET); the
@@ -13,54 +15,30 @@ import { type Fn, failWith, ok, type RtEnv } from "../registry";
 // key secrets.
 
 const API = "https://api.tailscale.com/api/v2";
-const TOKEN_URL = `${API}/oauth/token`;
 const TOKEN_KEY = "sux:tailscale:token";
-
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
-
-/** Mint a fresh bearer token from the OAuth endpoint and cache it in KV. */
-async function mintToken(env: RtEnv): Promise<string> {
-	const body = new URLSearchParams({
-		grant_type: "client_credentials",
-		client_id: String(env.TAILSCALE_OAUTH_CLIENT_ID ?? ""),
-		client_secret: String(env.TAILSCALE_OAUTH_CLIENT_SECRET ?? ""),
-	});
-	const resp = await fetch(TOKEN_URL, {
-		method: "POST",
-		headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-		body,
-	});
-	if (!resp.ok) throw new Error(`OAuth token HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
-	const j: any = await resp.json();
-	const token = String(j?.access_token ?? "");
-	if (!token) throw new Error("OAuth token response had no access_token.");
-	// TTL = expires_in - 60 so the cached token is never used in its final minute;
-	// clamp to Cloudflare KV's 60s floor.
-	const ttl = Math.max(60, (Number(j?.expires_in) || 3600) - 60);
-	await env.OAUTH_KV.put(TOKEN_KEY, token, { expirationTtl: ttl });
-	return token;
-}
-
-/** Get a valid bearer token — from KV if present, else mint one and cache it. */
-async function getToken(env: RtEnv): Promise<string> {
-	const cached = await env.OAUTH_KV.get(TOKEN_KEY);
-	if (cached) return cached;
-	return mintToken(env);
-}
+// Tailscale wants client_id/secret in the body (not HTTP Basic) and sends no scope.
+const oauth = (env: RtEnv): OAuthClientCreds => ({
+	tokenUrl: `${API}/oauth/token`,
+	clientId: String(env.TAILSCALE_OAUTH_CLIENT_ID ?? ""),
+	clientSecret: String(env.TAILSCALE_OAUTH_CLIENT_SECRET ?? ""),
+	cacheKey: TOKEN_KEY,
+	auth: "body",
+	defaultTtl: 3600,
+});
 
 /**
  * GET an authed Tailscale endpoint, throwing a status-carrying error on failure.
  * Self-heals a revoked/rejected token: on a 401/403 it drops the cached token,
  * re-mints once, and retries — so a token invalidated before its TTL recovers
- * without waiting out the cache. The retry mints directly (not via getToken) so
- * KV read-after-delete eventual consistency can't hand back the rejected token.
+ * without waiting out the cache. The retry mints directly (not via getClientToken)
+ * so KV read-after-delete eventual consistency can't hand back the rejected token.
  */
 async function api(env: RtEnv, path: string): Promise<any> {
 	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
-	let resp = await get(await getToken(env));
+	let resp = await get(await getClientToken(env, oauth(env)));
 	if (resp.status === 401 || resp.status === 403) {
 		await env.OAUTH_KV.delete(TOKEN_KEY);
-		resp = await get(await mintToken(env));
+		resp = await get(await mintClientToken(env, oauth(env)));
 	}
 	if (!resp.ok) throw new Error(`Tailscale API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();

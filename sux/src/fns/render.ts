@@ -1,5 +1,5 @@
-import puppeteer from "@cloudflare/puppeteer";
-import { hmacHex, isBlockedTarget, smartFetch } from "../proxy";
+import { cfRender } from "../cf-render";
+import { hmacHex, isBlockedTarget } from "../proxy";
 import { type Fn, type RtEnv, type ToolResult, failWith, ok } from "../registry";
 import { clamp, deliverBytes, fromB64, inlineB64, isHttpUrl } from "./_util";
 
@@ -8,109 +8,6 @@ const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle0", "networkidle2"] 
 const PDF_FORMATS = ["A4", "Letter", "Legal", "A3"] as const;
 
 const MAX_OUTPUT_BYTES = 2_000_000;
-
-const BLOCKED_RESOURCE_TYPES = new Set(["image", "media", "font", "stylesheet"]);
-
-const STEALTH_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-const STEALTH_VIEWPORT = { width: 1280, height: 800, deviceScaleFactor: 1 } as const;
-const STEALTH_ACCEPT_LANGUAGE = "en-US,en;q=0.9";
-
-type PageForStealth = {
-	setUserAgent?(ua: string): void | Promise<void>;
-	setViewport?(v: { width: number; height: number; deviceScaleFactor?: number }): void | Promise<void>;
-	setExtraHTTPHeaders?(headers: Record<string, string>): void | Promise<void>;
-	evaluateOnNewDocument?(fn: (...args: unknown[]) => unknown): void | Promise<void>;
-};
-
-async function applyStealth(page: PageForStealth): Promise<void> {
-
-	try {
-		if (typeof page.setUserAgent === "function") await page.setUserAgent(STEALTH_UA);
-	} catch {
-		// setUserAgent unsupported on this build — skip; the (headless) UA remains.
-	}
-
-	try {
-		if (typeof page.setViewport === "function") await page.setViewport({ ...STEALTH_VIEWPORT });
-	} catch {
-		// setViewport unsupported — skip; the default viewport remains.
-	}
-
-	try {
-		if (typeof page.setExtraHTTPHeaders === "function") await page.setExtraHTTPHeaders({ "accept-language": STEALTH_ACCEPT_LANGUAGE });
-	} catch {
-		// setExtraHTTPHeaders unsupported — skip; Chromium's own accept-language stands.
-	}
-
-	try {
-		if (typeof page.evaluateOnNewDocument === "function") {
-			await page.evaluateOnNewDocument(() => {
-				Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-			});
-		}
-	} catch {
-		// evaluateOnNewDocument unsupported — skip; navigator.webdriver stays as-is.
-	}
-}
-
-const STRIP_RESPONSE_HEADERS = new Set(["content-encoding", "content-length", "transfer-encoding"]);
-
-type RequestForInterception = {
-	resourceType(): string;
-	url(): string;
-	method(): string;
-	headers(): Record<string, string>;
-	postData(): string | undefined;
-	abort(): void | Promise<void>;
-	continue(): void | Promise<void>;
-	respond(r: { status: number; headers: Record<string, string>; contentType?: string; body: Uint8Array }): void | Promise<void>;
-};
-
-async function handleRequest(
-	env: Parameters<typeof smartFetch>[0],
-	req: RequestForInterception,
-	opts: { residential: boolean; blockResources: boolean },
-): Promise<void> {
-
-	if (opts.blockResources && BLOCKED_RESOURCE_TYPES.has(req.resourceType())) {
-		try {
-			await req.abort();
-		} catch {
-			// Even abort can race a closing page; swallow so nothing is left un-handled.
-		}
-		return;
-	}
-	if (!opts.residential) {
-
-		try {
-			await req.continue();
-		} catch {
-			/* request already resolved by a teardown race — nothing to do. */
-		}
-		return;
-	}
-
-	try {
-		const r = await smartFetch(env, req.url(), { method: req.method(), headers: req.headers(), body: req.postData() });
-		const bytes = new Uint8Array(await r.arrayBuffer());
-		const headers: Record<string, string> = {};
-		let contentType: string | undefined;
-		r.headers.forEach((value, key) => {
-			const lower = key.toLowerCase();
-			if (lower === "content-type") contentType = value;
-			if (STRIP_RESPONSE_HEADERS.has(lower)) return;
-			headers[key] = value;
-		});
-		await req.respond({ status: r.status, headers, contentType, body: bytes });
-	} catch {
-
-		try {
-			await req.continue();
-		} catch {
-			/* already resolved elsewhere — safe to ignore. */
-		}
-	}
-}
 
 const MAC_TIMEOUT_MARGIN_MS = 10_000;
 const MAC_TIMEOUT_CAP_MS = 70_000;
@@ -268,45 +165,25 @@ export const render: Fn = {
 			);
 		}
 
-		if (!env.BROWSER) return failWith("not_configured", "Browser Rendering is not configured (BROWSER binding).");
-
-		let browser: Awaited<ReturnType<typeof puppeteer.launch>> | undefined;
-		try {
-			browser = await puppeteer.launch(env.BROWSER);
-			const page = await browser.newPage();
-
-			if (stealth) await applyStealth(page as unknown as PageForStealth);
-
-			if (residential || blockResources) {
-				await page.setRequestInterception(true);
-				page.on("request", (req: RequestForInterception) => {
-					void handleRequest(env, req, { residential, blockResources });
-				});
-			}
-			await page.goto(url, { waitUntil, timeout });
-			if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
-			if (as === "screenshot") {
-				const shot = await page.screenshot({ fullPage });
-				const bytes = shot instanceof Uint8Array ? shot : new Uint8Array(shot as ArrayBuffer);
-
-				return deliverBytes(env, bytes, "image/png", args?.delivery ?? "url", () => inlineB64(bytes, "image/png"));
-			}
-			if (as === "pdf") {
-				const doc = await page.pdf({ format, landscape, printBackground });
-				const bytes = doc instanceof Uint8Array ? doc : new Uint8Array(doc as ArrayBuffer);
-
-				return deliverBytes(env, bytes, "application/pdf", args?.delivery ?? "url", () => inlineB64(bytes, "application/pdf"));
-			}
-
-			const content =
-				as === "text"
-					? await page.evaluate(() => (globalThis as unknown as { document: { body: { innerText: string } } }).document.body.innerText)
-					: await page.content();
-			return ok(clamp(content, MAX_OUTPUT_BYTES));
-		} catch (e) {
-			return failWith("upstream_error", `render failed: ${String((e as Error).message ?? e)}`);
-		} finally {
-			if (browser) await browser.close();
+		const result = await cfRender(env, {
+			url,
+			as,
+			wait_until: waitUntil,
+			wait_ms: waitMs,
+			block_resources: blockResources,
+			residential,
+			stealth,
+			timeout_ms: timeout,
+			full_page: fullPage,
+			format,
+			landscape,
+			print_background: printBackground,
+		});
+		if (!result.ok) return failWith("upstream_error", result.error);
+		// Screenshot/pdf come back as raw bytes to deliver; html/text as a string.
+		if ("bytes" in result) {
+			return deliverBytes(env, result.bytes, result.contentType, args?.delivery ?? "url", () => inlineB64(result.bytes, result.contentType));
 		}
+		return ok(clamp(result.body, MAX_OUTPUT_BYTES));
 	},
 };

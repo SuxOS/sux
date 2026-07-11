@@ -5,6 +5,8 @@ import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
 import { doUpload, jstr, scopeProbe } from "./fns/_jmap";
 import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, hasCalDav, listCalendars, parseICal, reportObjects } from "./fns/_caldav";
+import { htmlToMd } from "./fns/_markup";
+import { errMsg } from "./fns/_util";
 
 // The mail MCP server — the ergonomic Fastmail surface, served at /mail/mcp behind
 // the same workers-oauth-provider flow, so it appears as its own "mail" connector in
@@ -18,7 +20,6 @@ import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, calda
 // bodies; exactly one deliberate read (mail_read) returns the body. Send/destroy are
 // the sensitive acts — mail_send sets allow_send; nothing here permanently destroys.
 
-const errMsg = (e: unknown): string => String((e as Error)?.message ?? e);
 
 /** Call the raw jmap conduit and parse its JSON envelope, throwing its error text on failure. */
 async function jmapCall(env: RtEnv, args: Record<string, unknown>): Promise<{ methodResponses: any[]; sessionState?: string }> {
@@ -176,19 +177,49 @@ function shapeRef(e: any, boxNames?: Record<string, string>): Record<string, unk
 	};
 }
 
-/** Extract plain-text body from a fetched Email (textBody parts → bodyValues). */
+/** Extract a readable plain-text body from a fetched Email. Prefers textBody
+ * parts; for an HTML-only message it falls back to htmlBody, converting the HTML
+ * to Markdown-ish text (readable, link-preserving) rather than dumping raw tags.
+ * The htmlBody parts only carry a `value` when the Email/get set fetchHTMLBodyValues —
+ * otherwise this fallback silently returned empty (the bug this fixes). */
 function extractBody(e: any): string {
 	const values = e?.bodyValues ?? {};
-	const parts = Array.isArray(e?.textBody) && e.textBody.length ? e.textBody : e?.htmlBody;
-	if (Array.isArray(parts)) {
-		const chunks = parts.map((p: any) => values[p?.partId]?.value).filter(Boolean);
-		if (chunks.length) return chunks.join("\n");
-	}
-	// Fall back to any bodyValue present.
+	const chunksFor = (parts: any): string[] => (Array.isArray(parts) ? parts.map((p: any) => values[p?.partId]?.value).filter(Boolean) : []);
+	const text = chunksFor(e?.textBody);
+	if (text.length) return text.join("\n");
+	const html = chunksFor(e?.htmlBody);
+	if (html.length) return htmlToMd(html.join("\n"));
+	// Last resort: any bodyValue present. Convert it if it looks like HTML.
 	const anyVal = Object.values(values)
 		.map((v: any) => v?.value)
-		.filter(Boolean);
-	return anyVal.join("\n");
+		.filter(Boolean)
+		.join("\n");
+	return /<[a-z!][\s\S]*>/i.test(anyVal) ? htmlToMd(anyVal) : anyVal;
+}
+
+/** "Name <email>" for a JMAP address array — the human-readable form used in quote/forward blocks. */
+function addrLine(arr: any): string {
+	return Array.isArray(arr) ? arr.map((x: any) => (x?.name ? `${x.name} <${x?.email}>` : String(x?.email ?? ""))).filter(Boolean).join(", ") : "";
+}
+const emailsOf = (arr: any): string[] => (Array.isArray(arr) ? arr.map((x: any) => String(x?.email ?? "")).filter(Boolean) : []);
+
+/** Ensure a subject carries the reply/forward tag exactly once (case-insensitive, "Re:"/"Fwd:"). */
+function tagSubject(subject: string, tag: "Re:" | "Fwd:"): string {
+	const s = subject.trim();
+	const re = tag === "Re:" ? /^re:/i : /^(fwd?|fw):/i;
+	return re.test(s) ? s : `${tag} ${s}`;
+}
+
+/** Compose the reply/forward body: the author's text, then the attribution + quoted original. */
+function quoteBody(mode: string, text: string, src: any): string {
+	const orig = extractBody(src);
+	if (mode === "forward") {
+		const header = ["---------- Forwarded message ----------", `From: ${addrLine(src?.from)}`, `Date: ${src?.receivedAt ?? ""}`, `Subject: ${src?.subject ?? ""}`, `To: ${addrLine(src?.to)}`].join("\n");
+		return `${text}\n\n${header}\n\n${orig}`.trimStart();
+	}
+	const attribution = `On ${src?.receivedAt ?? "an earlier date"}, ${addrLine(src?.from)} wrote:`;
+	const quoted = orig.split("\n").map((l) => `> ${l}`).join("\n");
+	return `${text}\n\n${attribution}\n${quoted}`.trimStart();
 }
 
 /** Fetch the mailbox role→id map (inbox/drafts/sent/archive/trash/junk). */
@@ -279,7 +310,7 @@ const TOOLS: MailTool[] = [
 			try {
 				const resp = await jmapCall(env, {
 					calls: [
-						["Email/get", { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "mailboxIds", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: false, maxBodyValueBytes: 200_000 }, "g"],
+						["Email/get", { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "mailboxIds", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: true, maxBodyValueBytes: 200_000 }, "g"],
 						["Mailbox/get", { properties: ["id", "name"] }, "m"],
 					],
 				});
@@ -348,37 +379,41 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "mail_draft",
-		description: "Save a draft (does NOT send). Returns the created message id. Provide to/subject/text; cc/bcc/from optional.",
+		description: "Save a draft (does NOT send). Returns the created message id. Provide to/subject/text for a fresh message; cc/bcc/from optional. To compose INTO an existing conversation set `mode` (reply/reply-all/forward) + `reply_to` (the email id) — threading headers, the Re:/Fwd: subject, recipients, and the quoted original are filled in for you (override any by passing it explicitly).",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
-			required: ["to", "subject", "text"],
+			required: ["text"],
 			properties: {
-				to: { type: "array", items: { type: "string" }, description: "Recipient email addresses." },
+				to: { type: "array", items: { type: "string" }, description: "Recipient email addresses. Optional for reply/reply-all (derived from the original); required for a fresh message or a forward." },
 				cc: { type: "array", items: { type: "string" } },
 				bcc: { type: "array", items: { type: "string" } },
-				subject: { type: "string" },
-				text: { type: "string", description: "Plain-text body." },
+				subject: { type: "string", description: "Optional when replying/forwarding — the Re:/Fwd: subject is derived from the original." },
+				text: { type: "string", description: "Plain-text body. When replying/forwarding, the quoted original is appended below it." },
 				from: { type: "string", description: "Sender address (defaults to your primary identity)." },
 				attachments: ATTACHMENTS_SCHEMA,
+				mode: { type: "string", enum: ["reply", "reply-all", "forward"], description: "Compose into an existing thread: reply (the sender), reply-all (sender + all recipients), or forward (needs `to`). Requires `reply_to`." },
+				reply_to: { type: "string", description: "The email id being replied to or forwarded (from mail_search/mail_read). Required when `mode` is set." },
 			},
 		},
 		run: async (env, a) => draftOrSend(env, a, false),
 	},
 	{
 		name: "mail_send",
-		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text; cc/bcc/from optional. Dispatches immediately UNLESS you pass `send_at` (an ISO-8601 date-time), which SCHEDULES it via SMTP FUTURERELEASE — held until then, cancelable with mail_scheduled. Review before sending; there's no undo once dispatched.",
+		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text for a fresh message; cc/bcc/from optional. Reply or forward into an existing thread with `mode` (reply/reply-all/forward) + `reply_to` (the email id) — threading headers, the Re:/Fwd: subject, recipients, and the quoted original are filled in. Dispatches immediately UNLESS you pass `send_at` (an ISO-8601 date-time), which SCHEDULES it via SMTP FUTURERELEASE — held until then, cancelable with mail_unschedule. Review before sending; there's no undo once dispatched.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
-			required: ["to", "subject", "text"],
+			required: ["text"],
 			properties: {
-				to: { type: "array", items: { type: "string" } },
+				to: { type: "array", items: { type: "string" }, description: "Recipient email addresses. Optional for reply/reply-all (derived from the original); required for a fresh message or a forward." },
 				cc: { type: "array", items: { type: "string" } },
 				bcc: { type: "array", items: { type: "string" } },
-				subject: { type: "string" },
-				text: { type: "string", description: "Plain-text body." },
+				subject: { type: "string", description: "Optional when replying/forwarding — the Re:/Fwd: subject is derived from the original." },
+				text: { type: "string", description: "Plain-text body. When replying/forwarding, the quoted original is appended below it." },
 				from: { type: "string", description: "Sender address — exact identity or any address at an owned *@domain (send-as-any). Defaults to your primary identity." },
+				mode: { type: "string", enum: ["reply", "reply-all", "forward"], description: "Compose into an existing thread: reply (the sender), reply-all (sender + all recipients), or forward (needs `to`). Requires `reply_to`." },
+				reply_to: { type: "string", description: "The email id being replied to or forwarded (from mail_search/mail_read). Required when `mode` is set." },
 				send_at: { type: "string", description: "Schedule the send for this ISO-8601 date-time (e.g. '2026-07-11T09:00:00Z'). Held via FUTURERELEASE; omit to send now." },
 				stage: { type: "boolean", description: "Preview only: returns {preview, commit_token} and sends NOTHING. Re-call with the token to commit." },
 				commit_token: { type: "string", description: "Commit a previously staged send (the payload must match what was staged)." },
@@ -796,11 +831,44 @@ const TOOLS: MailTool[] = [
 	},
 ];
 
-/** Shared draft/send: resolve identity + drafts/sent mailboxes, build the batch, dispatch. */
+/** Shared draft/send: resolve identity + drafts/sent mailboxes, apply reply/forward
+ * threading, build the batch, dispatch. */
 async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResult> {
-	const to = Array.isArray(a?.to) ? a.to : a?.to ? [a.to] : [];
-	if (!to.length || !a?.subject || a?.text === undefined) return fail("provide to[], subject, and text.");
+	const mode = a?.mode ? String(a.mode) : "";
+	if (mode && !["reply", "reply-all", "forward"].includes(mode)) return fail("mode must be reply, reply-all, or forward.");
+	let subject = a?.subject !== undefined ? String(a.subject) : undefined;
+	let to: string[] = Array.isArray(a?.to) ? a.to.map(String) : a?.to ? [String(a.to)] : [];
+	const cc: string[] = Array.isArray(a?.cc) ? a.cc.map(String) : [];
+	const bcc: string[] = Array.isArray(a?.bcc) ? a.bcc.map(String) : [];
+	let bodyText = a?.text !== undefined ? String(a.text) : "";
+	const threadHeaders: Record<string, unknown> = {};
 	try {
+		// Reply/forward: pull the source message so subject, recipients, threading
+		// headers, and the quoted original are derived rather than hand-passed.
+		let src: any = null;
+		if (mode) {
+			const srcId = a?.reply_to ? String(a.reply_to) : "";
+			if (!srcId) return fail(`mode=${mode} requires \`reply_to\` — the email id to ${mode === "forward" ? "forward" : "reply to"}.`);
+			const r = await jmapCall(env, {
+				method: "Email/get",
+				args: { ids: [srcId], properties: ["messageId", "inReplyTo", "references", "subject", "from", "to", "cc", "replyTo", "receivedAt", "textBody", "htmlBody", "bodyValues"], fetchTextBodyValues: true, fetchHTMLBodyValues: true, maxBodyValueBytes: 200_000 },
+			});
+			src = resultFor(r, "Email/get")?.list?.[0];
+			if (!src) return fail(`no message '${srcId}' to ${mode}.`);
+			if (subject === undefined) subject = tagSubject(String(src.subject ?? ""), mode === "forward" ? "Fwd:" : "Re:");
+			bodyText = quoteBody(mode, bodyText, src);
+			if (mode !== "forward") {
+				// RFC 5322 threading: In-Reply-To = the original's Message-ID; References =
+				// its chain + that Message-ID (JMAP's convenience props, ids without <>).
+				const srcMsgIds = Array.isArray(src.messageId) ? src.messageId.filter(Boolean) : [];
+				if (srcMsgIds.length) threadHeaders.inReplyTo = srcMsgIds;
+				const refs = [...(Array.isArray(src.references) ? src.references : []), ...srcMsgIds].filter(Boolean);
+				if (refs.length) threadHeaders.references = refs;
+				// Recipients default to the original's reply target (Reply-To, else From).
+				if (!to.length) to = emailsOf(src.replyTo).length ? emailsOf(src.replyTo) : emailsOf(src.from);
+			}
+		}
+
 		// One round-trip to resolve identity + mailbox roles.
 		const meta = await jmapCall(env, { calls: [["Identity/get", {}, "i"], ["Mailbox/get", {}, "m"]] });
 		const identities = resultFor(meta, "Identity/get")?.list ?? [];
@@ -820,6 +888,21 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			identity = identities[0];
 		}
 		if (!identity) return fail("no sending identity found.");
+
+		if (mode === "reply-all" && src) {
+			// Everyone on the original (To + Cc) except ourself and the primary To → Cc.
+			const seen = new Set([String(identity.email).toLowerCase(), ...to.map((x) => x.toLowerCase()), ...cc.map((x) => x.toLowerCase())]);
+			for (const e of [...emailsOf(src.to), ...emailsOf(src.cc)]) {
+				const k = e.toLowerCase();
+				if (!seen.has(k)) {
+					cc.push(e);
+					seen.add(k);
+				}
+			}
+		}
+
+		if (!to.length) return fail(mode ? `mode=${mode} resolved no recipient — pass \`to\`.` : "provide to[] (recipients).");
+		if (subject === undefined) return fail("provide a subject.");
 		const addrs = (xs: string[]) => xs.map((e) => ({ email: String(e) }));
 
 		const draft: Record<string, unknown> = {
@@ -827,11 +910,12 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			keywords: { $draft: true },
 			from: [{ email: identity.email, name: identity.name }],
 			to: addrs(to),
-			...(Array.isArray(a?.cc) && a.cc.length ? { cc: addrs(a.cc) } : {}),
-			...(Array.isArray(a?.bcc) && a.bcc.length ? { bcc: addrs(a.bcc) } : {}),
-			subject: String(a.subject),
+			...(cc.length ? { cc: addrs(cc) } : {}),
+			...(bcc.length ? { bcc: addrs(bcc) } : {}),
+			subject: String(subject),
+			...threadHeaders,
 			bodyStructure: { type: "text/plain", partId: "b" },
-			bodyValues: { b: { value: String(a.text) } },
+			bodyValues: { b: { value: bodyText } },
 		};
 
 		const atts: AttachmentSpec[] = Array.isArray(a?.attachments) ? a.attachments : [];
@@ -841,7 +925,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			if (atts.length) {
 				const parts: ResolvedPart[] = [];
 				for (const x of atts) parts.push(await resolveAttachment(env, x));
-				Object.assign(draft, multipartBody(String(a.text), parts));
+				Object.assign(draft, multipartBody(bodyText, parts));
 			}
 			const resp = await jmapCall(env, { calls: [["Email/set", { create: { draft } }, "c"]] });
 			const created = resultFor(resp, "Email/set")?.created?.draft;
@@ -851,7 +935,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 
 		// Scheduled send: hold via the SMTP FUTURERELEASE extension (RFC 4865) — a HOLDFOR (seconds)
 		// parameter on the submission envelope's mailFrom. Fastmail holds the message (undoStatus
-		// 'pending') and releases it at send_at; cancel via mail_scheduled. A held submission needs
+		// 'pending') and releases it at send_at; cancel via mail_unschedule. A held submission needs
 		// an explicit rcptTo envelope (it overrides the auto-derived recipients).
 		let holdFor = 0;
 		if (a?.send_at !== undefined && a?.send_at !== null && a?.send_at !== "") {
@@ -870,7 +954,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			if (atts.length) {
 				const parts: ResolvedPart[] = [];
 				for (const x of atts) parts.push(await resolveAttachment(env, x));
-				Object.assign(sendDraft, multipartBody(String(a.text), parts));
+				Object.assign(sendDraft, multipartBody(bodyText, parts));
 			}
 			const onSuccess: Record<string, unknown> = { "keywords/$draft": null };
 			if (draftsId) onSuccess[`mailboxIds/${draftsId}`] = null;
@@ -889,8 +973,8 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			return holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), ...base, note: "held via FUTURERELEASE — cancel with mail_unschedule." } : { sent: true, ...base };
 		};
 		const attDesc = attachDescriptors(atts);
-		const payload = { from: identity.email, to, cc: a?.cc ?? null, bcc: a?.bcc ?? null, subject: String(a.subject), text: String(a.text), send_at: a?.send_at ?? null, attachments: attDesc };
-		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(a?.cc ? { cc: a.cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(a.subject), body_chars: String(a.text).length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
+		const payload = { from: identity.email, to, cc: a?.cc ?? null, bcc: a?.bcc ?? null, subject: String(subject), text: bodyText, send_at: a?.send_at ?? null, attachments: attDesc };
+		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(a?.cc ? { cc: a.cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(subject), body_chars: bodyText.length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
 		const out = await staged(env, "mail_send", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, preview, doSend);
 		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {
