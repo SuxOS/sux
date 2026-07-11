@@ -90,16 +90,20 @@ async function scopeGate(env: RtEnv, cap: "contacts" | "vacationresponse" | "quo
 	return `The current FASTMAIL_TOKEN doesn't grant the '${cap}' JMAP capability, so ${label} isn't reachable. Re-mint the token with ${cap} scope (Fastmail → Settings → Privacy & Security → API tokens) and retry — the verb is otherwise ready.`;
 }
 
-/** Shape a JMAP Contact record to a token-cheap reference. */
+/** Full name from JSCard name.components (RFC 9553) when there's no `full`. */
+function nameFromComponents(components: any): string {
+	if (!Array.isArray(components)) return "";
+	const by = (kind: string) => components.find((c: any) => c?.kind === kind)?.value;
+	return [by("given"), by("surname")].filter(Boolean).join(" ");
+}
+
+/** Shape a JMAP ContactCard (RFC 9610/JSCard — Fastmail's contacts object) to a token-cheap reference. */
 function shapeContact(c: any): Record<string, unknown> {
-	const name = [c?.firstName, c?.lastName].filter(Boolean).join(" ") || c?.company || c?.emails?.[0]?.value || "(no name)";
-	return {
-		id: c?.id,
-		name,
-		...(c?.company ? { company: c.company } : {}),
-		emails: Array.isArray(c?.emails) ? c.emails.map((e: any) => e?.value).filter(Boolean) : [],
-		phones: Array.isArray(c?.phones) ? c.phones.map((p: any) => p?.value).filter(Boolean) : [],
-	};
+	const emails = c?.emails ? Object.values(c.emails).map((e: any) => e?.address).filter(Boolean) : [];
+	const phones = c?.phones ? Object.values(c.phones).map((p: any) => p?.number).filter(Boolean) : [];
+	const company = c?.organizations ? (Object.values(c.organizations)[0] as any)?.name : undefined;
+	const name = c?.name?.full || nameFromComponents(c?.name?.components) || company || emails[0] || "(no name)";
+	return { id: c?.id, name, ...(company ? { company } : {}), emails, phones };
 }
 
 /** Pick a target calendar collection: the caller's href, else the first non-task (or task) calendar. */
@@ -125,14 +129,20 @@ function shapeCalObject(o: { href: string; etag: string | null; ical: string }):
 	return { ...base, start: p.DTSTART ?? null, end: p.DTEND ?? null, location: p.LOCATION ?? undefined, description: p.DESCRIPTION ?? undefined };
 }
 
-/** Map ergonomic contact args (plain strings) to a JMAP Contact card patch — only the provided fields. */
+/** Map ergonomic contact args (plain strings) to a JSCard ContactCard patch — only the provided fields.
+ *  @type/version are added at create time; an update patch carries just the changed fields. */
 function contactCard(a: any): Record<string, unknown> {
 	const card: Record<string, unknown> = {};
-	if (a?.firstName !== undefined) card.firstName = String(a.firstName);
-	if (a?.lastName !== undefined) card.lastName = String(a.lastName);
-	if (a?.company !== undefined) card.company = String(a.company);
-	if (Array.isArray(a?.emails)) card.emails = a.emails.map((e: string) => ({ type: "other", value: String(e) }));
-	if (Array.isArray(a?.phones)) card.phones = a.phones.map((p: string) => ({ type: "other", value: String(p) }));
+	const given = a?.firstName !== undefined ? String(a.firstName) : undefined;
+	const surname = a?.lastName !== undefined ? String(a.lastName) : undefined;
+	if (given !== undefined || surname !== undefined) {
+		const components = [...(given !== undefined ? [{ kind: "given", value: given }] : []), ...(surname !== undefined ? [{ kind: "surname", value: surname }] : [])];
+		const full = [given, surname].filter(Boolean).join(" ");
+		card.name = { components, ...(full ? { full } : {}) };
+	}
+	if (a?.company !== undefined) card.organizations = { o1: { "@type": "Organization", name: String(a.company) } };
+	if (Array.isArray(a?.emails)) card.emails = Object.fromEntries(a.emails.map((e: string, i: number) => [`e${i + 1}`, { "@type": "EmailAddress", address: String(e) }]));
+	if (Array.isArray(a?.phones)) card.phones = Object.fromEntries(a.phones.map((p: string, i: number) => [`p${i + 1}`, { "@type": "Phone", number: String(p) }]));
 	return card;
 }
 
@@ -549,8 +559,8 @@ const TOOLS: MailTool[] = [
 			try {
 				const limit = clamp(a?.limit, 1, 100, 25);
 				const filter = a?.text ? { text: String(a.text) } : {};
-				const resp = await jmapCall(env, { calls: [["Contact/query", { filter, limit }, "q"], ["Contact/get", { "#ids": { resultOf: "q", name: "Contact/query", path: "/ids" } }, "g"]] });
-				const list = resultFor(resp, "Contact/get")?.list ?? [];
+				const resp = await jmapCall(env, { calls: [["ContactCard/query", { filter, limit }, "q"], ["ContactCard/get", { "#ids": { resultOf: "q", name: "ContactCard/query", path: "/ids" } }, "g"]] });
+				const list = resultFor(resp, "ContactCard/get")?.list ?? [];
 				return ok({ count: list.length, contacts: list.map(shapeContact) });
 			} catch (e) {
 				return fail(errMsg(e));
@@ -566,8 +576,8 @@ const TOOLS: MailTool[] = [
 			if (gate) return fail(gate);
 			if (!a?.id) return fail("contact_get requires an `id`.");
 			try {
-				const resp = await jmapCall(env, { calls: [["Contact/get", { ids: [String(a.id)] }, "g"]] });
-				const c = resultFor(resp, "Contact/get")?.list?.[0];
+				const resp = await jmapCall(env, { calls: [["ContactCard/get", { ids: [String(a.id)] }, "g"]] });
+				const c = resultFor(resp, "ContactCard/get")?.list?.[0];
 				if (!c) return fail(`No contact '${a.id}'.`);
 				return ok({ ...shapeContact(c), raw: c });
 			} catch (e) {
@@ -586,9 +596,9 @@ const TOOLS: MailTool[] = [
 				const card = contactCard(a);
 				if (!Object.keys(card).length) return fail("contact_create needs at least one of firstName/lastName/company/emails/phones.");
 				const mutate = async () => {
-					const resp = await jmapCall(env, { calls: [["Contact/set", { create: { c: card } }, "s"]] });
-					const created = resultFor(resp, "Contact/set")?.created?.c;
-					if (!created) throw new Error(`contact create failed: ${JSON.stringify(resultFor(resp, "Contact/set")?.notCreated ?? {})}`);
+					const resp = await jmapCall(env, { calls: [["ContactCard/set", { create: { c: { "@type": "Card", version: "1.0", ...card } } }, "s"]] });
+					const created = resultFor(resp, "ContactCard/set")?.created?.c;
+					if (!created) throw new Error(`contact create failed: ${JSON.stringify(resultFor(resp, "ContactCard/set")?.notCreated ?? {})}`);
 					return { created: { id: created.id, ...shapeContact({ ...card, id: created.id }) } };
 				};
 				const out = await staged(env, "contact_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, card, { action: "create contact", ...card }, mutate);
@@ -611,8 +621,8 @@ const TOOLS: MailTool[] = [
 				const patch = contactCard(a);
 				if (!Object.keys(patch).length) return fail("contact_update needs at least one field to change.");
 				const mutate = async () => {
-					const resp = await jmapCall(env, { calls: [["Contact/set", { update: { [id]: patch } }, "s"]] });
-					const setR = resultFor(resp, "Contact/set");
+					const resp = await jmapCall(env, { calls: [["ContactCard/set", { update: { [id]: patch } }, "s"]] });
+					const setR = resultFor(resp, "ContactCard/set");
 					if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) throw new Error(`contact update failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
 					return { updated: id, patch };
 				};
@@ -634,8 +644,8 @@ const TOOLS: MailTool[] = [
 			try {
 				const id = String(a.id);
 				const mutate = async () => {
-					const resp = await jmapCall(env, { allow_destroy: true, calls: [["Contact/set", { destroy: [id] }, "s"]] });
-					const setR = resultFor(resp, "Contact/set");
+					const resp = await jmapCall(env, { allow_destroy: true, calls: [["ContactCard/set", { destroy: [id] }, "s"]] });
+					const setR = resultFor(resp, "ContactCard/set");
 					if (!(setR?.destroyed ?? []).includes(id)) throw new Error(`contact delete failed: ${JSON.stringify(setR?.notDestroyed ?? {})}`);
 					return { deleted: id };
 				};

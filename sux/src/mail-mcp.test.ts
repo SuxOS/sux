@@ -59,9 +59,9 @@ function answer([method, args]: any): any {
 	if (method === "VacationResponse/get") return [method, { list: [{ id: "singleton", isEnabled: false, subject: "Away", textBody: "OOO" }] }, "x"];
 	if (method === "VacationResponse/set") return [method, { updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined }, "x"];
 	if (method === "Quota/get") return [method, { list: [{ id: "q1", name: "Mail", used: 100, limit: 1000, scope: "account", resourceType: "octets" }] }, "x"];
-	if (method === "Contact/query") return [method, { ids: ["c1"] }, "x"];
-	if (method === "Contact/get") return [method, { list: [{ id: "c1", firstName: "Ada", lastName: "Lovelace", emails: [{ type: "personal", value: "ada@x.com" }], phones: [] }] }, "x"];
-	if (method === "Contact/set") return [method, { created: args?.create ? { c: { id: "c2" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined, destroyed: args?.destroy ?? undefined }, "x"];
+	if (method === "ContactCard/query") return [method, { ids: ["c1"] }, "x"];
+	if (method === "ContactCard/get") return [method, { list: [{ id: "c1", name: { full: "Ada Lovelace" }, emails: { e1: { address: "ada@x.com" } }, phones: {} }] }, "x"];
+	if (method === "ContactCard/set") return [method, { created: args?.create ? { c: { id: "c2" } } : undefined, updated: args?.update ? Object.fromEntries(Object.keys(args.update).map((k) => [k, null])) : undefined, destroyed: args?.destroy ?? undefined }, "x"];
 	return [method, {}, "x"];
 }
 

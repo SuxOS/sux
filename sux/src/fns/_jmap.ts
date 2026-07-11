@@ -166,7 +166,7 @@ export function capForMethod(method: string, session?: JmapSession): string | nu
 	if (p === "Identity" || p === "EmailSubmission") return CAP_SUBMISSION;
 	if (p === "VacationResponse") return CAP_VACATION;
 	if (p === "MaskedEmail") return CAP_MASKEDEMAIL;
-	if (p === "Contact" || p === "AddressBook" || p === "ContactGroup") return session ? contactsCap(session) : CAP_CONTACTS;
+	if (p === "Contact" || p === "ContactCard" || p === "AddressBook" || p === "ContactGroup") return session ? contactsCap(session) : CAP_CONTACTS;
 	if (p.startsWith("Calendar")) return CAP_CALENDARS;
 	if (p === "Quota") return CAP_QUOTA;
 	if (p === "Core") return CAP_CORE;
@@ -185,7 +185,7 @@ export function deriveUsing(methods: string[], session: JmapSession, callerUsing
 		}
 		if (p === "VacationResponse") set.add(CAP_VACATION);
 		if (p === "MaskedEmail") set.add(CAP_MASKEDEMAIL);
-		if (p === "Contact" || p === "AddressBook" || p === "ContactGroup") set.add(contactsCap(session));
+		if (p === "Contact" || p === "ContactCard" || p === "AddressBook" || p === "ContactGroup") set.add(contactsCap(session));
 		if (p.startsWith("Calendar")) set.add(CAP_CALENDARS);
 		if (p === "Quota") set.add(CAP_QUOTA);
 	}
