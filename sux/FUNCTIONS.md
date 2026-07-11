@@ -158,7 +158,7 @@ Status: ✅ working · 🟡 planned (needs a binding/WASM not yet wired).
 | `stackexchange` | ✅ | ✓ | Search Stack Exchange (keyless, free) — questions across any network site (default stackoverflow; al… |
 | `tailscale` | ✅ | ✓ | Tailscale API (official) — read your tailnet's control plane |
 | `tavily` | ✅ | ✓ | Tavily (LLM-oriented web search, free 1k/mo) — returns a synthesized `answer` plus ranked results fo… |
-| `todoist` | ✅ | ✓ | Todoist tasks (REST v2) |
+| `todoist` | ✅ | ✓ | Todoist as a BATCH/PIPELINE primitive — bulk array-in operations for use inside pipe/batch, not 50 i… |
 | `voice` | ✅ | ✓ | AI text-restyler |
 | `walmart` | ✅ | ✓ | Walmart product search and detail via the mac render backend (a residential patched browser that sol… |
 | `watch` | ✅ | ✓ | Detect whether a page's content changed since the last check |

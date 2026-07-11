@@ -77,6 +77,7 @@ function installFetch(opts?: { onApi?: (body: any, n: number) => Response; sessi
 		}
 		if (url.includes("/jmap/download")) {
 			calls.download++;
+			if (url.includes("BIG")) return new Response("x", { status: 200, headers: { "content-type": "application/octet-stream", "content-length": "99999999" } }); // declared > 50MB cap
 			return new Response(new Uint8Array([104, 105]).buffer, { status: 200, headers: { "content-type": "application/octet-stream" } });
 		}
 		return json({}, 404);
@@ -106,6 +107,22 @@ describe("_jmap unit helpers", () => {
 		expect(u).toContain("urn:ietf:params:jmap:submission");
 		expect(u).toContain("urn:ietf:params:jmap:mail"); // over-declared
 		expect(u).toContain("custom:urn"); // unioned, never suppressed
+	});
+
+	it("deriveUsing emits the capability for each method family — else Fastmail rejects 'using not specified'", () => {
+		// Regression: Quota/get shipped without urn:…:quota because deriveUsing lacked the branch,
+		// even though capForMethod had it. A mock that ignores `using` can't catch this — the live
+		// server does. capForMethod and deriveUsing must agree for every method.
+		const cases: Array<[string, string]> = [
+			["Quota/get", "urn:ietf:params:jmap:quota"],
+			["VacationResponse/set", "urn:ietf:params:jmap:vacationresponse"],
+			["Contact/query", "urn:ietf:params:jmap:contacts"],
+			["CalendarEvent/get", "urn:ietf:params:jmap:calendars"],
+		];
+		for (const [method, cap] of cases) {
+			expect(deriveUsing([method], SESSION)).toContain(cap);
+			expect(capForMethod(method, SESSION)).toBe(cap); // the two stay in lockstep
+		}
 	});
 
 	it("accountIdFor resolves MaskedEmail via accountCapabilities (not primaryAccounts)", () => {
@@ -266,6 +283,26 @@ describe("jmap fn", () => {
 		const out = parse(r);
 		expect(out.blobId).toBe("B1");
 		expect(out.data).toBe(Buffer.from("hi").toString("base64"));
+	});
+
+	it("download: an oversize blob errors cleanly instead of buffering unbounded (OOM guard)", async () => {
+		installFetch();
+		const r = await jmap.run(env(), { download: { blobId: "BIG", as: "store" } });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/exceeds the .*download cap|too large/);
+	});
+
+	it("session:true dumps the raw Session capabilities (Phase 0b) incl. maxSizeUpload", async () => {
+		installFetch();
+		const out = parse(await jmap.run(env(), { session: true }));
+		expect(out.capabilities["urn:ietf:params:jmap:core"].maxSizeUpload).toBe(250_000_000);
+		expect(out.accounts.u123.capabilities).toEqual(expect.arrayContaining(["urn:ietf:params:jmap:mail", "urn:ietf:params:jmap:submission"]));
+	});
+
+	it("scope_probe returns the reachable-capability map for the current token (Phase 0c / Gate 0)", async () => {
+		installFetch();
+		const out = parse(await jmap.run(env(), { scope_probe: true }));
+		expect(out).toEqual({ mail: true, submission: true, maskedemail: true, contacts: false, vacationresponse: false, quota: false, calendars: false });
 	});
 });
 

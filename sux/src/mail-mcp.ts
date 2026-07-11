@@ -1,8 +1,10 @@
 import { checkArgs, FN_DEADLINE_MS, withDeadline } from "./index";
 import { type JsonRpc, sseResponse } from "./mcp-util";
 import { fail, type RtEnv, type ToolResult } from "./registry";
+import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
-import { jstr } from "./fns/_jmap";
+import { doUpload, jstr, scopeProbe } from "./fns/_jmap";
+import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, hasCalDav, listCalendars, parseICal, reportObjects } from "./fns/_caldav";
 
 // The mail MCP server — the ergonomic Fastmail surface, served at /mail/mcp behind
 // the same workers-oauth-provider flow, so it appears as its own "mail" connector in
@@ -38,18 +40,139 @@ function resultFor(resp: { methodResponses: any[] }, method: string, callId?: st
 const clamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Number(v) || dflt));
 
 /** Reduce an Email object to a token-cheap reference (never the body). */
-function shapeRef(e: any): Record<string, unknown> {
+// RFC 8620 §5.1: Foo/get MAY return records in any order, so it doesn't preserve the
+// Email/query sort. Re-sort the hydrated list by receivedAt (ISO-8601 → lexicographic works).
+const byReceived = (asc: boolean) => (a: any, b: any) => (asc ? 1 : -1) * String(a?.receivedAt ?? "").localeCompare(String(b?.receivedAt ?? ""));
+
+/** From→identity: exact match, else a stored `*@domain` wildcard identity by domain suffix.
+ *  A concrete address never string-equals a wildcard identity, which threw "From is not verified"
+ *  before any API call — this lets send-as-any work at owned domains (workflow §1a). */
+function resolveIdentity(identities: any[], from: string): any {
+	const f = from.toLowerCase();
+	return identities.find((i: any) => String(i?.email).toLowerCase() === f) || identities.find((i: any) => String(i?.email).startsWith("*@") && f.endsWith(String(i.email).slice(1).toLowerCase()));
+}
+
+type AttachmentSpec = { blobId?: string; ref?: string; data?: string; type?: string; name?: string; disposition?: string; cid?: string };
+type ResolvedPart = { blobId: string; type: string; name?: string; disposition?: string; cid?: string; size?: number };
+
+/** Resolve one attachment spec to a Fastmail blob: a {blobId} passes through; a {ref} (sux /s/<uuid> CAS
+ *  handle) or {data} (base64) is STREAMED to the JMAP uploadUrl via doUpload — bytes never round-trip
+ *  through the model context. Returns the blobId + metadata for the multipart part (workflow §1e). */
+async function resolveAttachment(env: RtEnv, x: AttachmentSpec): Promise<ResolvedPart> {
+	if (x?.blobId) return { blobId: String(x.blobId), type: String(x?.type ?? "application/octet-stream"), name: x?.name, disposition: x?.disposition, cid: x?.cid };
+	const src = x?.ref ?? x?.data;
+	if (!src) throw new Error("each attachment needs blobId, ref (a sux /s/<uuid> CAS handle), or data (base64).");
+	const up = (await doUpload(env, String(src), String(x?.type ?? "application/octet-stream"))) as any;
+	return { blobId: String(up.blobId), type: String(up.type ?? x?.type ?? "application/octet-stream"), size: up.size, name: x?.name, disposition: x?.disposition, cid: x?.cid };
+}
+
+/** A text body + resolved attachment parts → a multipart/mixed bodyStructure (RFC 8621 §4.1.4: a part
+ *  with a blobId references an uploaded blob; the text part keeps its partId + bodyValue). */
+function multipartBody(text: string, parts: ResolvedPart[]): Record<string, unknown> {
+	return {
+		bodyStructure: { type: "multipart/mixed", subParts: [{ type: "text/plain", partId: "b" }, ...parts.map((p) => ({ blobId: p.blobId, type: p.type, ...(p.name ? { name: p.name } : {}), disposition: p.disposition ?? "attachment", ...(p.cid ? { cid: p.cid } : {}) }))] },
+		bodyValues: { b: { value: text } },
+	};
+}
+
+/** A stage-safe descriptor of an attachment set — names/types + source kind, no bytes, no upload. Binds
+ *  the stage→commit token to the exact attachment set without writing anything at preview time. */
+function attachDescriptors(atts: AttachmentSpec[]): Array<Record<string, unknown>> {
+	return atts.map((x) => ({ name: x?.name ?? null, type: x?.type ?? null, source: x?.blobId ? "blob" : x?.ref ? "ref" : x?.data ? "data" : "?" }));
+}
+
+/** Gate a scope-dependent verb: probe the token's reachable capabilities; return a not_configured
+ *  message if `cap` isn't granted (contacts/vacation/quota live on a re-scoped FASTMAIL_TOKEN), else null. */
+async function scopeGate(env: RtEnv, cap: "contacts" | "vacationresponse" | "quota"): Promise<string | null> {
+	const scope = (await scopeProbe(env)) as Record<string, boolean>;
+	if (scope[cap]) return null;
+	const label = cap === "vacationresponse" ? "vacation responder" : cap;
+	return `The current FASTMAIL_TOKEN doesn't grant the '${cap}' JMAP capability, so ${label} isn't reachable. Re-mint the token with ${cap} scope (Fastmail → Settings → Privacy & Security → API tokens) and retry — the verb is otherwise ready.`;
+}
+
+/** Full name from JSCard name.components (RFC 9553) when there's no `full`. */
+function nameFromComponents(components: any): string {
+	if (!Array.isArray(components)) return "";
+	const by = (kind: string) => components.find((c: any) => c?.kind === kind)?.value;
+	return [by("given"), by("surname")].filter(Boolean).join(" ");
+}
+
+/** Shape a JMAP ContactCard (RFC 9610/JSCard — Fastmail's contacts object) to a token-cheap reference. */
+function shapeContact(c: any): Record<string, unknown> {
+	const emails = c?.emails ? Object.values(c.emails).map((e: any) => e?.address).filter(Boolean) : [];
+	const phones = c?.phones ? Object.values(c.phones).map((p: any) => p?.number).filter(Boolean) : [];
+	const company = c?.organizations ? (Object.values(c.organizations)[0] as any)?.name : undefined;
+	const name = c?.name?.full || nameFromComponents(c?.name?.components) || company || emails[0] || "(no name)";
+	return { id: c?.id, name, ...(company ? { company } : {}), emails, phones };
+}
+
+/** Pick a target calendar collection: the caller's href, else the first non-task (or task) calendar. */
+async function pickCalendar(env: RtEnv, wantTasks: boolean, href?: string): Promise<CalendarRef> {
+	const cals = await listCalendars(env);
+	if (href) {
+		const found = cals.find((c) => c.href === href);
+		if (!found) throw new Error(`no calendar with href '${href}' — list them with cal_list.`);
+		return found;
+	}
+	const pick = cals.find((c) => c.isTasks === wantTasks) ?? cals[0];
+	if (!pick) throw new Error("no calendars found on this account.");
+	return pick;
+}
+
+/** Shape a parsed VEVENT/VTODO component to a token-cheap reference. */
+function shapeCalObject(o: { href: string; etag: string | null; ical: string }): Record<string, unknown> | null {
+	const comp = parseICal(o.ical)[0];
+	if (!comp) return null;
+	const p = comp.props;
+	const base = { uid: p.UID, summary: p.SUMMARY, href: o.href, etag: o.etag };
+	if (comp.component === "VTODO") return { ...base, due: p.DUE ?? null, status: p.STATUS ?? null, description: p.DESCRIPTION ?? undefined };
+	return { ...base, start: p.DTSTART ?? null, end: p.DTEND ?? null, location: p.LOCATION ?? undefined, description: p.DESCRIPTION ?? undefined };
+}
+
+/** Map ergonomic contact args (plain strings) to a JSCard ContactCard patch — only the provided fields.
+ *  @type/version are added at create time; an update patch carries just the changed fields. */
+function contactCard(a: any): Record<string, unknown> {
+	const card: Record<string, unknown> = {};
+	const given = a?.firstName !== undefined ? String(a.firstName) : undefined;
+	const surname = a?.lastName !== undefined ? String(a.lastName) : undefined;
+	if (given !== undefined || surname !== undefined) {
+		const components = [...(given !== undefined ? [{ kind: "given", value: given }] : []), ...(surname !== undefined ? [{ kind: "surname", value: surname }] : [])];
+		const full = [given, surname].filter(Boolean).join(" ");
+		card.name = { components, ...(full ? { full } : {}) };
+	}
+	if (a?.company !== undefined) card.organizations = { o1: { "@type": "Organization", name: String(a.company) } };
+	if (Array.isArray(a?.emails)) card.emails = Object.fromEntries(a.emails.map((e: string, i: number) => [`e${i + 1}`, { "@type": "EmailAddress", address: String(e) }]));
+	if (Array.isArray(a?.phones)) card.phones = Object.fromEntries(a.phones.map((p: string, i: number) => [`p${i + 1}`, { "@type": "Phone", number: String(p) }]));
+	return card;
+}
+
+const ATTACHMENTS_SCHEMA = {
+	type: "array",
+	description:
+		"Attachments. Each item: {blobId} (an already-uploaded Fastmail blob), {ref} (a sux /s/<uuid> CAS handle — the primary path; the bytes stream R2→JMAP and never pass through the model context), or {data} (base64, small files only). Optional name, type, disposition ('attachment'|'inline'), cid (for inline images).",
+	items: { type: "object", additionalProperties: false, properties: { blobId: { type: "string" }, ref: { type: "string" }, data: { type: "string" }, type: { type: "string" }, name: { type: "string" }, disposition: { type: "string", enum: ["attachment", "inline"] }, cid: { type: "string" } } },
+};
+
+function shapeRef(e: any, boxNames?: Record<string, string>): Record<string, unknown> {
 	const addr = (a: any[]): string => (Array.isArray(a) ? a.map((x) => x?.email).filter(Boolean).join(", ") : "");
+	const kw = e?.keywords ?? {};
+	const boxIds = e?.mailboxIds ? Object.keys(e.mailboxIds) : undefined;
+	const labels = boxIds && boxNames ? boxIds.map((id) => boxNames[id] ?? id) : boxIds;
 	return {
 		id: e?.id,
 		threadId: e?.threadId,
 		subject: e?.subject ?? "(no subject)",
 		from: addr(e?.from),
 		to: addr(e?.to),
+		...(addr(e?.cc) ? { cc: addr(e.cc) } : {}),
 		receivedAt: e?.receivedAt,
 		preview: e?.preview,
-		unread: !e?.keywords?.$seen,
+		isRead: !!kw.$seen,
+		isFlagged: !!kw.$flagged,
+		isDraft: !!kw.$draft,
+		unread: !kw.$seen,
 		hasAttachment: !!e?.hasAttachment,
+		...(labels ? { labels } : {}),
 	};
 }
 
@@ -135,11 +258,13 @@ const TOOLS: MailTool[] = [
 				const resp = await jmapCall(env, {
 					calls: [
 						["Email/query", { filter, sort: [{ property: "receivedAt", isAscending: false }], limit }, "q"],
-						["Email/get", { "#ids": { resultOf: "q", name: "Email/query", path: "/ids" }, properties: ["id", "threadId", "subject", "from", "to", "receivedAt", "preview", "keywords", "hasAttachment"] }, "g"],
+						["Email/get", { "#ids": { resultOf: "q", name: "Email/query", path: "/ids" }, properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "preview", "keywords", "mailboxIds", "hasAttachment"] }, "g"],
+						["Mailbox/get", { properties: ["id", "name"] }, "m"],
 					],
 				});
-				const emails = resultFor(resp, "Email/get")?.list ?? [];
-				return ok({ count: emails.length, emails: emails.map(shapeRef) });
+				const boxNames: Record<string, string> = Object.fromEntries((resultFor(resp, "Mailbox/get")?.list ?? []).map((b: any) => [b?.id, b?.name]));
+				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(false)); // newest first, matching the query sort
+				return ok({ count: emails.length, emails: emails.map((e: any) => shapeRef(e, boxNames)) });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
@@ -153,13 +278,16 @@ const TOOLS: MailTool[] = [
 			if (!a?.id) return fail("mail_read requires an `id`.");
 			try {
 				const resp = await jmapCall(env, {
-					method: "Email/get",
-					args: { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: false, maxBodyValueBytes: 200_000 },
+					calls: [
+						["Email/get", { ids: [String(a.id)], properties: ["id", "threadId", "subject", "from", "to", "cc", "receivedAt", "keywords", "mailboxIds", "textBody", "htmlBody", "bodyValues", "hasAttachment", "attachments"], fetchTextBodyValues: true, fetchHTMLBodyValues: false, maxBodyValueBytes: 200_000 }, "g"],
+						["Mailbox/get", { properties: ["id", "name"] }, "m"],
+					],
 				});
+				const boxNames: Record<string, string> = Object.fromEntries((resultFor(resp, "Mailbox/get")?.list ?? []).map((b: any) => [b?.id, b?.name]));
 				const e = resultFor(resp, "Email/get")?.list?.[0];
 				if (!e) return fail(`No message '${a.id}'.`);
 				const attachments = Array.isArray(e.attachments) ? e.attachments.map((x: any) => ({ blobId: x?.blobId, name: x?.name, type: x?.type, size: x?.size })) : [];
-				return ok({ ...shapeRef(e), body: extractBody(e), attachments });
+				return ok({ ...shapeRef(e, boxNames), body: extractBody(e), attachments });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
@@ -183,7 +311,7 @@ const TOOLS: MailTool[] = [
 						["Email/get", { "#ids": { resultOf: "t", name: "Thread/get", path: "/list/*/emailIds" }, properties: ["id", "threadId", "subject", "from", "to", "receivedAt", "preview", "keywords"] }, "e"],
 					],
 				});
-				const emails = resultFor(resp, "Email/get")?.list ?? [];
+				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(true)); // chronological thread order
 				return ok({ threadId, count: emails.length, messages: emails.map(shapeRef) });
 			} catch (e) {
 				return fail(errMsg(e));
@@ -232,13 +360,14 @@ const TOOLS: MailTool[] = [
 				subject: { type: "string" },
 				text: { type: "string", description: "Plain-text body." },
 				from: { type: "string", description: "Sender address (defaults to your primary identity)." },
+				attachments: ATTACHMENTS_SCHEMA,
 			},
 		},
 		run: async (env, a) => draftOrSend(env, a, false),
 	},
 	{
 		name: "mail_send",
-		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text; cc/bcc/from optional. Dispatches immediately — there is no scheduled send and no undo, so review before sending.",
+		description: "Send an email. Composes the draft, submits it, and files it in Sent. Provide to/subject/text; cc/bcc/from optional. Dispatches immediately UNLESS you pass `send_at` (an ISO-8601 date-time), which SCHEDULES it via SMTP FUTURERELEASE — held until then, cancelable with mail_scheduled. Review before sending; there's no undo once dispatched.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -249,10 +378,68 @@ const TOOLS: MailTool[] = [
 				bcc: { type: "array", items: { type: "string" } },
 				subject: { type: "string" },
 				text: { type: "string", description: "Plain-text body." },
-				from: { type: "string", description: "Sender address (defaults to your primary identity)." },
+				from: { type: "string", description: "Sender address — exact identity or any address at an owned *@domain (send-as-any). Defaults to your primary identity." },
+				send_at: { type: "string", description: "Schedule the send for this ISO-8601 date-time (e.g. '2026-07-11T09:00:00Z'). Held via FUTURERELEASE; omit to send now." },
+				stage: { type: "boolean", description: "Preview only: returns {preview, commit_token} and sends NOTHING. Re-call with the token to commit." },
+				commit_token: { type: "string", description: "Commit a previously staged send (the payload must match what was staged)." },
+				attachments: ATTACHMENTS_SCHEMA,
 			},
 		},
 		run: async (env, a) => draftOrSend(env, a, true),
+	},
+	{
+		name: "mail_schedule",
+		description: "Schedule an email for future delivery (SMTP FUTURERELEASE). Like mail_send but `sendAt` (ISO-8601) is required — the message is held until then, cancelable with mail_unschedule. Routes through stage-then-commit (stage:true previews, commit_token commits).",
+		inputSchema: { type: "object", additionalProperties: false, required: ["to", "subject", "text", "sendAt"], properties: { to: { type: "array", items: { type: "string" } }, cc: { type: "array", items: { type: "string" } }, bcc: { type: "array", items: { type: "string" } }, subject: { type: "string" }, text: { type: "string" }, from: { type: "string", description: "Exact identity or any address at an owned *@domain." }, sendAt: { type: "string", description: "ISO-8601 date-time to release the message." }, attachments: ATTACHMENTS_SCHEMA, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => draftOrSend(env, { ...a, send_at: a?.sendAt }, true),
+	},
+	{
+		name: "mail_scheduled",
+		description: "List your pending scheduled (FUTURERELEASE-held) sends — each { id (submissionId), emailId, sendAt }. Cancel one with mail_unschedule.",
+		inputSchema: { type: "object", additionalProperties: false, properties: {} },
+		run: async (env) => {
+			try {
+				const resp = await jmapCall(env, { calls: [["EmailSubmission/query", { filter: { undoStatus: "pending" } }, "q"], ["EmailSubmission/get", { "#ids": { resultOf: "q", name: "EmailSubmission/query", path: "/ids" }, properties: ["id", "emailId", "sendAt", "undoStatus"] }, "g"]] });
+				const subs = resultFor(resp, "EmailSubmission/get")?.list ?? [];
+				return ok({ count: subs.length, scheduled: subs.map((s: any) => ({ id: s?.id, emailId: s?.emailId, sendAt: s?.sendAt })) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_unschedule",
+		description: "Cancel a pending scheduled send by its submission id (undoStatus → canceled) before it releases. Idempotent: a submission that's already canceled or released reports success rather than erroring.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: "The submissionId from mail_send/mail_schedule or a mail_scheduled list." } } },
+		run: async (env, a) => {
+			if (!a?.id) return fail("mail_unschedule requires the submission `id`.");
+			try {
+				const id = String(a.id);
+				const resp = await jmapCall(env, { calls: [["EmailSubmission/set", { update: { [id]: { undoStatus: "canceled" } } }, "u"]] });
+				const setR = resultFor(resp, "EmailSubmission/set");
+				if (Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) return ok({ unscheduled: id });
+				if (setR?.notUpdated?.[id]?.type === "notFound") return ok({ unscheduled: id, note: "already canceled or released." });
+				return fail(`unschedule failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_upload",
+		description:
+			"Upload bytes to Fastmail once and get back a reusable {blobId} — reference it in mail_send/mail_draft attachments (blobId path), avoiding re-upload. Give a `ref` (a sux /s/<uuid> CAS handle — the primary path; streams R2→JMAP) or `data` (base64, small only). Returns {blobId, type, size}.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { ref: { type: "string", description: "A sux /s/<uuid> CAS handle to stream up." }, data: { type: "string", description: "Base64 bytes (small files only)." }, type: { type: "string", description: "MIME type (default application/octet-stream)." }, name: { type: "string" } } },
+		run: async (env, a) => {
+			const src = a?.ref ?? a?.data;
+			if (!src) return fail("mail_upload needs `ref` (a sux /s/<uuid> handle) or `data` (base64).");
+			try {
+				const up = (await doUpload(env, String(src), String(a?.type ?? "application/octet-stream"))) as any;
+				return ok({ blobId: up.blobId, type: up.type ?? a?.type ?? "application/octet-stream", size: up.size, ...(a?.name ? { name: a.name } : {}) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
 	},
 	{
 		name: "mail_archive",
@@ -268,28 +455,333 @@ const TOOLS: MailTool[] = [
 	},
 	{
 		name: "mail_masked",
-		description: "Fastmail Masked Email — list your masked addresses, or create a new one for a site (forDomain + description). A privacy superpower a normal mail tool can't reach.",
+		description: "Fastmail Masked Email — list, create (forDomain + description), or transition an address: disable (stop delivery, keep it), enable (re-activate), delete (soft-delete → recoverable in Fastmail). create + delete route through stage-then-commit. A privacy superpower a normal mail tool can't reach.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
 			properties: {
-				action: { type: "string", enum: ["list", "create"], default: "list" },
-				forDomain: { type: "string", description: "The site the masked address is for (action=create)." },
-				description: { type: "string", description: "A note to remember what it's for (action=create)." },
+				action: { type: "string", enum: ["list", "create", "disable", "enable", "delete"], default: "list" },
+				id: { type: "string", description: "The masked-email id (disable/enable/delete)." },
+				forDomain: { type: "string", description: "The site the masked address is for (create)." },
+				description: { type: "string", description: "A note to remember what it's for (create)." },
+				stage: { type: "boolean", description: "create/delete: preview + commit_token, no write." },
+				commit_token: { type: "string" },
 			},
 		},
 		run: async (env, a) => {
 			try {
 				const action = String(a?.action ?? "list");
 				if (action === "create") {
-					const resp = await jmapCall(env, { calls: [["MaskedEmail/set", { create: { m: { state: "enabled", forDomain: a?.forDomain ? String(a.forDomain) : undefined, description: a?.description ? String(a.description) : undefined } } }, "s"]] });
-					const created = resultFor(resp, "MaskedEmail/set")?.created?.m;
-					if (!created) return fail(`MaskedEmail create failed: ${JSON.stringify(resultFor(resp, "MaskedEmail/set")?.notCreated ?? {})}`);
-					return ok({ created: { id: created.id, email: created.email, forDomain: created.forDomain, description: created.description } });
+					const mutate = async () => {
+						const resp = await jmapCall(env, { calls: [["MaskedEmail/set", { create: { m: { state: "enabled", forDomain: a?.forDomain ? String(a.forDomain) : undefined, description: a?.description ? String(a.description) : undefined } } }, "s"]] });
+						const created = resultFor(resp, "MaskedEmail/set")?.created?.m;
+						if (!created) throw new Error(`MaskedEmail create failed: ${JSON.stringify(resultFor(resp, "MaskedEmail/set")?.notCreated ?? {})}`);
+						return { created: { id: created.id, email: created.email, forDomain: created.forDomain, description: created.description } };
+					};
+					const out = await staged(env, "mail_masked_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { forDomain: a?.forDomain ?? null, description: a?.description ?? null }, { action: "create masked address", forDomain: a?.forDomain, description: a?.description }, mutate);
+					return ok("stageResult" in out ? out.stageResult : out.result);
+				}
+				if (action === "disable" || action === "enable" || action === "delete") {
+					if (!a?.id) return fail(`mail_masked ${action} requires an \`id\`.`);
+					const id = String(a.id);
+					const state = action === "delete" ? "deleted" : action === "disable" ? "disabled" : "enabled";
+					const mutate = async () => {
+						const resp = await jmapCall(env, { calls: [["MaskedEmail/set", { update: { [id]: { state } } }, "s"]] });
+						const setR = resultFor(resp, "MaskedEmail/set");
+						if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) throw new Error(`MaskedEmail ${action} failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+						return { id, state };
+					};
+					if (action === "delete") {
+						const out = await staged(env, "mail_masked_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id, state }, { action: "soft-delete masked address", id }, mutate);
+						return ok("stageResult" in out ? out.stageResult : out.result);
+					}
+					return ok(await mutate());
 				}
 				const resp = await jmapCall(env, { method: "MaskedEmail/get", args: {} });
 				const list = resultFor(resp, "MaskedEmail/get")?.list ?? [];
 				return ok({ count: list.length, masked: list.map((m: any) => ({ id: m?.id, email: m?.email, state: m?.state, forDomain: m?.forDomain, description: m?.description })) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_vacation",
+		description:
+			"Get or set the Fastmail vacation auto-responder. action:'get' (default) returns the current responder; action:'set' updates it (enabled + subject + text; optional fromDate/toDate ISO-8601) and routes through stage-then-commit. Needs a FASTMAIL_TOKEN scoped for vacationresponse.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { action: { type: "string", enum: ["get", "set"] }, enabled: { type: "boolean" }, subject: { type: "string" }, text: { type: "string", description: "Plain-text auto-reply body." }, fromDate: { type: "string", description: "ISO-8601 start (optional)." }, toDate: { type: "string", description: "ISO-8601 end (optional)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "vacationresponse");
+			if (gate) return fail(gate);
+			try {
+				if ((a?.action ?? "get") === "get") {
+					const resp = await jmapCall(env, { calls: [["VacationResponse/get", { ids: ["singleton"] }, "g"]] });
+					return ok({ vacation: resultFor(resp, "VacationResponse/get")?.list?.[0] ?? null });
+				}
+				if (typeof a?.enabled !== "boolean" || !a?.subject || a?.text === undefined) return fail("mail_vacation set needs enabled (bool), subject, and text.");
+				const patch: Record<string, unknown> = { isEnabled: a.enabled, subject: String(a.subject), textBody: String(a.text), fromDate: a?.fromDate ?? null, toDate: a?.toDate ?? null };
+				const mutate = async () => {
+					const resp = await jmapCall(env, { allow_destroy: true, calls: [["VacationResponse/set", { update: { singleton: patch } }, "s"]] });
+					const setR = resultFor(resp, "VacationResponse/set");
+					if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, "singleton")) throw new Error(`vacation set failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+					return { vacation: patch, updated: true };
+				};
+				const out = await staged(env, "mail_vacation", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, patch, { action: "set vacation responder", ...patch }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_quota",
+		description: "Report mailbox storage quota — used vs total bytes per quota resource. Read-only. Needs a FASTMAIL_TOKEN scoped for quota.",
+		inputSchema: { type: "object", additionalProperties: false, properties: {} },
+		run: async (env) => {
+			const gate = await scopeGate(env, "quota");
+			if (gate) return fail(gate);
+			try {
+				const resp = await jmapCall(env, { calls: [["Quota/get", {}, "g"]] });
+				const list = resultFor(resp, "Quota/get")?.list ?? [];
+				return ok({ count: list.length, quotas: list.map((q: any) => ({ id: q?.id, name: q?.name, used: q?.used, limit: q?.limit, scope: q?.scope, resourceType: q?.resourceType })) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_search",
+		description: "Search your Fastmail contacts by free text (name/email). Returns references {id, name, emails, phones} — never the full card. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { text: { type: "string", description: "Free-text query over name/email." }, limit: { type: "integer", minimum: 1, maximum: 100 } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			try {
+				const limit = clamp(a?.limit, 1, 100, 25);
+				const filter = a?.text ? { text: String(a.text) } : {};
+				const resp = await jmapCall(env, { calls: [["ContactCard/query", { filter, limit }, "q"], ["ContactCard/get", { "#ids": { resultOf: "q", name: "ContactCard/query", path: "/ids" } }, "g"]] });
+				const list = resultFor(resp, "ContactCard/get")?.list ?? [];
+				return ok({ count: list.length, contacts: list.map(shapeContact) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_get",
+		description: "Read one contact card in full by id. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			if (!a?.id) return fail("contact_get requires an `id`.");
+			try {
+				const resp = await jmapCall(env, { calls: [["ContactCard/get", { ids: [String(a.id)] }, "g"]] });
+				const c = resultFor(resp, "ContactCard/get")?.list?.[0];
+				if (!c) return fail(`No contact '${a.id}'.`);
+				return ok({ ...shapeContact(c), raw: c });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_create",
+		description: "Create a contact. Provide firstName/lastName/company + emails[]/phones[] (plain strings). Routes through stage-then-commit. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			try {
+				const card = contactCard(a);
+				if (!Object.keys(card).length) return fail("contact_create needs at least one of firstName/lastName/company/emails/phones.");
+				const mutate = async () => {
+					const resp = await jmapCall(env, { calls: [["ContactCard/set", { create: { c: { "@type": "Card", version: "1.0", ...card } } }, "s"]] });
+					const created = resultFor(resp, "ContactCard/set")?.created?.c;
+					if (!created) throw new Error(`contact create failed: ${JSON.stringify(resultFor(resp, "ContactCard/set")?.notCreated ?? {})}`);
+					return { created: { id: created.id, ...shapeContact({ ...card, id: created.id }) } };
+				};
+				const out = await staged(env, "contact_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, card, { action: "create contact", ...card }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_update",
+		description: "Update a contact by id — pass only the fields to change (firstName/lastName/company/emails[]/phones[]). Routes through stage-then-commit. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, emails: { type: "array", items: { type: "string" } }, phones: { type: "array", items: { type: "string" } }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			if (!a?.id) return fail("contact_update requires an `id`.");
+			try {
+				const id = String(a.id);
+				const patch = contactCard(a);
+				if (!Object.keys(patch).length) return fail("contact_update needs at least one field to change.");
+				const mutate = async () => {
+					const resp = await jmapCall(env, { calls: [["ContactCard/set", { update: { [id]: patch } }, "s"]] });
+					const setR = resultFor(resp, "ContactCard/set");
+					if (!Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, id)) throw new Error(`contact update failed: ${JSON.stringify(setR?.notUpdated ?? {})}`);
+					return { updated: id, patch };
+				};
+				const out = await staged(env, "contact_update", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id, patch }, { action: "update contact", id, ...patch }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "contact_delete",
+		description: "Delete a contact by id (permanent). Routes through stage-then-commit and needs allow_destroy at the JMAP layer. Needs a FASTMAIL_TOKEN scoped for contacts.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			const gate = await scopeGate(env, "contacts");
+			if (gate) return fail(gate);
+			if (!a?.id) return fail("contact_delete requires an `id`.");
+			try {
+				const id = String(a.id);
+				const mutate = async () => {
+					const resp = await jmapCall(env, { allow_destroy: true, calls: [["ContactCard/set", { destroy: [id] }, "s"]] });
+					const setR = resultFor(resp, "ContactCard/set");
+					if (!(setR?.destroyed ?? []).includes(id)) throw new Error(`contact delete failed: ${JSON.stringify(setR?.notDestroyed ?? {})}`);
+					return { deleted: id };
+				};
+				const out = await staged(env, "contact_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id }, { action: "delete contact (permanent)", id }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "cal_list",
+		description: "List your Fastmail calendars (and task lists) — {href, name, isTasks}. Use the href with cal_events/cal_create. Needs FASTMAIL_CALDAV_USER + FASTMAIL_APP_PASSWORD (CalDAV).",
+		inputSchema: { type: "object", additionalProperties: false, properties: {} },
+		run: async (env) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			try {
+				const cals = await listCalendars(env);
+				return ok({ count: cals.length, calendars: cals.map((c) => ({ href: c.href, name: c.name, isTasks: c.isTasks, ...(c.description ? { description: c.description } : {}) })) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "cal_events",
+		description: "List events in a calendar (references: {uid, summary, start, end, href, etag}). Pass `calendar` (an href from cal_list) or omit to use your first calendar. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { calendar: { type: "string", description: "Calendar href from cal_list (defaults to your first calendar)." } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			try {
+				const cal = await pickCalendar(env, false, a?.calendar ? String(a.calendar) : undefined);
+				const objs = await reportObjects(env, cal.href, "VEVENT");
+				return ok({ calendar: cal.href, count: objs.length, events: objs.map(shapeCalObject).filter(Boolean) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "cal_create",
+		description: "Create a calendar event. Provide summary + start (ISO-8601; a date-only value is all-day), optional end/description/location and `calendar` (href). Routes through stage-then-commit. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["summary", "start"], properties: { calendar: { type: "string" }, summary: { type: "string" }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!a?.summary || !a?.start) return fail("cal_create needs summary and start.");
+			try {
+				const cal = await pickCalendar(env, false, a?.calendar ? String(a.calendar) : undefined);
+				const payload = { calendar: cal.href, summary: String(a.summary), start: String(a.start), end: a?.end ?? null, description: a?.description ?? null, location: a?.location ?? null };
+				const mutate = async () => {
+					const uid = crypto.randomUUID();
+					const ical = buildVEvent({ uid, summary: String(a.summary), start: String(a.start), end: a?.end ? String(a.end) : undefined, description: a?.description ? String(a.description) : undefined, location: a?.location ? String(a.location) : undefined, dtstamp: new Date().toISOString() });
+					const href = `${cal.href}${uid}.ics`;
+					const r = await caldavFetch(env, "PUT", href, { body: ical, contentType: "text/calendar; charset=utf-8", ifNoneMatch: "*" });
+					if (!r.ok) throw new Error(`event create failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
+					return { created: true, uid, href, etag: r.etag };
+				};
+				const out = await staged(env, "cal_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, { action: "create event", ...payload }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "cal_delete",
+		description: "Delete a calendar event or task by its href (from cal_events/task_list). Pass etag to guard against a concurrent edit. Routes through stage-then-commit. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Object href from cal_events/task_list." }, etag: { type: "string", description: "If set, delete only if the object still matches (If-Match)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!a?.href) return fail("cal_delete requires the object `href`.");
+			try {
+				const href = String(a.href);
+				const mutate = async () => {
+					const r = await caldavFetch(env, "DELETE", href, a?.etag ? { ifMatch: String(a.etag) } : {});
+					if (!r.ok && r.status !== 404) throw new Error(`delete failed: HTTP ${r.status}`);
+					return { deleted: href, ...(r.status === 404 ? { note: "already gone" } : {}) };
+				};
+				const out = await staged(env, "cal_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { href, etag: a?.etag ?? null }, { action: "delete calendar object", href }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "task_list",
+		description: "List tasks (VTODO) in a task list — {uid, summary, due, status, href, etag}. Pass `calendar` (a task-list href from cal_list) or omit for your first task list. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { calendar: { type: "string" } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			try {
+				const cal = await pickCalendar(env, true, a?.calendar ? String(a.calendar) : undefined);
+				const objs = await reportObjects(env, cal.href, "VTODO");
+				return ok({ calendar: cal.href, count: objs.length, tasks: objs.map(shapeCalObject).filter(Boolean) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "task_create",
+		description: "Create a task (VTODO). Provide summary, optional due (ISO-8601)/description and `calendar` (task-list href). Routes through stage-then-commit. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["summary"], properties: { calendar: { type: "string" }, summary: { type: "string" }, due: { type: "string" }, description: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!a?.summary) return fail("task_create needs a summary.");
+			try {
+				const cal = await pickCalendar(env, true, a?.calendar ? String(a.calendar) : undefined);
+				const payload = { calendar: cal.href, summary: String(a.summary), due: a?.due ?? null, description: a?.description ?? null };
+				const mutate = async () => {
+					const uid = crypto.randomUUID();
+					const ical = buildVTodo({ uid, summary: String(a.summary), due: a?.due ? String(a.due) : undefined, description: a?.description ? String(a.description) : undefined, dtstamp: new Date().toISOString() });
+					const href = `${cal.href}${uid}.ics`;
+					const r = await caldavFetch(env, "PUT", href, { body: ical, contentType: "text/calendar; charset=utf-8", ifNoneMatch: "*" });
+					if (!r.ok) throw new Error(`task create failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
+					return { created: true, uid, href, etag: r.etag };
+				};
+				const out = await staged(env, "task_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, { action: "create task", ...payload }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "caldav",
+		description: "Raw CalDAV escape hatch — issue a PROPFIND/REPORT/GET/PUT/DELETE against Fastmail CalDAV with Basic auth injected. {method, path (from host or full URL), body, depth, contentType}. Returns {status, text, etag}. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["method", "path"], properties: { method: { type: "string" }, path: { type: "string", description: "Absolute-from-host path (e.g. the calendar-home) or full URL." }, body: { type: "string" }, depth: { type: "string", enum: ["0", "1", "infinity"] }, contentType: { type: "string" }, home: { type: "boolean", description: "Ignore path and target your calendar-home collection." } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!a?.method || (!a?.path && a?.home !== true)) return fail("caldav needs method and path (or home:true).");
+			try {
+				const path = a?.home === true ? calendarHome(env) : String(a.path);
+				const r = await caldavFetch(env, String(a.method).toUpperCase(), path, { body: a?.body ? String(a.body) : undefined, contentType: a?.contentType ? String(a.contentType) : "application/xml; charset=utf-8", depth: a?.depth ? String(a.depth) : undefined });
+				return ok({ status: r.status, ok: r.ok, etag: r.etag, text: r.text });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
@@ -320,10 +812,10 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 		const fromWanted = a?.from ? String(a.from).toLowerCase() : "";
 		let identity: any;
 		if (fromWanted) {
-			// An explicit `from` that matches no identity must FAIL — never silently
-			// send from a different (primary) address than the caller asked for.
-			identity = identities.find((i: any) => String(i?.email).toLowerCase() === fromWanted);
-			if (!identity) return fail(`no sending identity for from address '${fromWanted}' — check mail_identities.`);
+			// An explicit `from` that matches no identity must FAIL — never silently send from a
+			// different address than the caller asked for. Matches exact OR a *@domain wildcard (§1a).
+			identity = resolveIdentity(identities, fromWanted);
+			if (!identity) return fail(`no sending identity for from address '${fromWanted}' (no exact or *@domain-wildcard match) — check mail_identities.`);
 		} else {
 			identity = identities[0];
 		}
@@ -342,33 +834,71 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			bodyValues: { b: { value: String(a.text) } },
 		};
 
+		const atts: AttachmentSpec[] = Array.isArray(a?.attachments) ? a.attachments : [];
+
 		if (!send) {
+			// Drafting IS the action — resolve (stream-upload) attachments inline, no stage gate.
+			if (atts.length) {
+				const parts: ResolvedPart[] = [];
+				for (const x of atts) parts.push(await resolveAttachment(env, x));
+				Object.assign(draft, multipartBody(String(a.text), parts));
+			}
 			const resp = await jmapCall(env, { calls: [["Email/set", { create: { draft } }, "c"]] });
 			const created = resultFor(resp, "Email/set")?.created?.draft;
 			if (!created) return fail(`draft failed: ${JSON.stringify(resultFor(resp, "Email/set")?.notCreated ?? {})}`);
-			return ok({ drafted: true, id: created.id });
+			return ok({ drafted: true, id: created.id, ...(atts.length ? { attachments: atts.length } : {}) });
 		}
 
-		// Send: create draft, submit, and on success strip $draft + move Drafts→Sent.
-		const onSuccess: Record<string, unknown> = { "keywords/$draft": null };
-		if (draftsId) onSuccess[`mailboxIds/${draftsId}`] = null;
-		if (sentId) onSuccess[`mailboxIds/${sentId}`] = true;
-		const resp = await jmapCall(env, {
-			allow_send: true,
-			calls: [
-				["Email/set", { create: { draft } }, "c"],
-				["EmailSubmission/set", { create: { sub: { emailId: "#draft", identityId: identity.id } }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"],
-			],
-		});
-		const submitted = resultFor(resp, "EmailSubmission/set")?.created?.sub;
-		if (!submitted) return fail(`send failed: ${JSON.stringify(resultFor(resp, "EmailSubmission/set")?.notCreated ?? {})}`);
-		return ok({ sent: true, submissionId: submitted.id, to });
+		// Scheduled send: hold via the SMTP FUTURERELEASE extension (RFC 4865) — a HOLDFOR (seconds)
+		// parameter on the submission envelope's mailFrom. Fastmail holds the message (undoStatus
+		// 'pending') and releases it at send_at; cancel via mail_scheduled. A held submission needs
+		// an explicit rcptTo envelope (it overrides the auto-derived recipients).
+		let holdFor = 0;
+		if (a?.send_at !== undefined && a?.send_at !== null && a?.send_at !== "") {
+			const at = Date.parse(String(a.send_at));
+			if (!Number.isFinite(at)) return fail("send_at must be an ISO-8601 date-time, e.g. '2026-07-11T09:00:00Z'.");
+			holdFor = Math.ceil((at - Date.now()) / 1000);
+			if (holdFor <= 0) return fail("send_at must be in the future.");
+		}
+
+		// The mutation (draft create + submit) runs behind stage-then-commit: stage:true previews
+		// with NO Fastmail write; a commit_token commits the identical payload. The reads above
+		// (Identity/Mailbox get) are safe during a stage — only this closure writes.
+		const doSend = async () => {
+			// Resolve (stream-upload) attachments HERE, at commit — never during a stage preview.
+			const sendDraft: Record<string, unknown> = { ...draft };
+			if (atts.length) {
+				const parts: ResolvedPart[] = [];
+				for (const x of atts) parts.push(await resolveAttachment(env, x));
+				Object.assign(sendDraft, multipartBody(String(a.text), parts));
+			}
+			const onSuccess: Record<string, unknown> = { "keywords/$draft": null };
+			if (draftsId) onSuccess[`mailboxIds/${draftsId}`] = null;
+			if (sentId) onSuccess[`mailboxIds/${sentId}`] = true;
+			const subCreate: Record<string, unknown> = { emailId: "#draft", identityId: identity.id };
+			if (holdFor > 0) {
+				subCreate.envelope = {
+					mailFrom: { email: identity.email, parameters: { HOLDFOR: String(holdFor) } },
+					rcptTo: [...to, ...(Array.isArray(a?.cc) ? a.cc : []), ...(Array.isArray(a?.bcc) ? a.bcc : [])].map((e) => ({ email: String(e) })),
+				};
+			}
+			const resp = await jmapCall(env, { allow_send: true, calls: [["Email/set", { create: { draft: sendDraft } }, "c"], ["EmailSubmission/set", { create: { sub: subCreate }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"]] });
+			const submitted = resultFor(resp, "EmailSubmission/set")?.created?.sub;
+			if (!submitted) throw new Error(`send failed: ${JSON.stringify(resultFor(resp, "EmailSubmission/set")?.notCreated ?? {})}`);
+			const base = { submissionId: submitted.id, to, ...(atts.length ? { attachments: atts.length } : {}) };
+			return holdFor > 0 ? { scheduled: true, send_at: String(a.send_at), ...base, note: "held via FUTURERELEASE — cancel with mail_unschedule." } : { sent: true, ...base };
+		};
+		const attDesc = attachDescriptors(atts);
+		const payload = { from: identity.email, to, cc: a?.cc ?? null, bcc: a?.bcc ?? null, subject: String(a.subject), text: String(a.text), send_at: a?.send_at ?? null, attachments: attDesc };
+		const preview = { action: holdFor > 0 ? "scheduled_send" : "send", from: identity.email, to, ...(a?.cc ? { cc: a.cc } : {}), ...(a?.bcc ? { bcc: a.bcc } : {}), subject: String(a.subject), body_chars: String(a.text).length, ...(attDesc.length ? { attachments: attDesc } : {}), ...(holdFor > 0 ? { send_at: String(a.send_at) } : {}) };
+		const out = await staged(env, "mail_send", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, preview, doSend);
+		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {
 		return fail(errMsg(e));
 	}
 }
 
-/** Move messages into a target mailbox (add target, and when archiving, remove Inbox). */
+/** Move messages into a target mailbox — REPLACES the mailbox set (a real move, not an add). */
 async function moveMessages(env: RtEnv, ids: unknown, target: string): Promise<ToolResult> {
 	const list = Array.isArray(ids) ? ids.map(String) : [];
 	if (!list.length || !target) return fail("provide ids[] and a target mailbox.");
@@ -376,17 +906,18 @@ async function moveMessages(env: RtEnv, ids: unknown, target: string): Promise<T
 		const map = await mailboxMap(env);
 		const targetId = resolveMailboxId(map, target);
 		if (!targetId) return fail(`unknown mailbox '${target}'.`);
-		const inboxId = map.byRole["inbox"];
+		// A MOVE sets mailboxIds to EXACTLY the target — the additive `mailboxIds/<id>:true`
+		// patch left the message in its origin mailbox too (move-to-trash stayed in the Inbox).
 		const update: Record<string, unknown> = {};
-		for (const id of list) {
-			const patch: Record<string, unknown> = { [`mailboxIds/${targetId}`]: true };
-			// Archiving means "leave the inbox"; a plain move keeps it simple and additive.
-			if (target.toLowerCase() === "archive" && inboxId) patch[`mailboxIds/${inboxId}`] = null;
-			update[id] = patch;
-		}
+		for (const id of list) update[id] = { mailboxIds: { [targetId]: true } };
 		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
-		const updated = resultFor(resp, "Email/set")?.updated ?? {};
-		return ok({ moved: Object.keys(updated).length, to: target });
+		const setResult = resultFor(resp, "Email/set");
+		const moved = Object.keys(setResult?.updated ?? {});
+		const notUpdated = setResult?.notUpdated ?? {};
+		const failed = Object.keys(notUpdated);
+		// Don't report a silent moved:0 — an invalid target / rejected patch surfaces as an error.
+		if (!moved.length && failed.length) return fail(`move to '${target}' failed: ${JSON.stringify(notUpdated).slice(0, 300)}`);
+		return ok({ moved: moved.length, to: target, ...(failed.length ? { failed: failed.length, errors: notUpdated } : {}) });
 	} catch (e) {
 		return fail(errMsg(e));
 	}

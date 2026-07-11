@@ -120,4 +120,17 @@ describe("recall", () => {
 		expect(readCall?.[1].path).toBe("Areas/Health.md"); // vault-relative, not the double-prefixed repo path
 		expect(out.sources.vault).toBe("1 hit(s)"); // vault contributed rather than being silently dropped
 	});
+
+	it("uses the REMOTE backend for vault search when OBSIDIAN_REMOTE_URL/KEY are set (git can't search a private repo)", async () => {
+		const backends: string[] = [];
+		obs.mockImplementation(async (_e: any, a: any) => {
+			backends.push(a.backend);
+			return a.action === "search" ? okR(JSON.stringify({ hits: [{ path: "Areas/Health.md" }] })) : okR("Dr. Chen is my oncologist.");
+		});
+		const remoteEnv = { AI: { run: aiRun }, OBSIDIAN_REMOTE_URL: "https://vault.ts.net", OBSIDIAN_REMOTE_KEY: "k" } as any;
+		const out = parse(await recall.run(remoteEnv, { question: "oncologist?", sources: ["vault"] }));
+		expect(backends).toContain("remote");
+		expect(backends.every((b) => b === "remote")).toBe(true); // search AND read hit the live vault, not dead git code-search
+		expect(out.sources.vault).toBe("1 hit(s)");
+	});
 });

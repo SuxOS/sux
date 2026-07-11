@@ -287,7 +287,9 @@ export function toCsv(arr: unknown[], delim: string): string {
 		if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
 		return new RegExp(`["${delim.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\r\\n]`).test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 	};
-	const lines = [headers.join(delim)];
+	// Escape the header row too — a key containing the delimiter/quote/newline (e.g. "a,b")
+	// would otherwise split into extra columns, misaligning every data row and breaking round-trip.
+	const lines = [headers.map((h) => esc(h)).join(delim)];
 	for (const o of arr) lines.push(headers.map((h) => esc((o as Record<string, unknown>)?.[h])).join(delim));
 	return lines.join("\n");
 }
