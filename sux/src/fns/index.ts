@@ -88,6 +88,7 @@ import { shop } from "./shop";
 import { stackexchange } from "./stackexchange";
 import { store } from "./store";
 import { obsidian } from "./obsidian";
+import { sux } from "./sux";
 import { tailscale } from "./tailscale";
 import { tavily } from "./tavily";
 import { todoist } from "./todoist";
@@ -185,6 +186,7 @@ export const FUNCTIONS: Fn[] = [
 	stackexchange,
 	store,
 	obsidian,
+	sux,
 	tailscale,
 	tavily,
 	todoist,
