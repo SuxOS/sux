@@ -277,7 +277,7 @@ The derivation table maps method prefix → capability, read against the live `s
 | `Identity/*`, `EmailSubmission/*` | `…:submission` **and `…:mail`** (onSuccess\*Email performs a server-side Email mutation) |
 | `VacationResponse/*` | `…:vacationresponse` |
 | `MaskedEmail/*` | `https://www.fastmail.com/dev/maskedemail` |
-| `Contact/*`, `AddressBook/*` | `…:contacts` (fallback `https://www.fastmail.com/dev/contacts` if the live Session advertises that instead) |
+| `ContactCard/*` (RFC 9610 JSCard — Fastmail's contacts object), `Contact/*` (legacy), `AddressBook/*` | `…:contacts` (fallback `https://www.fastmail.com/dev/contacts` if the live Session advertises that instead) |
 | `Calendar*/*` | `…:calendars` |
 
 Two rules fix the traps:
@@ -330,7 +330,7 @@ Return shape is stable JSON with named fields so the sux algebra composes off `r
 **`allow_send`** gates the one irreversible-to-third-parties act: an `EmailSubmission/set` with a non-empty `create` (dispatching mail). Without it → `failWith("bad_input", "sending requires allow_send:true — this batch contains an EmailSubmission/set create that would dispatch mail")`. Drafts (`Email/set create` with `keywords:{$draft:true}`), moves (patch `mailboxIds`), and flags (patch `keywords`) do NOT need it.
 
 **`allow_destroy`** gates the irreversible-and-persistent-egress class (the winner's "destroy is recoverable" was factually wrong):
-- any `Foo/set` with a non-empty `destroy` array — `Email/set {destroy}` **permanently expunges** (it does NOT move to Trash; moving to Trash is a `mailboxIds` patch); `Contact/set`/`CalendarEvent/set`/`MaskedEmail` delete are likewise unrecoverable;
+- any `Foo/set` with a non-empty `destroy` array — `Email/set {destroy}` **permanently expunges** (it does NOT move to Trash; moving to Trash is a `mailboxIds` patch); `ContactCard/set`/`CalendarEvent/set`/`MaskedEmail` delete are likewise unrecoverable;
 - `Mailbox/set` with `onDestroyRemoveEmails:true` (wipes a folder);
 - `VacationResponse/set` (auto-responder — backscatter/info-leak to every sender);
 - any Sieve/rule/forwarding method the live Session advertises (installs lasting exfiltration of ALL FUTURE mail — strictly worse than one send).
@@ -432,7 +432,7 @@ Example text: `[bad_input] unknown JMAP method "search_email" — this fn speaks
 Nothing special — method names + an auto-derived `using` URN (§7) + generalized accountId routing (§4):
 
 - **MaskedEmail** (the differentiator a 29-tool set can't reach): `jmap({calls:[["MaskedEmail/get",{},"g"]]})` auto-adds `using:["…core","https://www.fastmail.com/dev/maskedemail"]` and resolves `accountId` by scanning `accountCapabilities` (§4/D14). Create: `["MaskedEmail/set",{create:{m:{forDomain:"example.com", emailPrefix:"shop", description:"…"}}},"s"]`. Lifecycle (`pending`→`enabled`→`disabled`→`deleted`) is a `state` patch, not `/destroy`; the description names the trap. Server-side query is limited, so the get-all-then-filter pattern is documented and the result can `pipe` into a sux `filter`.
-- **Contacts**: `Contact/query|get`, `AddressBook/get` → `…:contacts` (fallback `https://www.fastmail.com/dev/contacts` if that is what the live Session advertises).
+- **Contacts**: `ContactCard/query|get` (RFC 9610 JSCard — Fastmail's contacts object, **not** the legacy `Contact`), `AddressBook/get` → `…:contacts` (fallback `https://www.fastmail.com/dev/contacts` if that is what the live Session advertises).
 - **Calendars**: `Calendar/get`, `CalendarEvent/query|get|set` → `…:calendars`, **feature-detected**: if the URN is absent from the live `capabilities` (JMAP-calendars is still an IETF draft) → `failWith("bad_input", "this Fastmail account does not advertise JMAP calendars — use CalDAV")`.
 - **VacationResponse**: `VacationResponse/get|set` → `…:vacationresponse`; `set` is `allow_destroy`-gated (§10).
 
