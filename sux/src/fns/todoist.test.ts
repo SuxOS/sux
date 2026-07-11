@@ -41,6 +41,33 @@ describe("todoist (REST v2 adapter)", () => {
 		expect(out).toMatchObject({ ok: true, added: { id: "9", content: "Call Dr. Chen" } });
 	});
 
+	it("add_many bulk-creates over an array (NL due strings pass to Todoist), per-item report (§5)", async () => {
+		let n = 0;
+		vi.stubGlobal("fetch", vi.fn(async (_u: string | URL, init?: any) => {
+			expect(init.method).toBe("POST");
+			const body = JSON.parse(init.body);
+			return new Response(JSON.stringify({ id: String(++n), content: body.content, due: { string: body.due_string } }), { status: 200 });
+		}));
+		const out = parse(await todoist.run(ENV, { action: "add_many", items: [{ content: "A", due_string: "every weekday 9am" }, { content: "B" }] }));
+		expect(out).toMatchObject({ requested: 2, added: 2, failed: 0 });
+		expect(out.tasks.map((t: any) => t.content)).toEqual(["A", "B"]);
+	});
+
+	it("add_many rejects an empty array + items missing content", async () => {
+		expect((await todoist.run(ENV, { action: "add_many", items: [] })).isError).toBe(true);
+		expect((await todoist.run(ENV, { action: "add_many", items: [{ due_string: "x" }] })).isError).toBe(true);
+	});
+
+	it("complete_many closes an array of ids, surfacing partial failures (§5)", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			const good = !String(u).includes("/bad/");
+			return new Response(good ? null : JSON.stringify({ error: "not found" }), { status: good ? 204 : 404 });
+		}));
+		const out = parse(await todoist.run(ENV, { action: "complete_many", ids: ["1", "bad", "3"] }));
+		expect(out).toMatchObject({ requested: 3, completed: 2, failed: 1 });
+		expect(out.completedIds).toEqual(["1", "3"]);
+	});
+
 	it("update needs an id and at least one field", async () => {
 		expect((await todoist.run(ENV, { action: "update", content: "x" })).isError).toBe(true); // no id
 		expect((await todoist.run(ENV, { action: "update", id: "9" })).isError).toBe(true); // no fields

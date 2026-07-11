@@ -48,15 +48,17 @@ export const todoist: Fn = {
 	cost: 1,
 	cacheable: false,
 	description:
-		"Todoist tasks (REST v2). action: list ({project_id?, filter?}) | add ({content, description?, project_id?, due_string?, priority 1-4, labels?}) | update ({id, ...fields}) | complete ({id}) | reopen ({id}) | delete ({id, confirm:true}) | projects. " +
+		"Todoist as a BATCH/PIPELINE primitive — bulk array-in operations for use inside pipe/batch, not 50 interactive tools (for interactive task management use the official Todoist MCP). Bulk verbs: add_many ({items:[{content, due_string?, priority?, project_id?, labels?}, …]}) | complete_many ({ids:[…]}). Single-item: list ({project_id?, filter?}) | add ({content, …}) | update ({id, …}) | complete ({id}) | reopen ({id}) | delete ({id, confirm:true}) | projects. Natural-language due dates ('every weekday 9am', 'tomorrow 5pm') are parsed by Todoist. " +
 		"Needs TODOIST_TOKEN (Todoist → Settings → Integrations → Developer → API token). NOTE: setting `due_string` via update on a RECURRING task REPLACES its recurrence — reschedule a single occurrence in the Todoist app, not here. Delete is permanent (not a recoverable trash), so it needs confirm:true; complete is reversible via reopen.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
 		required: ["action"],
 		properties: {
-			action: { type: "string", enum: ["list", "add", "update", "complete", "reopen", "delete", "projects"] },
+			action: { type: "string", enum: ["list", "add", "add_many", "update", "complete", "complete_many", "reopen", "delete", "projects"] },
 			id: { type: "string", description: "Task id (update/complete/reopen/delete)." },
+			items: { type: "array", description: "add_many: tasks to create, each {content, description?, project_id?, due_string?, priority?, labels?}. Max 50.", items: { type: "object", additionalProperties: true } },
+			ids: { type: "array", description: "complete_many: task ids to close. Max 100.", items: { type: "string" } },
 			content: { type: "string", description: "add/update: the task text." },
 			description: { type: "string", description: "add/update: longer note on the task." },
 			project_id: { type: "string", description: "list: filter to a project / add: target project (default Inbox)." },
@@ -92,6 +94,36 @@ export const todoist: Fn = {
 				const r = await tapi(env, "POST", "/tasks", body);
 				if (r.status >= 400) return failWith(codeFor(r.status), `Todoist add: ${r.json?.error ?? (r.text.slice(0, 200) || `HTTP ${r.status}`)}`);
 				return ok(JSON.stringify({ ok: true, added: task(r.json) }, null, 2));
+			}
+			if (action === "add_many") {
+				const items = Array.isArray(a?.items) ? a.items : [];
+				if (!items.length) return failWith("bad_input", "todoist add_many requires a non-empty `items` array.");
+				if (items.length > 50) return failWith("bad_input", "todoist add_many is capped at 50 items per call — split the batch.");
+				if (items.some((it: any) => !it?.content)) return failWith("bad_input", "every add_many item needs `content`.");
+				const results = await Promise.all(
+					items.map(async (it: any) => {
+						const body = defined({ content: String(it.content), description: it?.description, project_id: it?.project_id, due_string: it?.due_string, priority: it?.priority, labels: it?.labels });
+						const r = await tapi(env, "POST", "/tasks", body);
+						return r.status >= 400 ? { ok: false, content: String(it.content), error: r.json?.error ?? `HTTP ${r.status}` } : { ok: true, ...task(r.json) };
+					}),
+				);
+				const added = results.filter((x: any) => x.ok);
+				const failed = results.filter((x: any) => !x.ok);
+				return ok(JSON.stringify({ requested: items.length, added: added.length, failed: failed.length, tasks: added, ...(failed.length ? { errors: failed } : {}) }, null, 2));
+			}
+			if (action === "complete_many") {
+				const ids = Array.isArray(a?.ids) ? a.ids.map(String) : [];
+				if (!ids.length) return failWith("bad_input", "todoist complete_many requires a non-empty `ids` array.");
+				if (ids.length > 100) return failWith("bad_input", "todoist complete_many is capped at 100 ids per call — split the batch.");
+				const results = await Promise.all(
+					ids.map(async (tid: string) => {
+						const r = await tapi(env, "POST", `/tasks/${encodeURIComponent(tid)}/close`);
+						return r.status >= 400 ? { id: tid, ok: false, error: r.json?.error ?? `HTTP ${r.status}` } : { id: tid, ok: true };
+					}),
+				);
+				const completed = results.filter((x) => x.ok).map((x) => x.id);
+				const failed = results.filter((x) => !x.ok);
+				return ok(JSON.stringify({ requested: ids.length, completed: completed.length, completedIds: completed, failed: failed.length, ...(failed.length ? { errors: failed } : {}) }, null, 2));
 			}
 			if (action === "update") {
 				if (!id) return failWith("bad_input", "todoist update requires an `id`.");
