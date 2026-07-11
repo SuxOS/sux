@@ -19,7 +19,7 @@ Account under test: Fastmail `ua5f1401b`, primary identity `m@colinxs.com` (id `
 | Credential | Protocol | Covers | Notes |
 |---|---|---|---|
 | `FASTMAIL_TOKEN` | JMAP Bearer | Email, Mailbox, Thread, Identity, EmailSubmission (incl. FUTURERELEASE), MaskedEmail | currently mail+submission+maskedemail only |
-| `FASTMAIL_TOKEN` (after re-scope) | JMAP Bearer | + Contacts, + VacationResponse, + Quota | re-mint with those scopes |
+| `FASTMAIL_TOKEN` (after re-scope) | JMAP Bearer | + Contacts (`ContactCard`, RFC 9610) | re-mint with the Contacts scope. **Shipped correction:** Fastmail API tokens do **not** grant `vacationresponse` or `quota` — no re-mint exposes them (a platform limit), so `mail_vacation`/`mail_quota` permanently gate to `not_configured`. |
 | `FASTMAIL_CALDAV_USER` + `FASTMAIL_APP_PASSWORD` | CalDAV Basic | Calendar (VEVENT) + Tasks (VTODO) | app password, NOT the token, NOT login pw |
 
 Hard limit: **Calendar is never reachable over JMAP** — Fastmail exposes no `jmap:calendars` scope (spec is an IETF draft). No token fixes it; calendar is CalDAV-only.
@@ -76,13 +76,13 @@ Apply in `mail_send`, `mail_draft`, and `mail_schedule`. Account wildcards: `m@c
 
 ## Phase 2 — Re-scoped JMAP verbs (after `FASTMAIL_TOKEN` re-mint)
 
-Prerequisite: reissue `FASTMAIL_TOKEN` in Fastmail Settings → Privacy & Security → API tokens with Mail read+write, Masked Email, Contacts read+write, plus Vacation/Quota if offered; update the Worker secret; force `session_refresh` to bust the KV-cached Session.
+Prerequisite: reissue `FASTMAIL_TOKEN` in Fastmail Settings → Privacy & Security → API tokens with Mail read+write, Masked Email, Contacts read+write (Vacation/Quota are **not** grantable on a Fastmail API token — a platform limit, so `mail_vacation`/`mail_quota` stay `not_configured` no matter how the token is scoped); update the Worker secret; force `session_refresh` to bust the KV-cached Session.
 
 **2a. `mail_vacation`** get/set over `VacationResponse` (needs vacationresponse scope). Route set through stage-then-commit / `allow_destroy`.
 **2b. `mail_quota`** over `Quota/get` (needs quota scope).
 **2c. Contacts verbs** over `urn:ietf:params:jmap:contacts` (`AddressBook`/`ContactCard` — RFC 9610): `contact_search`, `contact_get`, `contact_create/update/delete` (destroys staged).
 
-**Gate 2:** re-run the Phase-0 scope-probe; Contacts/Vacation/Quota flip to `true`, Calendars stays `false`. `mail_quota` returns usage; `contact_search` returns typed rows.
+**Gate 2:** re-run the Phase-0 scope-probe; **Contacts** flips to `true` — but **Vacation/Quota do NOT** (Fastmail API tokens can't carry those scopes; they stay `not_configured`, a platform limit, not a bug), and Calendars stays `false`. `contact_search` returns typed rows; `mail_vacation`/`mail_quota` gate cleanly with the re-mint hint rather than erroring.
 
 ---
 
