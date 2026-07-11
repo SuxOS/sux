@@ -110,6 +110,12 @@ export type RtEnv = Env &
 		FASTMAIL_ACCOUNT_ID?: string;
 		FASTMAIL_SESSION_URL?: string;
 
+		// Fastmail calendar + tasks ride CalDAV (JMAP has no jmap:calendars on Fastmail),
+		// authenticated by an app-specific password — Settings → Privacy & Security → App
+		// passwords, with Calendars/CalDAV access. Both must be set for cal_*/task_*/caldav.
+		FASTMAIL_CALDAV_USER?: string;
+		FASTMAIL_APP_PASSWORD?: string;
+
 
 		TAVILY_API_KEY?: string;
 

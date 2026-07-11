@@ -4,6 +4,7 @@ import { fail, type RtEnv, type ToolResult } from "./registry";
 import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
 import { doUpload, jstr, scopeProbe } from "./fns/_jmap";
+import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, hasCalDav, listCalendars, parseICal, reportObjects } from "./fns/_caldav";
 
 // The mail MCP server — the ergonomic Fastmail surface, served at /mail/mcp behind
 // the same workers-oauth-provider flow, so it appears as its own "mail" connector in
@@ -99,6 +100,29 @@ function shapeContact(c: any): Record<string, unknown> {
 		emails: Array.isArray(c?.emails) ? c.emails.map((e: any) => e?.value).filter(Boolean) : [],
 		phones: Array.isArray(c?.phones) ? c.phones.map((p: any) => p?.value).filter(Boolean) : [],
 	};
+}
+
+/** Pick a target calendar collection: the caller's href, else the first non-task (or task) calendar. */
+async function pickCalendar(env: RtEnv, wantTasks: boolean, href?: string): Promise<CalendarRef> {
+	const cals = await listCalendars(env);
+	if (href) {
+		const found = cals.find((c) => c.href === href);
+		if (!found) throw new Error(`no calendar with href '${href}' — list them with cal_list.`);
+		return found;
+	}
+	const pick = cals.find((c) => c.isTasks === wantTasks) ?? cals[0];
+	if (!pick) throw new Error("no calendars found on this account.");
+	return pick;
+}
+
+/** Shape a parsed VEVENT/VTODO component to a token-cheap reference. */
+function shapeCalObject(o: { href: string; etag: string | null; ical: string }): Record<string, unknown> | null {
+	const comp = parseICal(o.ical)[0];
+	if (!comp) return null;
+	const p = comp.props;
+	const base = { uid: p.UID, summary: p.SUMMARY, href: o.href, etag: o.etag };
+	if (comp.component === "VTODO") return { ...base, due: p.DUE ?? null, status: p.STATUS ?? null, description: p.DESCRIPTION ?? undefined };
+	return { ...base, start: p.DTSTART ?? null, end: p.DTEND ?? null, location: p.LOCATION ?? undefined, description: p.DESCRIPTION ?? undefined };
 }
 
 /** Map ergonomic contact args (plain strings) to a JMAP Contact card patch — only the provided fields. */
@@ -617,6 +641,137 @@ const TOOLS: MailTool[] = [
 				};
 				const out = await staged(env, "contact_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { id }, { action: "delete contact (permanent)", id }, mutate);
 				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "cal_list",
+		description: "List your Fastmail calendars (and task lists) — {href, name, isTasks}. Use the href with cal_events/cal_create. Needs FASTMAIL_CALDAV_USER + FASTMAIL_APP_PASSWORD (CalDAV).",
+		inputSchema: { type: "object", additionalProperties: false, properties: {} },
+		run: async (env) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			try {
+				const cals = await listCalendars(env);
+				return ok({ count: cals.length, calendars: cals.map((c) => ({ href: c.href, name: c.name, isTasks: c.isTasks, ...(c.description ? { description: c.description } : {}) })) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "cal_events",
+		description: "List events in a calendar (references: {uid, summary, start, end, href, etag}). Pass `calendar` (an href from cal_list) or omit to use your first calendar. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { calendar: { type: "string", description: "Calendar href from cal_list (defaults to your first calendar)." } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			try {
+				const cal = await pickCalendar(env, false, a?.calendar ? String(a.calendar) : undefined);
+				const objs = await reportObjects(env, cal.href, "VEVENT");
+				return ok({ calendar: cal.href, count: objs.length, events: objs.map(shapeCalObject).filter(Boolean) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "cal_create",
+		description: "Create a calendar event. Provide summary + start (ISO-8601; a date-only value is all-day), optional end/description/location and `calendar` (href). Routes through stage-then-commit. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["summary", "start"], properties: { calendar: { type: "string" }, summary: { type: "string" }, start: { type: "string", description: "ISO-8601 start; date-only (YYYY-MM-DD) = all-day." }, end: { type: "string" }, description: { type: "string" }, location: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!a?.summary || !a?.start) return fail("cal_create needs summary and start.");
+			try {
+				const cal = await pickCalendar(env, false, a?.calendar ? String(a.calendar) : undefined);
+				const payload = { calendar: cal.href, summary: String(a.summary), start: String(a.start), end: a?.end ?? null, description: a?.description ?? null, location: a?.location ?? null };
+				const mutate = async () => {
+					const uid = crypto.randomUUID();
+					const ical = buildVEvent({ uid, summary: String(a.summary), start: String(a.start), end: a?.end ? String(a.end) : undefined, description: a?.description ? String(a.description) : undefined, location: a?.location ? String(a.location) : undefined, dtstamp: new Date().toISOString() });
+					const href = `${cal.href}${uid}.ics`;
+					const r = await caldavFetch(env, "PUT", href, { body: ical, contentType: "text/calendar; charset=utf-8", ifNoneMatch: "*" });
+					if (!r.ok) throw new Error(`event create failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
+					return { created: true, uid, href, etag: r.etag };
+				};
+				const out = await staged(env, "cal_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, { action: "create event", ...payload }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "cal_delete",
+		description: "Delete a calendar event or task by its href (from cal_events/task_list). Pass etag to guard against a concurrent edit. Routes through stage-then-commit. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["href"], properties: { href: { type: "string", description: "Object href from cal_events/task_list." }, etag: { type: "string", description: "If set, delete only if the object still matches (If-Match)." }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!a?.href) return fail("cal_delete requires the object `href`.");
+			try {
+				const href = String(a.href);
+				const mutate = async () => {
+					const r = await caldavFetch(env, "DELETE", href, a?.etag ? { ifMatch: String(a.etag) } : {});
+					if (!r.ok && r.status !== 404) throw new Error(`delete failed: HTTP ${r.status}`);
+					return { deleted: href, ...(r.status === 404 ? { note: "already gone" } : {}) };
+				};
+				const out = await staged(env, "cal_delete", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, { href, etag: a?.etag ?? null }, { action: "delete calendar object", href }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "task_list",
+		description: "List tasks (VTODO) in a task list — {uid, summary, due, status, href, etag}. Pass `calendar` (a task-list href from cal_list) or omit for your first task list. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, properties: { calendar: { type: "string" } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			try {
+				const cal = await pickCalendar(env, true, a?.calendar ? String(a.calendar) : undefined);
+				const objs = await reportObjects(env, cal.href, "VTODO");
+				return ok({ calendar: cal.href, count: objs.length, tasks: objs.map(shapeCalObject).filter(Boolean) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "task_create",
+		description: "Create a task (VTODO). Provide summary, optional due (ISO-8601)/description and `calendar` (task-list href). Routes through stage-then-commit. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["summary"], properties: { calendar: { type: "string" }, summary: { type: "string" }, due: { type: "string" }, description: { type: "string" }, stage: { type: "boolean" }, commit_token: { type: "string" } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!a?.summary) return fail("task_create needs a summary.");
+			try {
+				const cal = await pickCalendar(env, true, a?.calendar ? String(a.calendar) : undefined);
+				const payload = { calendar: cal.href, summary: String(a.summary), due: a?.due ?? null, description: a?.description ?? null };
+				const mutate = async () => {
+					const uid = crypto.randomUUID();
+					const ical = buildVTodo({ uid, summary: String(a.summary), due: a?.due ? String(a.due) : undefined, description: a?.description ? String(a.description) : undefined, dtstamp: new Date().toISOString() });
+					const href = `${cal.href}${uid}.ics`;
+					const r = await caldavFetch(env, "PUT", href, { body: ical, contentType: "text/calendar; charset=utf-8", ifNoneMatch: "*" });
+					if (!r.ok) throw new Error(`task create failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
+					return { created: true, uid, href, etag: r.etag };
+				};
+				const out = await staged(env, "task_create", { stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined }, payload, { action: "create task", ...payload }, mutate);
+				return ok("stageResult" in out ? out.stageResult : out.result);
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "caldav",
+		description: "Raw CalDAV escape hatch — issue a PROPFIND/REPORT/GET/PUT/DELETE against Fastmail CalDAV with Basic auth injected. {method, path (from host or full URL), body, depth, contentType}. Returns {status, text, etag}. Needs CalDAV credentials.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["method", "path"], properties: { method: { type: "string" }, path: { type: "string", description: "Absolute-from-host path (e.g. the calendar-home) or full URL." }, body: { type: "string" }, depth: { type: "string", enum: ["0", "1", "infinity"] }, contentType: { type: "string" }, home: { type: "boolean", description: "Ignore path and target your calendar-home collection." } } },
+		run: async (env, a) => {
+			if (!hasCalDav(env)) return fail(CALDAV_NOT_CONFIGURED);
+			if (!a?.method || (!a?.path && a?.home !== true)) return fail("caldav needs method and path (or home:true).");
+			try {
+				const path = a?.home === true ? calendarHome(env) : String(a.path);
+				const r = await caldavFetch(env, String(a.method).toUpperCase(), path, { body: a?.body ? String(a.body) : undefined, contentType: a?.contentType ? String(a.contentType) : "application/xml; charset=utf-8", depth: a?.depth ? String(a.depth) : undefined });
+				return ok({ status: r.status, ok: r.ok, etag: r.etag, text: r.text });
 			} catch (e) {
 				return fail(errMsg(e));
 			}

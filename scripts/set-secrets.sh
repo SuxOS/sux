@@ -26,6 +26,8 @@ CONFIG="sux/wrangler.jsonc"
 # WORKER_SECRET               op://<vault>/<item>/<field>   (edit the item/field to match your vault)
 read -r -d '' MAP <<'EOF'
 FASTMAIL_TOKEN               op://Private/Fastmail sux/credential
+FASTMAIL_CALDAV_USER         op://Private/Fastmail sux/username
+FASTMAIL_APP_PASSWORD        op://Private/Fastmail sux/app_password
 TODOIST_TOKEN                op://Private/Todoist API/token
 DROPBOX_APP_KEY              op://Private/Dropbox sux app/app_key
 DROPBOX_APP_SECRET           op://Private/Dropbox sux app/app_secret

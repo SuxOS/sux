@@ -96,6 +96,25 @@ const env = () => ({ FASTMAIL_TOKEN: "tok", OAUTH_KV: kvStub() }) as any;
 const tool = (name: string) => MAIL_TOOLS.find((t) => t.name === name)!;
 const parse = (r: any) => JSON.parse(r.content[0].text);
 
+// CalDAV (P3) — Basic-auth app-password, separate from the JMAP token.
+const calEnv = () => ({ FASTMAIL_CALDAV_USER: "me@fastmail.com", FASTMAIL_APP_PASSWORD: "app-pw", OAUTH_KV: kvStub() }) as any;
+const CALS_XML = `<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:response><d:href>/dav/calendars/user/me@fastmail.com/personal/</d:href><d:propstat><d:prop><d:displayname>Personal</d:displayname><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set></d:prop></d:propstat></d:response>
+  <d:response><d:href>/dav/calendars/user/me@fastmail.com/tasks/</d:href><d:propstat><d:prop><d:displayname>Tasks</d:displayname><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set></d:prop></d:propstat></d:response>
+</d:multistatus>`;
+function installCalDav() {
+	const f = vi.fn(async (input: any, init?: any) => {
+		const method = init?.method ?? "GET";
+		if (method === "PROPFIND") return new Response(CALS_XML, { status: 207 });
+		if (method === "REPORT") return new Response(`<d:multistatus xmlns:d="DAV:"></d:multistatus>`, { status: 207 });
+		if (method === "PUT") return new Response("", { status: 201, headers: { etag: '"new"' } });
+		if (method === "DELETE") return new Response("", { status: 204 });
+		return new Response("", { status: 200 });
+	});
+	global.fetch = f as any;
+	return f;
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("mail_* ergonomic tools", () => {
@@ -294,6 +313,27 @@ describe("mail_* ergonomic tools", () => {
 		expect(st).toMatchObject({ staged: true, kind: "contact_create" });
 		expect(parse(await tool("contact_create").run(e, { firstName: "Grace", emails: ["grace@x.com"], commit_token: st.commit_token })).created).toMatchObject({ id: "c2" });
 		expect(parse(await tool("contact_delete").run(e, { id: "c1", stage: true }))).toMatchObject({ staged: true, kind: "contact_delete" });
+	});
+
+	it("cal_/task_ verbs gate on CalDAV credentials (§3)", async () => {
+		installFetch();
+		for (const name of ["cal_list", "cal_events", "task_list", "caldav"] as const) {
+			const r = await tool(name).run(env(), { method: "PROPFIND", path: "/x" });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/CalDAV|APP_PASSWORD/i); // flip-on-ready message
+		}
+	});
+
+	it("cal_list parses calendars; cal_create stages then PUTs an event (§3)", async () => {
+		const e = calEnv();
+		installCalDav();
+		const list = parse(await tool("cal_list").run(e, {}));
+		expect(list.calendars.find((c: any) => c.name === "Personal")).toMatchObject({ isTasks: false });
+		expect(list.calendars.find((c: any) => c.name === "Tasks")).toMatchObject({ isTasks: true });
+		const st = parse(await tool("cal_create").run(e, { summary: "Standup", start: "2026-07-11T09:00:00Z", stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "cal_create" }); // previews, no PUT
+		const done = parse(await tool("cal_create").run(e, { summary: "Standup", start: "2026-07-11T09:00:00Z", commit_token: st.commit_token }));
+		expect(done).toMatchObject({ created: true, etag: '"new"' });
 	});
 
 	it("exposes the raw jmap escape hatch", () => {
