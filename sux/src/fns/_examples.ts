@@ -14,6 +14,13 @@ import { cosine } from "./_embed";
 const PREFIX = "sux:learn:example:";
 const keyOf = (id: string) => `${PREFIX}${id}`;
 
+// listExamples sits on recall's hot path (fromLearned runs on every recall), so its cost has to
+// stay bounded. Cap the scan at one KV list page (KV caps a page at 1000 keys) instead of
+// paginating the whole prefix, and fetch the values in bounded-concurrency batches rather than one
+// sequential get at a time — turning an unbounded O(N) serial scan into a bounded, parallel one.
+const MAX_EXAMPLES = 1000;
+const GET_CONCURRENCY = 50;
+
 export type Example = {
 	id: string;
 	input: string;
@@ -45,22 +52,23 @@ export async function getExample(env: RtEnv, id: string): Promise<Example | null
 	}
 }
 
-/** Load every stored example, paginating KV list() (caps at 1000 keys/page). Brute-force kNN
- *  scans this whole set — the linear cost that would eventually trigger Vectorize (deferred). */
+/** Load the stored examples (capped at MAX_EXAMPLES = one KV list page) and fetch their values in
+ *  GET_CONCURRENCY-sized parallel batches. Brute-force kNN scans this whole set — the linear cost
+ *  that would eventually trigger Vectorize (deferred); the cap keeps recall's hot path bounded. */
 export async function listExamples(env: RtEnv): Promise<Example[]> {
 	const kv = env.OAUTH_KV;
 	if (!kv) return [];
-	const ids: string[] = [];
-	let cursor: string | undefined;
-	do {
-		const page = await kv.list({ prefix: PREFIX, cursor });
-		for (const k of page.keys) ids.push(k.name.slice(PREFIX.length));
-		cursor = page.list_complete ? undefined : page.cursor;
-	} while (cursor);
+	const page = await kv.list({ prefix: PREFIX });
+	const ids = page.keys.map((k) => k.name.slice(PREFIX.length));
+	// Beyond one page we stop scanning: past MAX_EXAMPLES the linear kNN is untenable anyway, and a
+	// silent partial read would be worse than a loud one — flag it so the Vectorize cutover is felt.
+	if (!page.list_complete && ids.length >= MAX_EXAMPLES) {
+		console.warn(`listExamples: learned set exceeds ${MAX_EXAMPLES}; scanning first page only (kNN is now partial — time to move to Vectorize)`);
+	}
 	const out: Example[] = [];
-	for (const id of ids) {
-		const ex = await getExample(env, id);
-		if (ex) out.push(ex);
+	for (let i = 0; i < ids.length; i += GET_CONCURRENCY) {
+		const batch = await Promise.all(ids.slice(i, i + GET_CONCURRENCY).map((id) => getExample(env, id)));
+		for (const ex of batch) if (ex) out.push(ex);
 	}
 	out.sort((a, b) => a.ts - b.ts);
 	return out;
