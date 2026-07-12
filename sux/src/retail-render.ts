@@ -46,6 +46,16 @@ export type RetailRenderOpts = {
 const FIRST_LEG_MS = 25_000;
 const SECOND_LEG_MS = 12_000;
 
+// A bot WALL comes back as a "successful" fetch of a block/challenge page, not a transport
+// error — so a leg that returns HTML isn't necessarily a win. Treat a page carrying these
+// signatures as a FAILURE so the ladder escalates (cf→mac, and the caller's unlocker rung)
+// instead of returning the wall as content. MARKER-based only (no blanket length check — a
+// legitimately short page must not read as blocked): Akamai (Access Denied / sec-cpt /
+// Reference #), PerimeterX-HUMAN (Pardon Our Interruption / verify you are human / px-captcha),
+// Cloudflare/Imperva challenge.
+const BLOCK_RE = /Access Denied|sec-cpt|Pardon Our Interruption|verify you are (a )?human|px-captcha|Attention Required|Just a moment|Incapsula|Request unsuccessful|Reference #\d/i;
+export const looksBlocked = (html: string | undefined): boolean => !!html && BLOCK_RE.test(html);
+
 /**
  * Render a retail page across the cf + mac backends with a deadline-safe fallback.
  * Order is cf→mac by default, mac→cf when opts.preferMac. Returns the never-throw mac
@@ -56,9 +66,20 @@ export async function retailRender(env: RtEnv, spec: RetailRenderSpec, opts: Ret
 	const firstBudget = Math.min(spec.timeout_ms ?? FIRST_LEG_MS, FIRST_LEG_MS);
 
 	const runLeg = async (backend: "mac" | "cf", budget: number): Promise<MacRenderResult> => {
-		if (backend === "mac") return macRender(env, { as: "html", ...spec, timeout_ms: budget });
+		if (backend === "mac") {
+			const m = await macRender(env, { as: "html", ...spec, timeout_ms: budget });
+			// A mac leg that returns a wall (rare — mac solves challenges — but possible) must
+			// also escalate, not pass the block page through as content.
+			if (m.ok && "body" in m && looksBlocked(m.body)) return { ok: false, error: "mac render blocked (bot wall)" };
+			return m;
+		}
 		const cf = await cfRender(env, { url: spec.url, as: "html", wait_until: spec.wait_until, wait_ms: spec.wait_ms, block_resources: spec.block_resources, timeout_ms: budget, residential: true, stealth: true });
-		if (cf.ok && "body" in cf) return { ok: true, contentType: cf.contentType, body: cf.body };
+		if (cf.ok && "body" in cf) {
+			// cf cleared transport but may have fetched a bot wall — a "successful" block page.
+			// Treat it as a failure so the ladder escalates to mac / the paid unlocker.
+			if (looksBlocked(cf.body)) return { ok: false, error: "cf render blocked (bot wall)" };
+			return { ok: true, contentType: cf.contentType, body: cf.body };
+		}
 		return { ok: false, error: cf.ok ? "cf render returned a non-HTML result" : cf.error };
 	};
 

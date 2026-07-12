@@ -106,11 +106,20 @@ describe("homedepot", () => {
 		expect(unlockerRenderMock.mock.calls[0][1]).toMatchObject({ url: "https://www.homedepot.com/s/drill" });
 	});
 
-	it("fails when no products can be extracted (challenge or layout change)", async () => {
-		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: "<html><body>Access Denied</body></html>" });
+	it("fails as layout_change when a real page has no products (no block marker)", async () => {
+		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: "<html><body><main>Search results for drill</main></body></html>" });
 		const r = await homedepot.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "drill" });
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/no products extracted/);
+	});
+
+	it("detects an Akamai block page (not a layout change) and escalates → blocked when the unlocker is unset", async () => {
+		// A block page comes back as a "successful" fetch — the ladder must treat it as a wall,
+		// escalate past mac, and (unlocker unset) fail as BLOCKED, not mis-report a layout change.
+		macRenderMock.mockResolvedValueOnce({ ok: true, contentType: "text/html", body: "<html><body>Access Denied</body></html>" });
+		const r = await homedepot.run({ MAC_RENDER_URL: "x", MAC_RENDER_SECRET: "y" } as any, { action: "search", term: "drill" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/blocked/i);
 	});
 	it("cf forces residential + stealth as the primary leg", async () => {
 		cfRenderMock.mockReset();
