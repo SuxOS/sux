@@ -56,7 +56,7 @@ capability map, or `sux({domain})` to zoom one group.
 | Fetch a page (bot-shy sites, datacenter-IP blocks) | `scrape` |
 | JS-rendered page, screenshot, or page→PDF | `render` (`as: html\|text\|screenshot\|pdf`; `backend: mac` for Akamai-hard sites) |
 | Force everything through the residential exit (raw HTTP: headers, POST, binary) | `proxy` |
-| Fetch from a specific country/locale (geo-priced / geo-gated data) | `geo_fetch` |
+| Fetch from a specific country/locale (geo-priced / geo-gated data) | `proxy` with an `x-exit-geo` header (e.g. `us-ca`, `de`) |
 | Many URLs at once | `batch_fetch` (`as: "url"` = bulk download to R2) |
 | Follow links breadth-first | `crawl` (depth ≤ 3, max 100) |
 | Article body only (no nav/ads) | `readability` |
@@ -77,7 +77,7 @@ capability map, or `sux({domain})` to zoom one group.
 - **smart** (default) — cheapest rung first; residential only when a datacenter IP
   is blocked; direct fallback so it never hard-fails. (`scrape`.)
 - **full proxy** — force everything through the residential exit, no fallback. (`proxy`.)
-- **geo** — pick the exit locale for region-priced / geo-gated data. (`geo_fetch`.)
+- **geo** — pick the exit locale for region-priced / geo-gated data. (`proxy` with an `x-exit-geo` header.)
 
 ## Research & reference
 

@@ -34,7 +34,6 @@ import { pubmed } from "./pubmed";
 import { clinical_trials } from "./clinical_trials";
 import { youtube } from "./youtube";
 import { wayback } from "./wayback";
-import { geo_fetch } from "./geo_fetch";
 import { redirects } from "./redirects";
 import { robots } from "./robots";
 import { crawl } from "./crawl";
@@ -139,7 +138,6 @@ export const FUNCTIONS: Fn[] = [
 	clinical_trials,
 	youtube,
 	wayback,
-	geo_fetch,
 	redirects,
 	robots,
 	crawl,

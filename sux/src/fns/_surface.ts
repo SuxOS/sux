@@ -16,7 +16,7 @@ export const DOMAINS: DomainSpec[] = [
 	{
 		key: "fetch",
 		blurb: "Retrieve & render pages through a residential proxy, with the scrape → render → render:mac escalation ladder for bot-walled sites; snapshots, redirects, robots, crawl.",
-		leaves: ["scrape", "render", "proxy", "geo_fetch", "crawl", "wayback", "redirects", "robots"],
+		leaves: ["scrape", "render", "proxy", "crawl", "wayback", "redirects", "robots"],
 	},
 	{
 		key: "extract",

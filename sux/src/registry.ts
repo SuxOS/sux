@@ -278,7 +278,7 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 	// research DBs, retail lookups, geo/people/crypto/media reads, recall/oracle).
 	...Object.fromEntries(
 		[
-			"search", "web_search", "tavily", "scrape", "render", "proxy", "geo_fetch", "batch_fetch", "crawl",
+			"search", "web_search", "tavily", "scrape", "render", "proxy", "batch_fetch", "crawl",
 			"wayback", "redirects", "robots", "sitemap", "feed", "subtitles",
 			"arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar",
 			"shop", "product_search", "amazon", "walmart", "costco", "homedepot", "lowes", "kroger", "bestbuy", "ebay", "ace", "winco", "weekly_ad",
