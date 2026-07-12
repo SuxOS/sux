@@ -232,13 +232,8 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 		upstream = { reachable: false, status: 0 };
 	}
 
-<<<<<<< HEAD
-	const ok = config.kagiKey && config.githubClient && upstream.reachable;
-	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron };
-=======
 	const ok = config.kagiKey && config.githubClient && upstream.reachable && bindingsOk(bindings);
-	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, bindings };
->>>>>>> 0a2dcf8 (feat(health): probe the Worker's own bindings in /health)
+	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron, bindings };
 }
 
 function renderHealthHtml(h: any): string {
