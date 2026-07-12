@@ -43,6 +43,20 @@ describe("classifier — rules stub", () => {
 			expect(classifyMessage(msg).label).toBe(label);
 		});
 	}
+	it("does NOT call a personal-domain sender a newsletter on a preview cue alone (no auto-archive of real mail)", () => {
+		// "weekly"/"unsubscribe" in a preview must not, by itself, override the sender check —
+		// a gmail.com human whose message merely contains those words stays PERSONAL, not newsletter.
+		for (const preview of ["let's meet weekly going forward", "unsubscribe me from the group calendar?"]) {
+			const c = classifyMessage({ id: "n", from: "friend@gmail.com", subject: "lunch tomorrow?", preview });
+			expect(c.label).not.toBe("newsletter");
+			expect(c.label).toBe("personal");
+		}
+	});
+	it("still labels a real bulk sender a newsletter (cue + newsletter-sender signal)", () => {
+		expect(classifyMessage({ id: "n2", from: "newsletter@substack.com", subject: "Weekly Digest", preview: "unsubscribe" }).label).toBe("newsletter");
+		// A non-personal domain may qualify on a preview cue even without a newsletter-y address.
+		expect(classifyMessage({ id: "n3", from: "hi@somebrand.example", subject: "hello", preview: "you can unsubscribe any time" }).label).toBe("newsletter");
+	});
 	it("gives unmatched mail LOW confidence so the gate stays meaningful", () => {
 		expect(classifyMessage({ id: "x", from: "a@randomcorp.example", subject: "hey" }).confidence).toBeLessThan(CONFIDENCE_THRESHOLD);
 	});
@@ -153,6 +167,58 @@ describe("runTriage — gating + idempotency", () => {
 		const report = await runTriage(env, { cycle_id: "b1", budget_ms: 1000 }, { ...mkDeps(many), search: async () => many });
 		// budget_ms clamps to a 1000ms floor; with Date.now() already past deadline on entry it stops early.
 		expect(report.truncated === true || report.scanned! <= many.length).toBe(true);
+	});
+});
+
+describe("runTriage — unread-default scan (autonomous lane leaves read mail alone)", () => {
+	it("defaults the scan to unread-only so intentionally-read inbox mail is never touched", async () => {
+		const deps = mkDeps(SAMPLE);
+		const searchSpy = vi.fn(async (_env: any, _o: any) => SAMPLE);
+		await runTriage(envWith({ MAIL_TRIAGE_ENABLED: "1" }), { cycle_id: "ud1" }, { ...deps, search: searchSpy });
+		expect(searchSpy).toHaveBeenCalledTimes(1);
+		expect(searchSpy.mock.calls[0][1]).toMatchObject({ unread: true });
+	});
+	it("keeps an explicit override: unread:false scans read mail too", async () => {
+		const deps = mkDeps(SAMPLE);
+		const searchSpy = vi.fn(async (_env: any, _o: any) => SAMPLE);
+		await runTriage(envWith({ MAIL_TRIAGE_ENABLED: "1" }), { cycle_id: "ud2", unread: false }, { ...deps, search: searchSpy });
+		expect(searchSpy.mock.calls[0][1]).toMatchObject({ unread: false });
+	});
+});
+
+describe("runTriage — reversibility: undo-log is written BEFORE a message is marked seen", () => {
+	// A KV whose ledger-mark writes throw, simulating an abnormal exit (crash / isolate eviction)
+	// the instant AFTER a message is acted+marked but — if the ordering were wrong — before its
+	// undo-log landed. With log-then-mark, the acted entry must already be durable + undoable.
+	const throwingLedgerKV = () => {
+		const store = new Map<string, string>();
+		return {
+			store,
+			get: async (k: string) => store.get(k) ?? null,
+			put: async (k: string, v: string) => {
+				if (k.startsWith("sux:ledger:mail_triage:")) throw new Error("simulated crash marking message seen");
+				store.set(k, v);
+			},
+			delete: async (k: string) => void store.delete(k),
+		};
+	};
+
+	it("an acted message is logged (and thus undoable) even if marking it seen then crashes", async () => {
+		const env = { OAUTH_KV: throwingLedgerKV(), MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" } as any;
+		const deps = mkDeps(SAMPLE);
+		// The crash on led.mark propagates out of runTriage — the act + the log write already happened.
+		await expect(runTriage(env, { cycle_id: "crash" }, deps)).rejects.toThrow(/crash marking/);
+		// The first actioned message (j1: junk → label) was acted on...
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["j1"], { kind: "label", label: "junk", add: true });
+		// ...and its undo-log entry is already persisted — never acted-but-unlogged.
+		const logged = await readTriageEntries(env);
+		const j1 = logged.find((e) => e.id === "j1");
+		expect(j1).toMatchObject({ action: "acted", op: "label", keyword: "junk" });
+		// Which means a bulk-undo can still reverse it.
+		const label = vi.fn(async () => {});
+		const res: any = await bulkUndo(env, "crash", { label, move: vi.fn(async () => {}) });
+		expect(res.undone).toBe(1);
+		expect(label).toHaveBeenCalledWith(env, ["j1"], "junk", false);
 	});
 });
 

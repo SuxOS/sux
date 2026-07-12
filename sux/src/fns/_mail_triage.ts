@@ -105,11 +105,16 @@ export function classifyMessage(msg: TriageMsg): Classification {
 	const preview = String(msg.preview ?? "");
 	const hay = `${subject}\n${preview}`;
 	const domain = (from.match(/@([^\s>,;]+)/)?.[1] ?? "").replace(/[>).]+$/, "");
+	const isPersonal = PERSONAL_DOMAINS.has(domain);
 	if (JUNK_SUBJECT.test(hay)) return { label: "junk", confidence: 0.9, reason: "spam-signal subject/body" };
 	if (RECEIPT.test(subject)) return { label: "receipt", confidence: 0.85, reason: "receipt/invoice subject" };
-	if (NEWSLETTER_CUE.test(hay) && (NEWSLETTER_FROM.test(from) || NEWSLETTER_CUE.test(preview))) return { label: "newsletter", confidence: 0.8, reason: "newsletter cue + bulk sender" };
+	// Newsletter needs a SENDER signal, never a body/preview cue alone: a bulk-sender address
+	// (NEWSLETTER_FROM), or — only for a NON-personal domain — a preview cue. Gating the
+	// preview-only path behind !isPersonal stops a real person's mail that merely says
+	// "weekly"/"unsubscribe" from being mislabeled a newsletter and auto-archived.
+	if (NEWSLETTER_CUE.test(hay) && (NEWSLETTER_FROM.test(from) || (!isPersonal && NEWSLETTER_CUE.test(preview)))) return { label: "newsletter", confidence: 0.8, reason: "newsletter cue + bulk sender" };
 	if (NOTIFY_FROM.test(from)) return { label: "notification", confidence: 0.75, reason: "automated notification sender" };
-	if (PERSONAL_DOMAINS.has(domain)) return { label: "personal", confidence: 0.7, reason: "personal-provider sender" };
+	if (isPersonal) return { label: "personal", confidence: 0.7, reason: "personal-provider sender" };
 	return { label: "unknown", confidence: 0.2, reason: "no rule matched" };
 }
 
@@ -182,13 +187,14 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 	const actAllowed = opts.dry_run !== true && hasMailTriageAct(env);
 	const led = ledger(env, "mail_triage");
 
-	const msgs = await deps.search(env, { mailbox, unread: opts.unread === true, limit: max });
+	// Default the autonomous scan to UNREAD-only so the bot never touches mail Colin has
+	// intentionally opened and kept in the inbox. `unread:false` is an explicit override.
+	const msgs = await deps.search(env, { mailbox, unread: opts.unread !== false, limit: max });
 	let scanned = 0;
 	let skipped = 0;
 	let truncated = false;
 	const acted: NonNullable<TriageReport["acted"]> = [];
 	const suggested: NonNullable<TriageReport["suggested"]> = [];
-	const logEntries: TriageEntry[] = [];
 
 	for (const m of msgs) {
 		if (Date.now() >= deadline) {
@@ -213,32 +219,37 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 		const wouldAct = !!op && isAutoActAllowed(op) && c.confidence >= CONFIDENCE_THRESHOLD;
 		const rec = op ? opRecord(op, mailbox) : null;
 		let markSeen = false;
+		// This message's log entry, persisted BEFORE led.mark below (see the ordering note).
+		let entry: TriageEntry | null = null;
 		if (wouldAct && actAllowed) {
 			try {
 				await deps.act(env, [m.id], op!);
 				acted.push({ id: m.id, label: c.label, confidence: c.confidence, op: rec!.log.op ?? op!.kind, to: rec!.to });
-				logEntries.push({ cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, at: Date.now(), ...rec!.log });
+				entry = { cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, at: Date.now(), ...rec!.log };
 				markSeen = true; // acted successfully → don't reprocess
 			} catch (e) {
 				const reason = `act ${rec!.to} failed: ${errMsg(e)}`;
 				suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
-				logEntries.push({ cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, at: Date.now() });
+				entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, at: Date.now() };
 				// act FAILED → leave unseen so the next cycle retries.
 			}
 		} else {
 			const why = !op ? `${c.label}: no auto-action` : c.confidence < CONFIDENCE_THRESHOLD ? `low confidence ${c.confidence.toFixed(2)} < ${CONFIDENCE_THRESHOLD}` : "act path disabled (suggest-only)";
 			const reason = `${c.reason} — ${why}${rec ? `; suggest ${rec.to}` : ""}`;
 			suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
-			logEntries.push({ cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, ...(rec ? rec.log : {}), at: Date.now() });
+			entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, ...(rec ? rec.log : {}), at: Date.now() };
 			// Mark seen only on a definitive no-act decision while ACT is enabled (so daily
 			// re-runs don't re-suggest). In pure suggest-only mode, leave it unseen so that
 			// turning ACT on later still actions the existing inbox.
 			if (actAllowed) markSeen = true;
 		}
+		// Reversibility invariant: PERSIST the undo-log entry for this message BEFORE marking it
+		// seen. led.mark is what stops the next cycle from reprocessing; if we marked first and
+		// then crashed (or the isolate was evicted) before writing the log, an ACTED message would
+		// be un-undoable — acted-but-unlogged. Log-then-mark, per message, closes that window.
+		if (entry) await appendTriageEntries(env, [entry]);
 		if (markSeen) await led.mark(m.id);
 	}
-
-	if (logEntries.length) await appendTriageEntries(env, logEntries);
 
 	// Digest: best-effort, idempotent per cycle id (a double cron-fire won't double-append).
 	let digestWritten = false;
