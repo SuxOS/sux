@@ -517,9 +517,10 @@ function tokenEq(a: string, b: string): boolean {
 	return diff === 0;
 }
 
-// The frequent Cron Trigger reserved for the Prometheus metrics-snapshot push —
-// must match the second entry in wrangler.jsonc's `triggers.crons`. Any other cron
-// (the daily 13:00 UTC one) runs the full maintenance tick.
+// The frequent Cron Trigger (must match the second entry in wrangler.jsonc's
+// `triggers.crons`): pushes the Prometheus metrics snapshot AND runs mail-triage on a
+// ~5-min cadence. Any other cron (the daily 13:00 UTC one) runs the rest of the
+// maintenance tick.
 const METRICS_CRON = "*/5 * * * *";
 
 // Each sub-job runs via runSubJob: swallows failures (a bad one never blocks the
@@ -527,7 +528,6 @@ const METRICS_CRON = "*/5 * * * *";
 // last-success + staleness for the unattended cron parts on the public status page.
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {
 	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
-	await runSubJob(env, "mail_triage", () => mailTriageTick(env));
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
 	await runSubJob(env, "briefing", () => briefingTick(env));
 	// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
@@ -573,12 +573,16 @@ export default {
 	// self-improvement tick rides the SAME daily cron beside the Kroger refresh; it
 	// ships dormant (fail-closed) and no-ops entirely unless SELF_IMPROVE_ENABLE is set.
 	async scheduled(event: ScheduledController, env: RtEnv, ctx: ExecutionContext): Promise<void> {
-		// Two crons on one handler (wrangler.jsonc): the frequent */5 trigger only
-		// pushes the Prometheus metrics snapshot (cheap, so the gauges aren't stuck at a
-		// once-daily cadence); the daily trigger runs the full maintenance + self-improve
-		// ticks (maintenanceTick pushes a snapshot too, so the daily run is also covered).
+		// Two crons on one handler (wrangler.jsonc): the frequent */5 trigger pushes the
+		// Prometheus metrics snapshot AND runs mail-triage on a ~5-min cadence — a label is
+		// only useful before you next open mail, and triage is idempotent via its seen-
+		// ledger + a dormant no-op unless MAIL_TRIAGE_ENABLED, so a frequent tick is cheap
+		// and only ever processes new unread mail. The daily trigger runs the rest of the
+		// maintenance suite + self-improve (maintenanceTick pushes a snapshot too, so the
+		// daily run is also covered).
 		if (event.cron === METRICS_CRON) {
 			ctx.waitUntil(shipMetricsSnapshot(env, ctx));
+			ctx.waitUntil(runSubJob(env, "mail_triage", () => mailTriageTick(env)));
 			return;
 		}
 		ctx.waitUntil(maintenanceTick(env, ctx));
