@@ -1,4 +1,5 @@
 import { looksBlocked, retailRender } from "../retail-render";
+import { oj } from "./_util";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { decodeEntities as decodeMarkupEntities } from "./_markup";
 import { normalizeMoney, type RetailProduct } from "./_retail";
@@ -126,6 +127,6 @@ export const ace: Fn = {
 			if (looksBlocked(r.body, 1000)) return failWith("blocked", "ace: blocked (challenge wall or access denied).");
 			return failWith("layout_change", NO_PRODUCTS_MSG);
 		}
-		return ok(JSON.stringify({ retailer: "ace", action: "search", count: products.length, products }, null, 2));
+		return ok(oj({ retailer: "ace", action: "search", count: products.length, products }));
 	},
 };
