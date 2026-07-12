@@ -95,6 +95,50 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(out.result.tools.length).toBeLessThan(20);
 	});
 
+	it("initialize advertises the prompts capability", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 4, method: "initialize" });
+		expect(out.result.capabilities.prompts).toEqual({ listChanged: false });
+	});
+
+	it("prompts/list advertises exactly the sux routing prompt", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 5, method: "prompts/list" });
+		expect(out.result.prompts).toHaveLength(1);
+		expect(out.result.prompts[0].name).toBe("sux");
+		expect(out.result.prompts[0].description).toMatch(/\S/);
+	});
+
+	it("prompts/get sux returns the SKILL body as a user message", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, {
+			jsonrpc: "2.0",
+			id: 6,
+			method: "prompts/get",
+			params: { name: "sux" },
+		});
+		const msg = out.result.messages[0];
+		expect(msg.role).toBe("user");
+		// Grounds the embed in real SKILL content — the front-verb routing guidance.
+		expect(msg.content.text).toContain("front verbs");
+		expect(msg.content.text).toContain("fn({name, args})");
+	});
+
+	it("prompts/get with an unknown name → JSON-RPC -32602", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, {
+			jsonrpc: "2.0",
+			id: 7,
+			method: "prompts/get",
+			params: { name: "nope" },
+		});
+		expect(out.error.code).toBe(-32602);
+	});
+
 	it("unknown tool name → JSON-RPC error -32601", async () => {
 		const { kv } = makeKv();
 		const { ctx } = makeCtx();
