@@ -57,6 +57,7 @@ kmod-e1000 kmod-forcedeth`) — **[O]**, keep all (image must boot on any port).
 |---|---|---|---|
 | **DNS** | `dnsmasq-full` · `odhcpd` | [O] | dnsmasq-full = DHCPv4 + local/home.arpa auth + conditional forward; odhcpd = DHCPv6 + RA/SLAAC. **Replaces the stock `dnsmasq`** (`-dnsmasq dnsmasq-full`). |
 | | `ctrld` (Control D daemon) | [P] | `/usr/sbin/ctrld` + `/etc/controld/ctrld.toml`. Front `:53` resolver (§2.1). Baked payload; not in feeds. |
+| | `ip6neigh` (+ `luci-app-ip6neigh` if it lands) | [P] | v6→MAC→hostname naming so v4+v6 share one device name (§2.3). **Verified NOT in 25.12.3 feeds** — vendored shell payload; re-check feeds each build. |
 | **Mesh / reach** | `tailscale` · `luci-app-tailscale-community` | [C] | subnet router + exit node. Identity is `/etc/tailscale/` (§4/persistence). |
 | | `cloudflared` · `luci-app-cloudflared` | [O] | **is** an official pkg (`net/cloudflared`). Render data-plane + OOB. Token is [P] (out of git). |
 | **Web / mgmt** | `luci` · `luci-ssl` · `luci-app-firewall` · `luci-app-attendedsysupgrade` | [O] | luci-ssl (currently missing — box serves plain uhttpd); attendedsysupgrade drives the ASU image build. |
@@ -64,7 +65,7 @@ kmod-e1000 kmod-forcedeth`) — **[O]**, keep all (image must boot on any port).
 | **NAT-PMP/UPnP** | `miniupnpd-nftables` · `luci-app-upnp` | [O] | already live (S94 miniupnpd); fw4-native variant. |
 | **Console** | `ttyd` · `luci-app-ttyd` | [O] | browser shell (currently config present, app not in world — add the LuCI app). |
 | **Watchdog** | `watchcat` · `luci-app-watchcat` · `kmod-itco-wdt` | [O] | L1 dumb-timer + HW `/dev/watchdog` floor. Brain = `suxwatch` [P] (router-watchdog.md). |
-| **Docker host** | `docker` · `dockerd` · `docker-compose` · `containerd` | [O] | + `kmod-veth kmod-br-netfilter kmod-nf-nat kmod-nft-offload` for container networking. data-root → NVMe (§2.3). |
+| **Docker host** | `docker` · `dockerd` · `docker-compose` · `containerd` | [O] | + `kmod-veth kmod-br-netfilter kmod-nf-nat kmod-nft-offload` for container networking. data-root → NVMe (§2.4). |
 | **Storage** | `parted partx-utils` · `f2fs-tools mkf2fs` · `e2fsprogs resize2fs` · `kmod-fs-ext4` · `blkid losetup blkid` · `nvme-cli` | [O] | manage/grow the NVMe; `nvme-cli` (**add** — currently absent) for SMART/health. ext4 is the live NVMe fs; keep f2fs tools for flexibility. |
 | **Perf** | `kmod-tcp-bbr` · `irqbalance luci-app-irqbalance` · `intel-microcode` · `cpu-perf luci-app-cpu-perf` | [O] | BBR (**add** — not in world; pairs with SQM/2.5GbE), irqbalance across the 4 cores, microcode, cpufreq governor. |
 | **Tools** | `curl wget-ssl ca-bundle jq bash openssl-util ip-full ethtool tcpdump bind-dig coreutils gawk grep sed findutils` | [O] | the shell/diagnostic floor `suxwatch` + dead-drop rely on. |
@@ -323,7 +324,103 @@ NIC can bond streams), `oplocks = yes`. Bind **only** to `lan` (never `wan`/`tai
 unless deliberately sharing over the tailnet). Firewall: no new open ports on wan; SMB
 stays LAN-only.
 
-### 2.3 Docker data-root → NVMe + fstab + recovery hook
+### 2.3 IPv4/IPv6 client correlation + friendly hostnames
+
+**Goal (Colin):** one physical device's **IPv4** (DHCPv4) and **IPv6** (SLAAC + DHCPv6,
+including privacy/temp addresses) resolve to the **same friendly hostname**, and Control D
+**Clients** + logs/Grafana attribute *both* address families to one named device. Today the
+v6 side is nameless — the live NDP table shows raw addresses like
+`2601:601:a484:1500:9930:28c0:425f:a244` with no PTR, and multiple v6 addresses per MAC
+(privacy addressing in action, e.g. several addrs behind `a8:51:ab:93:38:16`).
+
+**The correlation-key nuance (why DUID is not enough):**
+
+- **DUID** identifies a *DHCPv6* client, and DUID-LL/LLT often embeds the MAC — but it only
+  exists for devices that actually do DHCPv6. **SLAAC and RFC-4941 privacy/temporary
+  addresses have NO DUID** (they're self-assigned, never touch the DHCPv6 server). A
+  DUID→lease match therefore names only the DHCPv6 subset and **misses every SLAAC/privacy
+  address** — which, per the live NDP dump, is most of the v6 traffic here.
+- The **robust key is the MAC via the neighbor table (NDP for v6 / ARP for v4)**. Every v6
+  address a device uses — SLAAC, privacy, temporary, link-local, *and* any DHCPv6 lease —
+  shows up in the NDP table bound to that device's MAC (`ip -6 neigh` confirms
+  `<v6addr> … lladdr <mac>`). The same MAC is the key in the DHCPv4 lease. **MAC is the one
+  identifier that spans v4 + all v6 forms;** DUID is a partial view.
+
+**Mechanism — `ip6neigh`.** ip6neigh is the purpose-built OpenWrt tool for exactly this: a
+daemon that **monitors the IPv6 NDP table**, maps each `v6 → MAC → DHCPv4-lease hostname`,
+and writes **forward (AAAA) + reverse (PTR)** records into dnsmasq so every v6 address gets
+the device's friendly name. It **labels SLAAC vs privacy/temporary** addresses (e.g.
+`hostname.lan`, `hostname-tmp.lan`, `hostname-ll.lan`), so it covers DHCPv6 **and** SLAAC
+**and** privacy — precisely the coverage DUID-matching alone cannot reach. It's the
+NDP/MAC-based approach the nuance above demands, packaged.
+
+**Feed availability (verified on the live 25.12.3 box, reproduce-before-theorize):**
+`apk search ip6neigh` and `apk search luci-app-ip6neigh` both return **empty** — ip6neigh is
+**NOT in the 25.12.3 apk feeds** (neither official nor the community feed the box currently
+has enabled). Treat it as a **[P] payload**: install the ip6neigh shell package from source
+(the `hnyman`/`AndreBL` project — pure POSIX-sh + a dnsmasq hook, no compiled deps, so it
+drops onto OpenWrt cleanly) and bake it into the image + the NVMe recovery bundle, exactly
+like `ctrld`/`suxproxy`. **Build-time check:** re-verify each image build whether a
+25.12.3-compatible ip6neigh apk has appeared in a community feed; prefer the packaged form
+if it lands, else ship the vendored script. (If ip6neigh proves unmaintained for 25.12.3,
+the fallback is a small local `ip -6 neigh` → dnsmasq-hosts script doing the same
+MAC-join — but ip6neigh already handles the privacy-label edge cases, so don't reinvent it
+unless forced.)
+
+**Concrete config + how it feeds the rest of the design:**
+
+`/etc/config/ip6neigh` ([P]):
+```
+config ip6neigh 'config'
+    option domain          'home.arpa'      # match dnsmasq's local domain (§2.1)
+    option ll_label        'LL'             # link-local suffix label
+    option ula_label       ''               # ULA gets the plain name (fdf7:c24e:499::/48)
+    option gua_label       ''               # global SLAAC gets the plain name
+    option tmp_label       'TMP'            # RFC-4941 privacy/temp addresses → name-TMP
+    option unknown         '1'              # synthesize names for un-leased MACs too
+    option fritzbox        '0'
+    option dhcpv6_names     '1'             # also name DHCPv6-leased addrs
+    option dhcpv4_names     '1'             # ← the join: reuse the DHCPv4 lease hostname
+    option load_static      '1'
+```
+
+**Data flow (one coherent chain):**
+```
+ DHCPv4 lease (dnsmasq)  ──hostname+MAC──┐
+                                         ▼
+ ip -6 neigh (NDP) ──v6+MAC──►  ip6neigh  ──writes AAAA+PTR (name, name-TMP, name-LL)──►
+                                         │      dnsmasq hosts dir (/tmp/hosts/*)
+                                         ▼
+                          dnsmasq (§2.1, :5353) now authoritative for BOTH
+                          v4 (A/PTR from leases) and v6 (AAAA/PTR from ip6neigh)
+                          under the SAME home.arpa name
+                                         ▼
+             ctrld (front :53) forwards home.arpa/PTR → dnsmasq (upstream.local),
+             and correlates a device's v4+v6 queries by MAC via ARP/NDP for the
+             Control D **Clients** feature → one named device in the dashboard
+                                         ▼
+             Grafana / logs read the same consistent hostname → per-device panels
+             are readable ("colin-iphone") instead of raw v6 hex
+```
+
+- **dnsmasq owns DHCPv4 leases + local names** (§2.1) — the authoritative source of the
+  friendly hostname and the MAC↔name↔v4 binding.
+- **ip6neigh names the v6 side consistently** by joining NDP-derived `v6→MAC` to that same
+  dnsmasq lease, writing records back into dnsmasq's hosts dir (live: `/tmp/hosts/`). One
+  name, all address families, privacy addresses labeled not dropped.
+- **ctrld (front) correlates v4+v6 by MAC via ARP/NDP** for Control D Clients; because
+  ip6neigh has already given every v6 address the device's real hostname, the Control D
+  per-device dashboard **and** Grafana render `hostname`, not opaque hex — the whole point.
+
+**Ordering / dependency:** ip6neigh must start after dnsmasq (needs the lease file) and
+re-run its hook on NDP changes; its records live in dnsmasq's hosts dir, so a dnsmasq
+restart (a `suxwatch` DNS heal) must not clobber them — point ip6neigh at a persistent
+hosts file it re-owns, and add it to `sysupgrade.conf` + the NVMe bundle so names survive a
+reflash. This is additive to the DNS rework (§2.1), touches only naming, and never affects
+resolution correctness if it fails (worst case: v6 goes back to nameless — a cosmetic
+degrade, safe for the SACRED path).
+
+### 2.4 Docker data-root → NVMe + fstab + recovery hook
 
 **The invariant (from the upgrade plan): docker data MUST move off the 29 GB eMMC.** Live
 box still has `Docker Root Dir: /opt/docker` (eMMC) — the render container would fill eMMC
@@ -445,7 +542,7 @@ physically present). Order:
 2. **Recovery + watchdog first** (router-watchdog.md build order §6): `suxwatch` +
    dead-drop dispatch + watchcat window + `kmod-itco-wdt` + NVMe last-good bundle. This is
    the safety net that must exist **before** touching DNS.
-3. **Docker data-root → NVMe** (§2.3) + fstab ordering. Reversible, off the DNS path;
+3. **Docker data-root → NVMe** (§2.4) + fstab ordering. Reversible, off the DNS path;
    verify render container runs from NVMe.
 4. **ksmbd share** (§2.2). Additive, LAN-only, zero risk to gateway/DNS.
 5. **DNS rework** (§2.1) — the delicate one. Stage ctrld:53 + dnsmasq:5353 side-by-side,
