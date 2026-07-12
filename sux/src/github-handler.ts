@@ -11,6 +11,7 @@ import {
 } from "./workers-oauth-utils";
 import { hmacHex, isTailscaleConfigured, proxyEnabled, smartFetch, type TailscaleEnv } from "./proxy";
 import { type Metrics, readMetrics } from "./metrics";
+import { readHeartbeats } from "./cron-heartbeat";
 import type { RtEnv } from "./registry";
 
 type HandlerEnv = Env &
@@ -149,6 +150,10 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	const tunnelMs = Date.now() - t0;
 	const metrics = rawMetrics ? deriveMetrics(rawMetrics) : null;
 
+	// Last {ok,at,error?} + staleness per unattended cron sub-job. Best-effort: a KV
+	// miss degrades to { seen: false } and never fails the health page.
+	const cron = await readHeartbeats((env as unknown as RtEnv).OAUTH_KV).catch(() => ({}));
+
 	const configured = isTailscaleConfigured(env);
 	let proxyUrlValid = false;
 	try {
@@ -186,7 +191,7 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	}
 
 	const ok = config.kagiKey && config.githubClient && upstream.reachable;
-	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics };
+	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron };
 }
 
 function renderHealthHtml(h: any): string {
@@ -214,6 +219,31 @@ function renderHealthHtml(h: any): string {
 		check(routingOk, "Routing live", res && dc && res.ip === dc.ip ? "residential IP == datacenter — falling back to direct" : "requests not exiting via the residential IP"),
 	].join("");
 	const loc = (o: any) => (o ? `${[o.city, o.region, o.country].filter(Boolean).join(", ") || "?"}${o.colo ? " · " + o.colo : ""}` : "—");
+
+	// Daily cron heartbeats — a green dot needs BOTH a healthy last run and freshness
+	// (stale ⇒ the sub-job stopped firing, which the ok flag alone can't reveal).
+	const ago = (ms: number) => {
+		const s = Math.max(0, Math.round(ms / 1000));
+		if (s < 90) return `${s}s ago`;
+		const m = Math.round(s / 60);
+		if (m < 90) return `${m}m ago`;
+		const hrs = Math.round(m / 60);
+		return hrs < 48 ? `${hrs}h ago` : `${Math.round(hrs / 24)}d ago`;
+	};
+	const cronRow = (label: string, j: any) => {
+		if (!j?.seen) return `<div class="row"><span class="k">${label}</span><span class="v">${dot(false)} never run</span></div>`;
+		const healthy = j.ok && !j.stale;
+		const state = j.stale ? "stale" : j.ok ? "ok" : "failed";
+		const detail = `${state} · ${ago(j.age_ms)}`;
+		return `<div class="row"><span class="k">${label}</span><span class="v">${dot(healthy)} ${detail}${j.error ? `<br><span class="chk-why">${esc(j.error)}</span>` : ""}</span></div>`;
+	};
+	const cron = h.cron ?? {};
+	const cronCard = `<div class="card"><h2>daily cron · heartbeats</h2>
+ ${cronRow("Kroger token", cron.kroger_token)}
+ ${cronRow("Mail triage", cron.mail_triage)}
+ ${cronRow("Adblock engine", cron.adblock)}
+ ${cronRow("Self-improve", cron.self_improve)}
+</div>`;
 	return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sux · health</title>
 <style>
@@ -264,6 +294,8 @@ function renderHealthHtml(h: any): string {
  <div class="row"><span class="k">Total calls</span><span class="v">${mx.calls}</span></div>
  <div class="row"><span class="k">Error rate</span><span class="v">${pct(mx.error_rate)}</span></div>
 </div>
+
+${cronCard}
 
 <div class="card"><h2>tailscale · node <code>tailscaled status</code></h2>
  ${
