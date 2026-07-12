@@ -3,7 +3,7 @@ import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { embed, embedOne } from "./_embed";
 import { ingest } from "./ingest";
 import { obsidian } from "./obsidian";
-import { recall } from "./recall";
+import { gatherRecall } from "./recall";
 import {
 	type Authority,
 	chunkText,
@@ -61,17 +61,18 @@ async function readNote(env: RtEnv, path: string): Promise<string> {
 	return noteBody(r.content?.[0]?.text ?? "");
 }
 
-/** Tier-2: gather live personal context via recall (vault/mail/files). Best-effort — recall degrades
- *  each store independently, and any failure here just means the advice runs on tiers 1+3 alone. */
+/** Tier-2: gather live personal context via recall's GATHER half (vault/mail/files). Best-effort —
+ *  recall degrades each store independently, and any failure here just means the advice runs on
+ *  tiers 1+3 alone. We feed the RAW gathered passages straight into our own gate (which already
+ *  cites [vault:…]/[mail:…]/[files:…] tags), rather than paying recall for a synthesis the gate
+ *  would only re-process — one fewer Workers-AI call per advise, with MORE primary evidence at the
+ *  gate. Length-capped like recall's own synthesis input, since the gate also carries profile+passages. */
 async function contextual(env: RtEnv, question: string): Promise<{ text: string; refs: string[] }> {
 	try {
-		const r = await recall.run(env, { question, sources: ["vault", "mail", "files"] });
-		if (r.isError) return { text: "", refs: [] };
-		const j = JSON.parse(r.content?.[0]?.text ?? "{}") as { answer?: string; citations?: string[] };
-		const answer = String(j?.answer ?? "").trim();
-		// recall's not-found sentinel carries no signal — don't feed it to the gate as "context".
-		if (!answer || /^I couldn't find anything about that/i.test(answer)) return { text: "", refs: [] };
-		return { text: answer, refs: Array.isArray(j?.citations) ? j.citations.map(String) : [] };
+		const { materials, citations } = await gatherRecall(env, question, ["vault", "mail", "files"]);
+		if (!materials.length) return { text: "", refs: [] };
+		const text = materials.join("\n\n---\n\n").slice(0, 14_000);
+		return { text, refs: citations.map(String) };
 	} catch {
 		return { text: "", refs: [] };
 	}
