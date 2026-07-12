@@ -4,8 +4,8 @@ import { oj } from "./_util";
 // PII redaction. Every match becomes [REDACTED:type]. Credit-card candidates
 // are Luhn-checked so long digit runs (IDs, order numbers) aren't clobbered.
 
-const TYPES = ["email", "phone", "ssn", "credit_card", "ip"] as const;
-type RedactType = (typeof TYPES)[number];
+export const TYPES = ["email", "phone", "ssn", "credit_card", "ip"] as const;
+export type RedactType = (typeof TYPES)[number];
 
 const PATTERNS: Array<{ type: RedactType; re: RegExp }> = [
 	{ type: "email", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
@@ -56,6 +56,21 @@ function ipv4Ok(s: string): boolean {
 	return parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255);
 }
 
+/** Pure PII scrub shared by the `redact` fn and any server-side sink (e.g. the public /feedback log). */
+export function redactPII(text: string, want: Set<RedactType> | null = null): { redacted: string; counts: Record<string, number> } {
+	const counts: Record<string, number> = {};
+	for (const { type, re } of PATTERNS) {
+		if (want && !want.has(type)) continue;
+		text = text.replace(re, (m: string) => {
+			if (type === "credit_card" && !luhnOk(m)) return m;
+			if (type === "ip" && !ipv4Ok(m)) return m;
+			counts[type] = (counts[type] ?? 0) + 1;
+			return `[REDACTED:${type}]`;
+		});
+	}
+	return { redacted: text, counts };
+}
+
 export const redact: Fn = {
 	name: "redact",
 	description:
@@ -75,7 +90,7 @@ export const redact: Fn = {
 	},
 	cacheable: true,
 	run: async (_env, args) => {
-		let text = typeof args?.text === "string" ? args.text : "";
+		const text = typeof args?.text === "string" ? args.text : "";
 		if (!text) return fail("Provide non-empty `text`.");
 
 		let want: Set<RedactType> | null = null;
@@ -86,17 +101,6 @@ export const redact: Fn = {
 			if (args.types.length) want = new Set(args.types as RedactType[]);
 		}
 
-		const counts: Record<string, number> = {};
-		for (const { type, re } of PATTERNS) {
-			if (want && !want.has(type)) continue;
-			text = text.replace(re, (m: string) => {
-				if (type === "credit_card" && !luhnOk(m)) return m;
-				if (type === "ip" && !ipv4Ok(m)) return m;
-				counts[type] = (counts[type] ?? 0) + 1;
-				return `[REDACTED:${type}]`;
-			});
-		}
-
-		return ok(oj({ redacted: text, counts }));
+		return ok(oj(redactPII(text, want)));
 	},
 };

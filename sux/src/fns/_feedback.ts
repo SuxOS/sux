@@ -3,6 +3,7 @@
 // backlog (independent of Claude's cross-conversation memory), closing the loop
 // the Worker itself can act on. Newest-first, capped.
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
+import { redactPII } from "./redact";
 import type { RtEnv } from "../registry";
 
 export type FeedbackKind = "issue" | "suggest";
@@ -30,7 +31,9 @@ async function loadFeedback(env: RtEnv): Promise<FeedbackEntry[]> {
 export async function appendFeedback(env: RtEnv, kind: FeedbackKind, text: string, tool?: string): Promise<{ total: number; at: number }> {
 	const items = await loadFeedback(env);
 	const at = Date.now();
-	items.unshift({ kind, text, at, ...(tool ? { tool } : {}) });
+	// GET /feedback is public + unauthenticated, so scrub PII the agent may have
+	// relayed from a scrape or vault/mail excerpt before it lands verbatim there.
+	items.unshift({ kind, text: redactPII(text).redacted, at, ...(tool ? { tool } : {}) });
 	if (items.length > CAP) items.length = CAP;
 	await env.OAUTH_KV.put(KEY, await maybeCompressString(JSON.stringify(items)));
 	return { total: items.length, at };
