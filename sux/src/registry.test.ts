@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FUNCTIONS } from "./fns/index";
-import { FAIL_CODES, type FailCode, failWith, type RtEnv, TOOL_ANNOTATIONS, toolList, type ToolResult } from "./registry";
+import { FAIL_CODES, type FailCode, failWith, FRONT_VERBS, frontToolList, type RtEnv, TOOL_ANNOTATIONS, toolList, type ToolResult } from "./registry";
 
 // Inert binding stubs: {} args should fail validation inside each fn before any
 // binding is touched, so these never need to do real work.
@@ -132,6 +132,26 @@ describe("registry conformance", () => {
 	it("the central annotation map only references registered fns", () => {
 		const names = new Set(FUNCTIONS.map((f) => f.name));
 		for (const key of Object.keys(TOOL_ANNOTATIONS)) expect(names, `TOOL_ANNOTATIONS references \`${key}\``).toContain(key);
+	});
+
+	it("frontToolList advertises only the front verbs — a small, legible subset of the full surface", () => {
+		const front = frontToolList(FUNCTIONS);
+		const names = new Set(front.map((t) => t.name));
+		// The map + the escape hatch are always on the front door.
+		expect(names.has("sux")).toBe(true);
+		expect(names.has("fn")).toBe(true);
+		// A representative leaf is NOT advertised (reached via `fn` / by name instead).
+		expect(names.has("hash")).toBe(false);
+		expect(names.has("arxiv")).toBe(false);
+		// Far smaller than the full registry, and every advertised tool is a real fn.
+		expect(front.length).toBeLessThan(FUNCTIONS.length);
+		expect(front.length).toBe(FRONT_VERBS.size);
+		for (const t of front) expect(FUNCTIONS.some((f) => f.name === t.name)).toBe(true);
+	});
+
+	it("every FRONT_VERBS name is a registered fn (no dangling front verb)", () => {
+		const names = new Set(FUNCTIONS.map((f) => f.name));
+		for (const v of FRONT_VERBS) expect(names, `FRONT_VERBS references \`${v}\``).toContain(v);
 	});
 
 	it("flags: kv_* are not cacheable; hash/encode/compress are raw", () => {

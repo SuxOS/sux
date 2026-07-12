@@ -5,6 +5,7 @@
 
 import type { Fn } from "../registry";
 import { search } from "./search";
+import { fnEscape } from "./fn";
 import { scrape } from "./scrape";
 import { proxyFn } from "./proxy";
 import { extract } from "./extract";
@@ -103,6 +104,7 @@ import { yaml } from "./yaml";
 
 export const FUNCTIONS: Fn[] = [
 	search,
+	fnEscape,
 	scrape,
 	proxyFn,
 	extract,

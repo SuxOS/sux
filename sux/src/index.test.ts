@@ -72,7 +72,7 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(out.result.capabilities.tools).toEqual({ listChanged: false });
 	});
 
-	it("tools/list returns the fn list shape", async () => {
+	it("tools/list returns only the front verbs, not every leaf", async () => {
 		const { kv } = makeKv();
 		const { ctx } = makeCtx();
 		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 2, method: "tools/list" });
@@ -83,7 +83,16 @@ describe("handleRpc (index.ts dispatch)", () => {
 			expect(typeof t.description).toBe("string");
 			expect("inputSchema" in t).toBe(true);
 		}
-		expect(out.result.tools.some((t: { name: string }) => t.name === "hash")).toBe(true);
+		const names = out.result.tools.map((t: { name: string }) => t.name);
+		// Front verbs advertised…
+		expect(names).toContain("sux");
+		expect(names).toContain("fn");
+		expect(names).toContain("search");
+		// …leaves hidden from the list (still reachable via `fn` or by name).
+		expect(names).not.toContain("hash");
+		// The list stays legible — far short of the full ~95-fn surface.
+		expect(out.result.tools.length).toBeLessThan(FUNCTIONS.length);
+		expect(out.result.tools.length).toBeLessThan(20);
 	});
 
 	it("unknown tool name → JSON-RPC error -32601", async () => {
@@ -97,6 +106,48 @@ describe("handleRpc (index.ts dispatch)", () => {
 		});
 		expect(out.error.code).toBe(-32601);
 		expect(out.error.message).toContain("not_a_real_tool");
+	});
+
+	// The `fn` escape hatch: fn({name, args}) reaches any hidden leaf and must behave
+	// exactly like a direct call — same output, same cache entry.
+	it("fn escape dispatches to a leaf identically to a direct call", async () => {
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const direct = await callRpc(env, ctx, { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "hash", arguments: { text: "front-door" } } });
+		const viaFn = await callRpc(env, ctx, { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "fn", arguments: { name: "hash", args: { text: "front-door" } } } });
+		await Promise.all(deferred);
+		expect(viaFn.result.isError).toBeFalsy();
+		expect(viaFn.result.content[0].text).toBe(direct.result.content[0].text);
+		// Byte-identical dispatch ⇒ shared cache key: both wrote the same one entry.
+		const key = await cacheKey("hash", { text: "front-door" });
+		expect(kv.get(key)).resolves.not.toBeNull();
+	});
+
+	it("fn escape with an unknown inner name returns a typed not_found error", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "fn", arguments: { name: "not_a_real_leaf", args: {} } } });
+		// Falls through to the `fn` fn's own run (name not unwrapped) → typed failure,
+		// NOT a JSON-RPC -32601 (the `fn` tool itself exists and ran).
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toContain("[not_found]");
+	});
+
+	it("fn escape without a name returns a typed bad_input error", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "fn", arguments: {} } });
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toContain("[bad_input]");
+	});
+
+	it("fn escape cannot recurse into itself", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 14, method: "tools/call", params: { name: "fn", arguments: { name: "fn", args: {} } } });
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toContain("cannot call itself");
 	});
 
 	it("a cacheable fn called twice with identical args is served from the KV cache", async () => {

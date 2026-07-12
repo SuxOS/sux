@@ -5,7 +5,7 @@ description: Route a task to the right sux edge function and chain them when nee
 
 # sux — the edge function engine
 
-sux is one personal Cloudflare Worker exposing **~88 composable functions** as MCP
+sux is one personal Cloudflare Worker exposing **~95 composable functions** as MCP
 tools (Julia-style generic verbs + multiple dispatch). **Kagi is just one function
 (`search`).** The full inventory, status, and per-function summaries live in
 **`sux/FUNCTIONS.md`** — that file is the source of truth (run `npm run docs` to
@@ -13,6 +13,18 @@ regenerate it from `sux/src/fns/*.ts`). This skill maps intent → function.
 
 When a task needs live web data, a page fetch, document work, or an edge transform,
 reach for sux instead of declining or answering from memory.
+
+## Front door: front verbs vs. the `fn` escape
+
+`tools/list` advertises only **~13 front verbs** — `sux`, `fn`, `search`, `scrape`,
+`shop`, `ingest`, `recall`, `oracle`, `pipe`, `batch`, `store`, `preferences`,
+`issue`. Everything else in the tables below is a **leaf**: reach it with the escape
+hatch **`fn({name, args})`** — e.g. this skill writes `tables({html})`, you call
+`fn({name:"tables", args:{html}})`; `arxiv({query})` → `fn({name:"arxiv", args:{query}})`.
+A leaf dispatched via `fn` behaves byte-identically to a direct call (same cache, same
+deadline). Cache flags (`fresh`, `summarize`) go **inside** `args`. Front verbs are
+called directly, no wrapper. When unsure what exists, call **`sux()`** for the live
+capability map, or `sux({domain})` to zoom one group.
 
 ## Two principles before any table
 

@@ -266,6 +266,40 @@ export function toolList(fns: Fn[]): Array<{ name: string; description: string; 
 	});
 }
 
+// The FRONT DOOR — the curated root verbs that tools/list actually advertises.
+// Everything else is a leaf: still fully dispatchable (by its own name, or via the
+// `fn` escape), still described by the `sux` map, just not flooding the list. This
+// keeps the advertised surface mobile-legible (~13 tools) without removing any
+// capability. The single source of truth for "what's a front verb" — a fn may also
+// self-declare `surface:"front"`, and either inclusion path counts.
+//   sux — the capability map    · fn — call any leaf by name
+//   search/scrape — web in      · shop — retail fan-out
+//   ingest/recall/oracle — memory in, cited answers out
+//   pipe/batch — compose leaves server-side
+//   store — blob storage        · preferences/issue — tell sux what you want / what broke
+export const FRONT_VERBS = new Set<string>([
+	"sux", "fn",
+	"search", "scrape", "shop",
+	"ingest", "recall", "oracle",
+	"pipe", "batch",
+	"store", "preferences", "issue",
+]);
+
+/** True when a fn belongs on the advertised front-door surface. */
+export function isFrontVerb(f: Fn): boolean {
+	return f.surface === "front" || FRONT_VERBS.has(f.name);
+}
+
+/**
+ * The tool list the MCP `tools/list` actually returns: only the front verbs. Leaves
+ * stay reachable (direct dispatch by name, or `fn({name,args})`) and discoverable
+ * (the `sux` map), so nothing is lost — the surface is just legible. Preserves the
+ * importance ordering of the input.
+ */
+export function frontToolList(fns: Fn[]): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations }> {
+	return toolList(fns.filter(isFrontVerb));
+}
+
 export function findFn(fns: Fn[], name: string): Fn | undefined {
 	return fns.find((f) => f.name === name);
 }
