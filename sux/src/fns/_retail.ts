@@ -1,8 +1,9 @@
 import { decodeEntities as decodeMarkupEntities } from "./_markup";
 
-// Shared normalization for the retailer fns (kroger now; ace/costco/homedepot/
-// walmart next). Keep minimal — just what kroger needs today, shaped to extend
-// so every retailer emits one product shape a caller can parse identically.
+// Shared normalization for the retailer fns — used by ace/amazon/bestbuy/costco/
+// ebay/homedepot/kroger/lowes/walmart/weekly_ad/product_search. Keep minimal, and
+// shaped to extend, so every retailer emits one product shape a caller can parse
+// identically.
 
 /** One normalized retail product, common across every retailer fn. */
 export type RetailProduct = {
