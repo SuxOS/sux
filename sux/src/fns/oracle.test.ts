@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// The vault mirror rides obsidian.run — mock it (its own suite covers it) so we can
+// assert the learn path mirrors the re-distilled KB without a configured vault.
+vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }] })) } }));
+
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
 import { maybeDecompressString } from "./_gzip";
+import { obsidian } from "./obsidian";
 import { oracle } from "./oracle";
+
+const obs = obsidian.run as unknown as ReturnType<typeof vi.fn>;
 
 // We exercise the REAL guarded llm() (from ../ai) and the REAL fetchText/smartFetch
 // direct path — only env.AI.run, a Map-backed OAUTH_KV, and globalThis.fetch are
@@ -87,6 +94,31 @@ describe("oracle — learn", () => {
 		expect(stored.chunks).toEqual(["DISTILLED-CHUNK"]);
 		expect(stored.sources).toEqual(["inline text"]);
 		expect(typeof stored.updated_at).toBe("number");
+	});
+
+	it("mirrors the KB into the vault, idempotently on stable content", async () => {
+		const { env } = makeEnv();
+		await oracle.run(env, { knowledge: "Photosynthesis converts light into chemical energy.", topic: "bio" });
+
+		// One vault append with the topic-headed section containing the KB. A single note isn't
+		// re-consolidated (the chunk IS the KB), so the mirrored body is the distilled chunk.
+		expect(obs).toHaveBeenCalledTimes(1);
+		const [, append] = obs.mock.calls[0];
+		expect(append).toMatchObject({ action: "append", path: "sux/Knowledge.md" });
+		expect(append.content).toContain("## bio —");
+		expect(append.content).toContain("DISTILLED-CHUNK");
+
+		// A 2nd note re-consolidates to a NEW KB body → the mirror is content-addressed, so a
+		// changed KB appends once more.
+		obs.mockClear();
+		await oracle.run(env, { knowledge: "Photosynthesis converts light into chemical energy.", topic: "bio" });
+		expect(obs).toHaveBeenCalledTimes(1);
+		expect(obs.mock.calls[0][1].content).toContain("CONSOLIDATED-KB");
+
+		// A 3rd note consolidates to the SAME body → same fingerprint → no duplicate append.
+		obs.mockClear();
+		await oracle.run(env, { knowledge: "Photosynthesis converts light into chemical energy.", topic: "bio" });
+		expect(obs).not.toHaveBeenCalled();
 	});
 
 	it("a second learn re-distills from BOTH accumulated chunks", async () => {

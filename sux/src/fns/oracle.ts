@@ -1,6 +1,7 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
+import { appendOnOracle } from "./_kb";
 import { errMsg, fetchText, isHttpUrl, stripHtml, oj } from "./_util";
 import { readability } from "./readability";
 
@@ -131,7 +132,9 @@ async function learn(env: RtEnv, topic: string, knowledge: string): Promise<{ so
 
 	const record: StoredKb = { distilled: distilled.slice(0, KB_CAP), chunks, sources, updated_at: Date.now() };
 	await env.OAUTH_KV.put(`${KV_PREFIX}${topic}`, await maybeCompressString(JSON.stringify(record)));
-	console.log(`oracle: learned topic=${topic} chunks=${chunks.length} source=${source}`);
+	// Best-effort, idempotent vault mirror — no-ops (fail-closed) if the vault is unconfigured.
+	const mirrored = await appendOnOracle(env, topic, record.distilled);
+	console.log(`oracle: learned topic=${topic} chunks=${chunks.length} source=${source} mirrored=${mirrored}`);
 	return { source, chunk_count: chunks.length, distilled: record.distilled };
 }
 

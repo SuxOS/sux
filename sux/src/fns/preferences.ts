@@ -1,6 +1,7 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
+import { appendOnPreferences } from "./_kb";
 import { errMsg, oj } from "./_util";
 
 // A KV-backed style-preference profile that LEARNS over time and continually
@@ -113,7 +114,9 @@ export const preferences: Fn = {
 
 				const record: StoredProfile = { distilled_spec: spec.trim(), examples, updated_at: Date.now() };
 				await env.OAUTH_KV.put(`${KV_PREFIX}${profile}`, await maybeCompressString(JSON.stringify(record)));
-				console.log(`preferences: learned profile=${profile} examples=${examples.length}`);
+				// Best-effort, idempotent vault mirror — no-ops (fail-closed) if the vault is unconfigured.
+				const mirrored = await appendOnPreferences(env, profile, record.distilled_spec);
+				console.log(`preferences: learned profile=${profile} examples=${examples.length} mirrored=${mirrored}`);
 				return ok(oj({ action, profile, distilled_spec: record.distilled_spec, example_count: examples.length, updated_at: record.updated_at, ...(args?.note ? { note: String(args.note) } : {}) }));
 			}
 
