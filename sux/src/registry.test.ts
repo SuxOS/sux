@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FUNCTIONS } from "./fns/index";
-import { FAIL_CODES, type FailCode, failWith, type RtEnv, TOOL_ANNOTATIONS, toolList, type ToolResult } from "./registry";
+import { FAIL_CODES, type FailCode, failWith, FRONT_VERBS, frontToolList, type RtEnv, TOOL_ANNOTATIONS, toolList, type ToolResult, unwrapFnCall } from "./registry";
 
 // Inert binding stubs: {} args should fail validation inside each fn before any
 // binding is touched, so these never need to do real work.
@@ -132,6 +132,54 @@ describe("registry conformance", () => {
 	it("the central annotation map only references registered fns", () => {
 		const names = new Set(FUNCTIONS.map((f) => f.name));
 		for (const key of Object.keys(TOOL_ANNOTATIONS)) expect(names, `TOOL_ANNOTATIONS references \`${key}\``).toContain(key);
+	});
+
+	it("frontToolList advertises only the front verbs — a small, legible subset of the full surface", () => {
+		const front = frontToolList(FUNCTIONS);
+		const names = new Set(front.map((t) => t.name));
+		// The map + the escape hatch are always on the front door.
+		expect(names.has("sux")).toBe(true);
+		expect(names.has("fn")).toBe(true);
+		// A representative leaf is NOT advertised (reached via `fn` / by name instead).
+		expect(names.has("hash")).toBe(false);
+		expect(names.has("arxiv")).toBe(false);
+		// Far smaller than the full registry, and every advertised tool is a real fn.
+		expect(front.length).toBeLessThan(FUNCTIONS.length);
+		expect(front.length).toBe(FRONT_VERBS.size);
+		for (const t of front) expect(FUNCTIONS.some((f) => f.name === t.name)).toBe(true);
+	});
+
+	it("every FRONT_VERBS name is a registered fn (no dangling front verb)", () => {
+		const names = new Set(FUNCTIONS.map((f) => f.name));
+		for (const v of FRONT_VERBS) expect(names, `FRONT_VERBS references \`${v}\``).toContain(v);
+	});
+
+	it("every registered fn is either a front verb or reachable by name through `fn` (surface is exhaustive)", () => {
+		// The front-door hides ~85 leaves from tools/list but keeps them one call away:
+		// a leaf that is not a front verb must still resolve through the `fn` escape.
+		for (const f of FUNCTIONS) {
+			if (FRONT_VERBS.has(f.name)) continue;
+			expect(unwrapFnCall({ name: "fn", arguments: { name: f.name } }, FUNCTIONS), `\`${f.name}\` is unreachable via fn`).toEqual({ name: f.name, args: {} });
+		}
+	});
+
+	it("unwrapFnCall resolves fn({name,args}) to the real leaf, and only for a valid inner name", () => {
+		// Valid inner leaf → unwrapped, args passed through.
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "hash", args: { text: "x" } } }, FUNCTIONS)).toEqual({ name: "hash", args: { text: "x" } });
+		// Missing inner args object → empty args.
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "hash" } }, FUNCTIONS)).toEqual({ name: "hash", args: {} });
+		// Not an fn call at all → null (a direct call is untouched).
+		expect(unwrapFnCall({ name: "hash", arguments: { text: "x" } }, FUNCTIONS)).toBeNull();
+		// Unknown / self / blank inner name → null (falls through to fn's own run).
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "does_not_exist" } }, FUNCTIONS)).toBeNull();
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "fn" } }, FUNCTIONS)).toBeNull();
+		expect(unwrapFnCall({ name: "fn", arguments: {} }, FUNCTIONS)).toBeNull();
+		// Non-object arguments → null.
+		expect(unwrapFnCall({ name: "fn", arguments: "nope" }, FUNCTIONS)).toBeNull();
+		// A Unicode-obfuscated inner name resolves to the real leaf (same normalization
+		// the dispatcher applies) — so it can't split resolution from the cost/cache path.
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "ｈａｓｈ", args: { text: "x" } } }, FUNCTIONS)).toEqual({ name: "hash", args: { text: "x" } });
+		expect(unwrapFnCall({ name: "fn", arguments: { name: "ha​sh" } }, FUNCTIONS)).toEqual({ name: "hash", args: {} });
 	});
 
 	it("flags: kv_* are not cacheable; hash/encode/compress are raw", () => {

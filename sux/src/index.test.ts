@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Fn, RtEnv } from "./registry";
 import { cacheKey, extractRpcFromText, type JsonRpc } from "./mcp-util";
 import { FUNCTIONS } from "./fns";
-import { handleRpc, oauthErrorResponse } from "./index";
+import { handleRpc, oauthErrorResponse, rtServer } from "./index";
 
 // End-to-end coverage of the REAL tools/call dispatch chain in index.ts
 // (parseJsonRpc → findFn → normalizeArgs/raw bypass → run → normalizeText →
@@ -72,7 +72,7 @@ describe("handleRpc (index.ts dispatch)", () => {
 		expect(out.result.capabilities.tools).toEqual({ listChanged: false });
 	});
 
-	it("tools/list returns the fn list shape", async () => {
+	it("tools/list returns only the front verbs, not every leaf", async () => {
 		const { kv } = makeKv();
 		const { ctx } = makeCtx();
 		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 2, method: "tools/list" });
@@ -83,7 +83,16 @@ describe("handleRpc (index.ts dispatch)", () => {
 			expect(typeof t.description).toBe("string");
 			expect("inputSchema" in t).toBe(true);
 		}
-		expect(out.result.tools.some((t: { name: string }) => t.name === "hash")).toBe(true);
+		const names = out.result.tools.map((t: { name: string }) => t.name);
+		// Front verbs advertised…
+		expect(names).toContain("sux");
+		expect(names).toContain("fn");
+		expect(names).toContain("search");
+		// …leaves hidden from the list (still reachable via `fn` or by name).
+		expect(names).not.toContain("hash");
+		// The list stays legible — far short of the full ~95-fn surface.
+		expect(out.result.tools.length).toBeLessThan(FUNCTIONS.length);
+		expect(out.result.tools.length).toBeLessThan(20);
 	});
 
 	it("unknown tool name → JSON-RPC error -32601", async () => {
@@ -97,6 +106,48 @@ describe("handleRpc (index.ts dispatch)", () => {
 		});
 		expect(out.error.code).toBe(-32601);
 		expect(out.error.message).toContain("not_a_real_tool");
+	});
+
+	// The `fn` escape hatch: fn({name, args}) reaches any hidden leaf and must behave
+	// exactly like a direct call — same output, same cache entry.
+	it("fn escape dispatches to a leaf identically to a direct call", async () => {
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const direct = await callRpc(env, ctx, { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "hash", arguments: { text: "front-door" } } });
+		const viaFn = await callRpc(env, ctx, { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "fn", arguments: { name: "hash", args: { text: "front-door" } } } });
+		await Promise.all(deferred);
+		expect(viaFn.result.isError).toBeFalsy();
+		expect(viaFn.result.content[0].text).toBe(direct.result.content[0].text);
+		// Byte-identical dispatch ⇒ shared cache key: both wrote the same one entry.
+		const key = await cacheKey("hash", { text: "front-door" });
+		expect(kv.get(key)).resolves.not.toBeNull();
+	});
+
+	it("fn escape with an unknown inner name returns a typed not_found error", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "fn", arguments: { name: "not_a_real_leaf", args: {} } } });
+		// Falls through to the `fn` fn's own run (name not unwrapped) → typed failure,
+		// NOT a JSON-RPC -32601 (the `fn` tool itself exists and ran).
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toContain("[not_found]");
+	});
+
+	it("fn escape without a name returns a typed bad_input error", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "fn", arguments: {} } });
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toContain("[bad_input]");
+	});
+
+	it("fn escape cannot recurse into itself", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, { jsonrpc: "2.0", id: 14, method: "tools/call", params: { name: "fn", arguments: { name: "fn", args: {} } } });
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toContain("cannot call itself");
 	});
 
 	it("a cacheable fn called twice with identical args is served from the KV cache", async () => {
@@ -483,5 +534,56 @@ describe("summarize-before-return meta-arg", () => {
 		} finally {
 			FUNCTIONS.splice(FUNCTIONS.indexOf(probe), 1);
 		}
+	});
+});
+
+// The runtime discovery manifest + the dormant personal-namespace routes live in
+// rtServer.fetch (upstream of handleRpc), so drive them through the gate directly.
+describe("rtServer.fetch — connector manifest + dormant namespace routes", () => {
+	const gateCtx = () => ({ waitUntil: () => {}, props: { login: ALLOWED } }) as unknown as Parameters<typeof rtServer.fetch>[2];
+
+	type Manifest = { name: string; connectors: Array<{ name: string; url: string; tools: number | null }> };
+
+	it("GET /mcp/connectors default view surfaces only the advertised sux-router connector", async () => {
+		const { kv } = makeKv();
+		const res = await rtServer.fetch(new Request("https://sux.example.dev/mcp/connectors"), makeEnv(kv), gateCtx());
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Manifest;
+		expect(body.name).toBe("sux");
+		expect(body.connectors).toHaveLength(1);
+		expect(body.connectors[0]).toMatchObject({ name: "sux", url: "https://sux.example.dev/mcp" });
+		expect(typeof body.connectors[0].tools).toBe("number"); // live count folded in
+		expect(body.connectors.find((c) => c.name === "vault")).toBeUndefined();
+	});
+
+	it("GET /mcp/connectors?all=1 surfaces all four connectors with live per-namespace counts", async () => {
+		const { kv } = makeKv();
+		const res = await rtServer.fetch(new Request("https://sux.example.dev/mcp/connectors?all=1"), makeEnv(kv), gateCtx());
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Manifest;
+		const names = body.connectors.map((c) => c.name);
+		expect(names).toEqual(expect.arrayContaining(["sux", "vault", "mail", "files"]));
+		expect(body.connectors).toHaveLength(4);
+		for (const c of body.connectors) expect(typeof c.tools).toBe("number");
+	});
+
+	// Regression guard: retiring the connectors from the manifest must NOT change routing —
+	// each personal namespace still reaches its own handler (dormant/reachable, not broken).
+	it.each([
+		["/vault/mcp", "vault"],
+		["/vault/mcp/", "vault"],
+		["/mail/mcp", "mail"],
+		["/files/mcp", "files"],
+	])("POST initialize to %s still routes to the %s handler", async (path, name) => {
+		const { kv } = makeKv();
+		const req = new Request(`https://sux.example.dev${path}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+		});
+		const res = await rtServer.fetch(req, makeEnv(kv), gateCtx());
+		expect(res.status).toBe(200);
+		const rpc = extractRpcFromText(await res.text(), res.headers.get("content-type"));
+		expect(rpc?.result.serverInfo.name).toBe(name);
 	});
 });

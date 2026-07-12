@@ -66,7 +66,7 @@ const DOMAINS: DomainSpec[] = [
 	{ key: "tasks", blurb: "Todoist tasks & projects.", leaves: ["todoist"] },
 	{ key: "mail", blurb: "Fastmail over the raw JMAP conduit (byte-exact methodCalls + auth + gates).", leaves: ["jmap"] },
 	{ key: "compose", blurb: "Server-side combinators — map+reduce (batch), parallel fetch (batch_fetch), and {{prev}}-piping (pipe).", leaves: ["batch", "batch_fetch", "pipe"] },
-	{ key: "meta", blurb: "This map (sux), preferences, feedback issues, and self-diagnostics.", leaves: ["sux", "preferences", "issue", "selftest"] },
+	{ key: "meta", blurb: "This map (sux), the `fn` escape hatch (call any leaf by name), preferences, feedback issues, and self-diagnostics.", leaves: ["sux", "fn", "preferences", "issue", "selftest"] },
 ];
 
 // The three personal-data namespaces mount as SEPARATE /<domain>/mcp connectors, not
@@ -91,7 +91,7 @@ export const sux: Fn = {
 	// reflects the registry. Idempotent + read-only so a client treats it as free.
 	annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
 	description:
-		"sux capability map — the single, mobile-safe entry point that describes the whole toolset. sux exposes ~95 leaf tools plus three personal-data namespace connectors (vault / mail / files). Skills explain how these compose, but skills don't sync to mobile — so call `sux` first on an unfamiliar surface to get the map: the DOMAINS (search, fetch, extract, research, shop, convert, compute, data, storage, recall, tasks, mail, compose, meta), what each is for, and the exact leaf fns under it. Then call any leaf directly as its own MCP tool — e.g. search({query}), scrape({url}), ingest({url}), recall({query}) — every capability is one tool call. Pass `domain` to zoom into one group and get each leaf's one-line summary; omit it for the full overview. The map is built live from the deployed registry, so it never drifts from what's actually available.",
+		"sux capability map — the single, mobile-safe entry point that describes the whole toolset. tools/list advertises only ~13 front verbs (sux, fn, search, scrape, shop, ingest, recall, oracle, pipe, batch, store, preferences, issue); the other ~80 capabilities are LEAVES, reached via the `fn` escape — fn({name, args}) — or by their own name. Skills explain how these compose, but skills don't sync to mobile — so call `sux` first on an unfamiliar surface to get the map: the DOMAINS (search, fetch, extract, research, shop, convert, compute, data, storage, recall, tasks, mail, compose, meta), what each is for, and the exact leaf fns under it. Then invoke any leaf, e.g. fn({name:\"arxiv\", args:{query}}) or a front verb directly like search({query}). Pass `domain` to zoom into one group and get each leaf's one-line summary; omit it for the full overview. The map is built live from the deployed registry, so it never drifts from what's actually available.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -128,7 +128,7 @@ export const sux: Fn = {
 		out.push("# sux — capability map");
 		out.push("");
 		out.push(
-			`${FUNCTIONS.length} leaf tools + 3 namespace connectors. Everything is one MCP tool call: call a leaf directly by name, e.g. \`search({query})\` or \`ingest({url})\`. Pass \`sux({domain})\` to expand any group below.`,
+			`${FUNCTIONS.length} tools + 3 namespace connectors. tools/list shows only ~13 front verbs; every other tool is a leaf — reach it with \`fn({name, args})\`, e.g. \`fn({name:"arxiv", args:{query}})\`. Front verbs you can call directly: \`search\`, \`scrape\`, \`shop\`, \`ingest\`, \`recall\`, \`oracle\`, \`pipe\`, \`batch\`, \`store\`. Pass \`sux({domain})\` to expand any group below.`,
 		);
 		out.push("");
 		out.push("## Domains");
@@ -159,7 +159,8 @@ export const sux: Fn = {
 
 		out.push("");
 		out.push("## How to reach anything");
-		out.push("- A leaf tool: call it directly by name with its args, e.g. `scrape({url})`.");
+		out.push("- A front verb (in tools/list): call it directly, e.g. `search({query})`, `scrape({url})`.");
+		out.push("- Any other leaf: `fn({name, args})`, e.g. `fn({name:\"tables\", args:{html}})`. Cache flags like `fresh` go inside `args`.");
 		out.push("- Zoom a domain for per-leaf summaries: `sux({domain:\"shop\"})`.");
 		out.push("- Compose leaves server-side: `batch` (map+reduce), `pipe` ({{prev}} chaining).");
 		out.push("- Personal data lives behind the vault/mail/files connectors above, each with its own verbs.");

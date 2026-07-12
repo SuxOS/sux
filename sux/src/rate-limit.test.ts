@@ -47,4 +47,35 @@ describe("weightedRateLimit", () => {
 		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", { method: "tools/list" } as any)).toBeNull();
 		expect(rl.calls()).toBe(0);
 	});
+
+	// The front-door `fn` escape must not let an expensive leaf dodge its weight.
+	const fnCall = (name: string, args: Record<string, unknown> = {}) => ({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "fn", arguments: { name, args } } });
+
+	it("charges the real leaf's weight when it's reached via the `fn` escape", async () => {
+		const rl = limiter(10);
+		const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", fnCall("render"));
+		expect(r).toBeNull();
+		expect(rl.calls()).toBe(4); // render cost 5 → 4 extra, same as a direct render call
+	});
+
+	it("a bare/unknown-inner `fn` call charges nothing extra (falls through to fn's own run)", async () => {
+		const rl = limiter(10);
+		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", fnCall("does_not_exist"))).toBeNull();
+		expect(await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", call("fn"))).toBeNull();
+		expect(rl.calls()).toBe(0); // fn itself has default cost
+	});
+
+	// A Unicode-obfuscated inner name must NOT dodge the weighted cost: the limiter
+	// resolves it through the same normalization the dispatcher will, so a fullwidth or
+	// zero-width-spaced leaf is charged exactly as its plain form.
+	it("charges the real leaf's weight even when the `fn` inner name is Unicode-obfuscated", async () => {
+		const fullwidthRender = "ｒｅｎｄｅｒ"; // ｒｅｎｄｅｒ
+		const zeroWidthRender = "ren​der";
+		for (const obf of [fullwidthRender, zeroWidthRender]) {
+			const rl = limiter(10);
+			const r = await weightedRateLimit({ MCP_RATE_LIMITER: rl } as any, "u", fnCall(obf));
+			expect(r).toBeNull();
+			expect(rl.calls(), `obfuscated ${JSON.stringify(obf)} should charge render's 4 extra`).toBe(4);
+		}
+	});
 });

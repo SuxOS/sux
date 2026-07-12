@@ -9,13 +9,22 @@ describe("connectors — the one connector-surface source", () => {
 		expect(new Set(CONNECTOR_PATHS).size).toBe(CONNECTOR_PATHS.length); // no dupes
 	});
 
-	it("buildManifest joins origin+path and folds live tool counts (null when a count is missing)", () => {
+	it("buildManifest default view surfaces only advertised connectors (personal namespaces retired)", () => {
 		const m = buildManifest("https://sux.example.dev", { "/mcp": 94, "/vault/mcp": 9, "/mail/mcp": 12, "/files/mcp": 8 });
 		expect(m.name).toBe("sux");
+		expect(m.connectors).toHaveLength(1);
+		expect(m.connectors[0]).toMatchObject({ name: "sux", plugin: "sux-router", url: "https://sux.example.dev/mcp", tools: 94 });
+		expect(m.connectors.find((c) => c.name === "vault")).toBeUndefined();
+		expect(buildManifest("https://x", {}).connectors[0].tools).toBeNull(); // missing count → null, not a crash
+	});
+
+	it("buildManifest {all:true} still surfaces all four connectors with live counts (routes/counts untouched)", () => {
+		const m = buildManifest("https://sux.example.dev", { "/mcp": 94, "/vault/mcp": 9, "/mail/mcp": 12, "/files/mcp": 8 }, { all: true });
 		expect(m.connectors).toHaveLength(4);
 		expect(m.connectors[0]).toMatchObject({ name: "sux", plugin: "sux-router", url: "https://sux.example.dev/mcp", tools: 94 });
+		expect(m.connectors.find((c) => c.name === "vault")).toMatchObject({ url: "https://sux.example.dev/vault/mcp", tools: 9 });
+		expect(m.connectors.find((c) => c.name === "mail")).toMatchObject({ url: "https://sux.example.dev/mail/mcp", tools: 12 });
 		expect(m.connectors.find((c) => c.name === "files")).toMatchObject({ url: "https://sux.example.dev/files/mcp", tools: 8 });
-		expect(buildManifest("https://x", {}).connectors[0].tools).toBeNull(); // missing count → null, not a crash
 	});
 
 	it("every connector's plugin exists in the marketplace (drift guard)", () => {

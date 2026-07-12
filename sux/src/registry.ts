@@ -1,4 +1,5 @@
 import type { BrowserWorker } from "@cloudflare/puppeteer";
+import { normalizeText } from "./normalize";
 import type { TailscaleEnv } from "./proxy";
 
 export type AiBinding = {
@@ -266,6 +267,69 @@ export function toolList(fns: Fn[]): Array<{ name: string; description: string; 
 	});
 }
 
+// The FRONT DOOR — the curated root verbs that tools/list actually advertises.
+// Everything else is a leaf: still fully dispatchable (by its own name, or via the
+// `fn` escape), still described by the `sux` map, just not flooding the list. This
+// keeps the advertised surface mobile-legible (~13 tools) without removing any
+// capability. The single source of truth for "what's a front verb" — a fn may also
+// self-declare `surface:"front"`, and either inclusion path counts.
+//   sux — the capability map    · fn — call any leaf by name
+//   search/scrape — web in      · shop — retail fan-out
+//   ingest/recall/oracle — memory in, cited answers out
+//   pipe/batch — compose leaves server-side
+//   store — blob storage        · preferences/issue — tell sux what you want / what broke
+export const FRONT_VERBS = new Set<string>([
+	"sux", "fn",
+	"search", "scrape", "shop",
+	"ingest", "recall", "oracle",
+	"pipe", "batch",
+	"store", "preferences", "issue",
+]);
+
+/** True when a fn belongs on the advertised front-door surface. */
+export function isFrontVerb(f: Fn): boolean {
+	return f.surface === "front" || FRONT_VERBS.has(f.name);
+}
+
+/**
+ * The tool list the MCP `tools/list` actually returns: only the front verbs. Leaves
+ * stay reachable (direct dispatch by name, or `fn({name,args})`) and discoverable
+ * (the `sux` map), so nothing is lost — the surface is just legible. Preserves the
+ * importance ordering of the input.
+ */
+export function frontToolList(fns: Fn[]): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations }> {
+	return toolList(fns.filter(isFrontVerb));
+}
+
 export function findFn(fns: Fn[], name: string): Fn | undefined {
 	return fns.find((f) => f.name === name);
+}
+
+/**
+ * Resolve an `fn` escape call to the real leaf it targets. Returns `{name, args}`
+ * of the underlying leaf when `params` is `fn({name, args})` and the inner name
+ * resolves to a registered leaf (not `fn` itself); returns null otherwise (a direct
+ * call, or an `fn` call with a missing/unknown/self inner name — which the `fn` fn's
+ * own run then answers with a typed error).
+ *
+ * The SINGLE source of the unwrap rule, shared by the dispatcher (so a leaf reached
+ * via `fn` runs byte-identically to a direct call) and the weighted rate limiter (so
+ * an expensive leaf can't dodge its `cost` by hiding behind `fn`).
+ */
+export function unwrapFnCall(params: { name?: string; arguments?: unknown } | undefined, fns: Fn[]): { name: string; args: Record<string, unknown> } | null {
+	if (params?.name !== "fn") return null;
+	const a = params.arguments;
+	if (!a || typeof a !== "object" || Array.isArray(a)) return null;
+	const inner = (a as Record<string, unknown>).name;
+	// Resolve the inner name against the SAME normalization the dispatcher applies to
+	// every string arg (fullwidth/styled-Latin fold + zero-width/control strip). If we
+	// matched the raw string, `fn({name:"ｒｅｎｄｅｒ"})` (fullwidth) or a zero-width-spaced
+	// name would fail to resolve HERE — so the limiter charges the cheap `fn` cost — yet
+	// normalizeArgs would later fold it to a real leaf and fnEscape.run would execute it:
+	// a weighted-cost + cache bypass. Normalizing here keeps both resolution sites (this
+	// and fn.ts) in lockstep with the dispatcher, so raw-resolvable == effective.
+	const innerName = typeof inner === "string" ? normalizeText(inner).trim() : "";
+	if (!innerName || innerName === "fn" || !findFn(fns, innerName)) return null;
+	const innerArgs = (a as Record<string, unknown>).args;
+	return { name: innerName, args: innerArgs && typeof innerArgs === "object" && !Array.isArray(innerArgs) ? (innerArgs as Record<string, unknown>) : {} };
 }

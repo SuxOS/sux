@@ -2,7 +2,7 @@ import type OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
-import { findFn, type RtEnv, type ToolResult, toolList } from "./registry";
+import { findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall } from "./registry";
 import { buildManifest, CONNECTOR_PATHS } from "./connectors";
 import { singleFlight } from "./single-flight";
 import { weightedRateLimit } from "./rate-limit";
@@ -144,10 +144,25 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 	}
 	if (method.startsWith("notifications/")) return new Response(null, { status: 202 });
 	if (method === "tools/list") {
-		return sseResponse({ jsonrpc: "2.0", id, result: { tools: toolList(FUNCTIONS) } });
+		// Front-door: advertise only the ~13 root verbs. Leaves stay dispatchable (by
+		// name or via the `fn` escape) and discoverable (`sux` map) — the list is just
+		// legible instead of ~95 tools deep.
+		return sseResponse({ jsonrpc: "2.0", id, result: { tools: frontToolList(FUNCTIONS) } });
 	}
 	if (method === "tools/call") {
-		const name = rpc?.params?.name ?? "";
+		let name = rpc?.params?.name ?? "";
+		// `fn` escape unwrap: fn({name, args}) is rewritten IN PLACE to a call on the
+		// named leaf, before findFn/cache/normalize — so a leaf reached through the
+		// front-door behaves byte-identically to a direct call (same cache key, same
+		// deadline, same weighted cost — the limiter unwraps via the same helper). Only
+		// a valid, non-self inner name that resolves to a real leaf is unwrapped;
+		// anything else (missing/blank/self/unknown) falls through to the `fn` fn's own
+		// run, which returns a typed error. Cache flags ride the inner args.
+		const unwrapped = unwrapFnCall(rpc?.params, FUNCTIONS);
+		if (unwrapped) {
+			name = unwrapped.name;
+			(rpc as JsonRpc).params = { name, arguments: unwrapped.args };
+		}
 		const fn = findFn(FUNCTIONS, name);
 		if (!fn) return sseResponse({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
 
@@ -358,12 +373,16 @@ export const rtServer = {
 		// startsWith('/vault/mcp'), so an exact-only check would let '/vault/mcp/'
 		// silently fall through to the research-tools server (wrong tools, authed).
 		const pathname = new URL(request.url).pathname;
-		// Runtime connector discovery: GET /mcp/connectors self-describes every live
-		// namespace + its tool count, from the one CONNECTORS source. Authenticated
-		// (post-gate) — it exposes namespace names + counts, never secrets or tool args.
+		// Runtime connector discovery: GET /mcp/connectors self-describes the advertised
+		// connector(s) + tool counts from the one CONNECTORS source (the personal
+		// namespaces are retired from this default view but stay routed below; `?all=1`
+		// surfaces them on purpose). Authenticated (post-gate) — exposes namespace names
+		// + counts, never secrets or tool args.
 		if (isBodyless && (pathname === "/mcp/connectors" || pathname === "/connectors")) {
+			const url = new URL(request.url);
+			const all = url.searchParams.get("all") === "1";
 			const counts = await connectorCounts();
-			return new Response(JSON.stringify(buildManifest(new URL(request.url).origin, counts), null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
+			return new Response(JSON.stringify(buildManifest(url.origin, counts, { all }), null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
 		}
 		if (pathname === "/vault/mcp" || pathname.startsWith("/vault/mcp/")) {
 			const { handleVaultRpc } = await import("./vault-mcp");
