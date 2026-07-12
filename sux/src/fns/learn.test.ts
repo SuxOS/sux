@@ -151,11 +151,17 @@ describe("learn", () => {
 		expect(run).not.toHaveBeenCalled(); // list is a pure KV read
 	});
 
-	it("reset clears the whole learned set", async () => {
+	it("reset requires confirm, then clears the whole learned set", async () => {
 		const { env } = makeEnv();
 		await learn.run(env, { action: "learn", input: "a cat", label: "A" });
 		await learn.run(env, { action: "learn", input: "an invoice", label: "C" });
-		const j = parse(await learn.run(env, { action: "reset" }));
+		// without confirm: guarded, nothing cleared
+		const guarded = await learn.run(env, { action: "reset" });
+		expect(guarded.isError).toBe(true);
+		expect(guarded.content[0].text).toMatch(/confirm/i);
+		expect(parse(await learn.run(env, { action: "list" })).count).toBe(2);
+		// with confirm: clears
+		const j = parse(await learn.run(env, { action: "reset", confirm: true }));
 		expect(j.deleted).toBe(2);
 		expect(parse(await learn.run(env, { action: "list" })).count).toBe(0);
 	});

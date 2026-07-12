@@ -49,6 +49,7 @@ export const learn: Fn = {
 			source: { type: "string", description: "learn: optional provenance tag (e.g. where the example came from)." },
 			batch: { type: "string", description: "learn: group this teach under a named undo handle. undo: the batch to delete." },
 			k: { type: "integer", minimum: 1, maximum: 25, default: 3, description: "classify: how many nearest neighbors to vote over." },
+			confirm: { type: "boolean", description: "reset: required — clears the ENTIRE learned set (not batch-undoable)." },
 		},
 	},
 	raw: true,
@@ -70,6 +71,10 @@ export const learn: Fn = {
 			}
 
 			if (action === "reset") {
+				// reset clears the WHOLE set and is not batch-undoable — self-guard with an
+				// explicit confirm (the tool-level annotation is non-destructive for the common
+				// learn/classify path, so the annotation-driven smart guard doesn't cover this).
+				if (args?.confirm !== true) return failWith("bad_input", "action=reset clears the ENTIRE learned set and can't be batch-undone — pass confirm:true to proceed.");
 				const deleted = await clearExamples(env);
 				return ok(JSON.stringify({ action, deleted, note: `cleared the learned set (${deleted} record(s))` }, null, 2));
 			}
