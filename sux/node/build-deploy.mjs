@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Single source of truth for the residential-node deploy artifact. The installer
-// `root@192.168.1.1` embeds node/server.mjs as a base64 blob; this regenerates
+// `openwrt/provision-node.sh` embeds node/server.mjs as a base64 blob; this regenerates
 // that blob from server.mjs so the two can never silently diverge (the exact
 // drift that let the binary-egress bug ship). `--check` verifies they match
 // (CI drift gate) without writing.
@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url)); // sux/node
 const serverPath = resolve(here, "server.mjs");
-const deployPath = resolve(here, "../..", "root@192.168.1.1"); // repo root
+const deployPath = resolve(here, "openwrt", "provision-node.sh");
 
 const server = readFileSync(serverPath);
 const blob = server.toString("base64");
@@ -36,7 +36,7 @@ if (!roundTrip.equals(server)) {
 
 if (process.argv.includes("--check")) {
 	if (next !== deploy) {
-		console.error("build-deploy: DRIFT — root@192.168.1.1 blob is stale.\n  Run: node sux/node/build-deploy.mjs");
+		console.error("build-deploy: DRIFT — openwrt/provision-node.sh blob is stale.\n  Run: node sux/node/build-deploy.mjs");
 		process.exit(1);
 	}
 	console.log("build-deploy: deploy blob is in sync with server.mjs");
