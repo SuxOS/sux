@@ -13,6 +13,7 @@ import { hasAI, llm } from "./ai";
 const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
 import { selfImproveTick } from "./fns/_self_improve";
+import { runSubJob } from "./cron-heartbeat";
 import { recordCall } from "./metrics";
 import { shipToLoki } from "./grafana";
 import { handleObservability } from "./observability";
@@ -480,25 +481,18 @@ function tokenEq(a: string, b: string): boolean {
 	return diff === 0;
 }
 
+// Each sub-job runs via runSubJob: swallows failures (a bad one never blocks the
+// rest) and stamps a {ok,at,error?} heartbeat into KV, so gatherHealth can surface
+// last-success + staleness for the unattended cron parts on the public status page.
 async function maintenanceTick(env: RtEnv): Promise<void> {
-	try {
-		await refreshKrogerToken(env);
-	} catch (e) {
-		console.warn(`sux scheduled maintenance: kroger token refresh skipped: ${String((e as Error)?.message ?? e)}`);
-	}
-	try {
-		await mailTriageTick(env);
-	} catch (e) {
-		console.warn(`sux scheduled maintenance: mail triage skipped: ${String((e as Error)?.message ?? e)}`);
-	}
-	try {
-		// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
-		// daily cron only does network work ≈ weekly (see _adblock.refreshAdblockEngine).
+	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
+	await runSubJob(env, "mail_triage", () => mailTriageTick(env));
+	// Rebuild the cosmetic-adblock engine blob in R2 — staleness-gated, so the
+	// daily cron only does network work ≈ weekly (see _adblock.refreshAdblockEngine).
+	await runSubJob(env, "adblock", async () => {
 		const { refreshAdblockEngine } = await import("./fns/_adblock");
 		await refreshAdblockEngine(env);
-	} catch (e) {
-		console.warn(`sux scheduled maintenance: adblock engine refresh skipped: ${String((e as Error)?.message ?? e)}`);
-	}
+	});
 }
 
 // Maps an exception thrown out of the OAuth provider into a clean JSON error
@@ -529,7 +523,7 @@ export default {
 	// ships dormant (fail-closed) and no-ops entirely unless SELF_IMPROVE_ENABLE is set.
 	async scheduled(_event: ScheduledController, env: RtEnv, ctx: ExecutionContext): Promise<void> {
 		ctx.waitUntil(maintenanceTick(env));
-		ctx.waitUntil(selfImproveTick(env).then(() => {}));
+		ctx.waitUntil(runSubJob(env, "self_improve", () => selfImproveTick(env)));
 	},
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
 		// Public, unauthenticated observability routes (health/metrics/dashboard)
