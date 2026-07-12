@@ -42,6 +42,7 @@ jobs:
         (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Preflight — need the key
         id: pre
@@ -68,6 +69,7 @@ jobs:
       github.event.sender.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Preflight — need the key
         id: pre
@@ -88,4 +90,4 @@ jobs:
             Review this PR for correctness bugs and reuse/simplification/efficiency
             issues (the repo has a /code-review skill — use it). Post concise, concrete
             inline findings; don't rewrite the PR. If it looks clean, say so in one line.
-          claude_args: "--max-turns 12 --model opus"
+          claude_args: "--max-turns 12 --model sonnet"
