@@ -12,7 +12,7 @@ export const IMPORTANCE = [
 	// Tier 3 — extraction + AI text
 	"feed", "sitemap", "gtin", "contacts", "entities", "redact", "translate", "classify", "embed", "ocr",
 	// Tier 4 — net/intel + geo + remaining convert + flagship queries
-	"pubmed", "clinical_trials", "youtube", "local_shop", "wayback", "barcode_lookup", "geo_fetch", "latency",
+	"pubmed", "clinical_trials", "youtube", "local_shop", "wayback", "barcode_lookup", "latency",
 	"dns", "headers", "redirects", "robots", "whois", "ip_geo", "tls_info", "crawl",
 	"yaml_json", "xml_json", "subtitles",
 	// Tier 5 — utilities
