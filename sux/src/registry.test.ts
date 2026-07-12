@@ -76,7 +76,6 @@ describe("registry conformance", () => {
 		const cases: Array<[string, FailCode]> = [
 			["proxy", "bad_input"], // url missing
 			["scrape", "bad_input"], // url missing
-			["geo_fetch", "bad_input"], // url missing
 			["render", "bad_input"], // url missing
 			["kroger", "not_configured"], // KROGER_CLIENT_ID/SECRET absent
 			["costco", "bad_input"], // term missing

@@ -35,7 +35,7 @@ only the distilled result.
 | find pages semantically like a URL | `find_similar` |
 | a page that blocks datacenter IPs | `scrape` (residential curl-impersonate, direct fallback) |
 | force every request through a residential exit | `proxy` (full residential, no fallback) |
-| pick the exit region for geo-priced / geo-gated data | `geo_fetch` |
+| pick the exit region for geo-priced / geo-gated data | `proxy` with an `x-exit-geo` header (e.g. `us-ca`, `de`) |
 | a JavaScript-rendered page / screenshot / page-as-PDF | `render` (`backend: cf|mac`, `as: html|text|screenshot|pdf`; `mac` solves active bot challenges) |
 | crawl a whole site / follow links | `crawl` · `sitemap` |
 | many URLs at once | `batch_fetch` |
@@ -80,7 +80,7 @@ Pick the **lowest rung that works** — each costs more but defeats more protect
    Slowest; auto-escalates to a solver tier when a page looks blocked.
 
 Fetch modes to keep distinct: **smart** (`scrape`, cheapest-first with direct fallback),
-**full proxy** (`proxy`, force residential, no fallback), **geo** (`geo_fetch`, choose exit locale).
+**full proxy** (`proxy`, force residential, no fallback), **geo** (`proxy` with an `x-exit-geo` header, choose exit locale).
 
 ## Conventions
 

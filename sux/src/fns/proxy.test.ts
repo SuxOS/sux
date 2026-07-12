@@ -59,4 +59,34 @@ describe("proxy", () => {
 		const head = await proxyFn.run({} as any, { url: "https://x.com", method: "HEAD" });
 		expect(head.noCache).toBeUndefined();
 	});
+
+	it("forwards an x-exit-geo header to the residential exit", async () => {
+		const mock = vi.mocked(smartFetch);
+		mock.mockClear();
+		await proxyFn.run({} as any, { url: "https://x.com", headers: { "x-exit-geo": "us-ca" } });
+		const passedInit = mock.mock.calls[0][2] as { headers?: Record<string, string> };
+		expect(passedInit.headers?.["x-exit-geo"]).toBe("us-ca");
+	});
+
+	it("streams and aborts past max_bytes rather than buffering the whole body", async () => {
+		// A body larger than max_bytes: readBodyBytes cancels the stream and throws, so
+		// the huge/hostile response is never fully materialized (the OOM the old
+		// resp.arrayBuffer() path risked).
+		let cancelled = false;
+		let pulls = 0;
+		const stream = new ReadableStream({
+			pull(controller) {
+				if (pulls++ < 50) controller.enqueue(new TextEncoder().encode("x".repeat(1000)));
+				else controller.close();
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		vi.mocked(smartFetch).mockResolvedValueOnce(new Response(stream, { status: 200 }));
+		const r = await proxyFn.run({} as any, { url: "https://x.com/big", max_bytes: 10 });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("upstream_error");
+		expect(cancelled).toBe(true); // stream aborted, never fully materialized
+	});
 });

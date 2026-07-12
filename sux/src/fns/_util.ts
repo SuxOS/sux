@@ -302,7 +302,7 @@ export async function fetchText(
 	// round-trip; a miss populates for the rest of the chain.
 	const method = (init?.method ?? "GET").toUpperCase();
 	// Fold request headers into the key: a header can select different content for
-	// the same URL (e.g. geo_fetch's x-exit-geo, Accept-Language), so a header-blind
+	// the same URL (e.g. proxy's x-exit-geo, Accept-Language), so a header-blind
 	// key would serve one variant's body for another's request.
 	const headerSig = init?.headers ? JSON.stringify(init.headers) : "";
 	const dedupKey = fetchDedupActive() && method === "GET" && !init?.body ? `${maxBytes}|${headerSig}|${url}` : null;
@@ -343,7 +343,7 @@ export async function fetchTextOk(
 }
 
 /**
- * Transport fns (proxy/geo_fetch/protocol/scrape/batch_fetch) faithfully return
+ * Transport fns (proxy/protocol/scrape/batch_fetch) faithfully return
  * error pages too — the raw response IS their content — but a transient
  * 403/429/consent wall must never enter the KV cache, or it poisons repeat
  * calls for an hour. Content-consuming fns instead fail() on >= 400 (see
