@@ -36,7 +36,14 @@ export const kv_get: Fn = {
 		if ("error" in r) return fail(r.error);
 		const value = await env.OAUTH_KV.get(r.key);
 		if (value === null) return fail(`key '${String(args.key).trim()}' not found.`);
-		// Inflate a transparently-compressed value; a plain/legacy value passes through.
-		return ok(await maybeDecompressString(value));
+		try {
+			// Inflate a transparently-compressed value; a plain/legacy value passes through.
+			return ok(await maybeDecompressString(value));
+		} catch (e) {
+			// A corrupt/truncated `\0gz:` frame or the decompression-bomb guard tripping
+			// throws — turn it into a clean fail() (mirrors dropbox/store) instead of an
+			// uncaught rejection surfacing as a generic dispatcher error.
+			return fail(`key '${String(args.key).trim()}' could not be decompressed: ${String((e as Error)?.message ?? e)}`);
+		}
 	},
 };

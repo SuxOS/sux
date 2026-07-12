@@ -79,11 +79,15 @@ async function gunzip(input: Uint8Array): Promise<Uint8Array> {
 	const ds = new DecompressionStream("gzip");
 	const w = ds.writable.getWriter();
 	// Feed the writer without awaiting (a large stream would block on backpressure
-	// until the reader below pulls); a write error surfaces via the reader instead.
-	void w.write(input).then(
-		() => w.close(),
-		() => {},
-	);
+	// until the reader below pulls); a decode error surfaces via the READER loop, which
+	// we handle. Swallow every writer-side rejection here — write(), close(), AND the
+	// writer's own `closed` promise (all reject when the stream errors on corrupt input)
+	// — so a bad frame never escapes as an UNHANDLED rejection.
+	w.closed.catch(() => {});
+	void w
+		.write(input)
+		.then(() => w.close())
+		.catch(() => {});
 	const reader = ds.readable.getReader();
 	const chunks: Uint8Array[] = [];
 	let total = 0;

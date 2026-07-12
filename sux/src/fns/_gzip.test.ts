@@ -59,6 +59,16 @@ describe("_gzip codec", () => {
 		expect(await maybeDecompress(userGz)).toBe(userGz);
 	});
 
+	it("rejects cleanly (no hang, no unhandled rejection) on a corrupt marker-framed frame", async () => {
+		// Marker(0x00) + gzip magic(1f 8b) but a garbage/truncated body: isCompressed()
+		// treats it as ours, so gunzip must throw a handled rejection — the read-path
+		// callers (store/dropbox/kv_get) wrap this in a fail(). Guards the writer-side
+		// error handling in gunzip (a stray unhandled rejection would fail CI).
+		const frame = new Uint8Array([GZIP_MARKER, 0x1f, 0x8b, 0x00, 0x11, 0x22, 0x33]);
+		expect(isCompressed(frame)).toBe(true);
+		await expect(maybeDecompress(frame)).rejects.toThrow();
+	});
+
 	it("shouldCompress gates on size, content type, and magic bytes", () => {
 		expect(shouldCompress(enc(bigText), "text/plain")).toBe(true);
 		expect(shouldCompress(enc("tiny"), "text/plain")).toBe(false);
