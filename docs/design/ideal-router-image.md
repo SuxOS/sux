@@ -4,7 +4,7 @@
 spec that four downstream workstreams implement against:
 
 1. the **clean image build** (`/etc/apk/world` + `sysupgrade.conf` + first-boot restore),
-2. the separate **LuCI-apps** session (§3 is its build order),
+2. the separate **LuCI-apps** session (§3 is its build order) → **repo `colinxs/owl-tegu-luci`**; `sux-tailscale` + `sux-cloudflare` already built/merged/verified,
 3. the **Grafana observability** design (`docs/design/observability-grafana.md`, §4),
 4. the **DNS rework** (§2.1 is its spec).
 
@@ -57,14 +57,15 @@ kmod-e1000 kmod-forcedeth`) — **[O]**, keep all (image must boot on any port).
 |---|---|---|---|
 | **DNS** | `dnsmasq-full` · `odhcpd` | [O] | dnsmasq-full = DHCPv4 + local/home.arpa auth + conditional forward; odhcpd = DHCPv6 + RA/SLAAC. **Replaces the stock `dnsmasq`** (`-dnsmasq dnsmasq-full`). |
 | | `ctrld` (Control D daemon) | [P] | `/usr/sbin/ctrld` + `/etc/controld/ctrld.toml`. Front `:53` resolver (§2.1). Baked payload; not in feeds. |
-| **Mesh / reach** | `tailscale` · `luci-app-tailscale-community` | [C] | subnet router + exit node. Identity is `/etc/tailscale/` (§4/persistence). |
-| | `cloudflared` · `luci-app-cloudflared` | [O] | **is** an official pkg (`net/cloudflared`). Render data-plane + OOB. Token is [P] (out of git). |
+| | `ip6neigh` (+ `luci-app-ip6neigh` if it lands) | [P] | v6→MAC→hostname naming so v4+v6 share one device name (§2.3). **Verified NOT in 25.12.3 feeds** — vendored shell payload; re-check feeds each build. |
+| **Mesh / reach** | `tailscale` · `luci-app-sux-tailscale` | [O]/[C] | subnet router + exit node. Identity is `/etc/tailscale/` (§4/persistence). **App BUILT** (owl-tegu-luci) — replaces `luci-app-tailscale-community`. |
+| | `cloudflared` · `luci-app-sux-cloudflare` | [O]/[C] | `cloudflared` **is** an official pkg (`net/cloudflared`). Render data-plane + OOB. Token is [P] (out of git). **App BUILT** (owl-tegu-luci) — replaces `luci-app-cloudflared`. |
 | **Web / mgmt** | `luci` · `luci-ssl` · `luci-app-firewall` · `luci-app-attendedsysupgrade` | [O] | luci-ssl (currently missing — box serves plain uhttpd); attendedsysupgrade drives the ASU image build. |
 | **NAS** | `ksmbd-server` · `luci-app-ksmbd` | [O] | kernel SMB3 server on the NVMe (§2.2). **Replaces samba4.** |
-| **NAT-PMP/UPnP** | `miniupnpd-nftables` · `luci-app-upnp` | [O] | already live (S94 miniupnpd); fw4-native variant. |
+| **NAT-PMP/PCP/UPnP** | `miniupnpd-nftables` · `luci-app-upnp` | [O] | **KEEP** (already live, S94, fw4-native). **Needed for Tailscale NAT traversal** — the gateway offering NAT-PMP/PCP lets LAN tailnet peers (iPhone, MacBook) obtain port mappings and establish **direct** connections instead of relaying through DERP. (Corrects the earlier drop; Colin, 2026-07-12: "we need pmp for tailscale nat.") Optional hardening: restrict to NAT-PMP/PCP + disable UPnP-IGD's arbitrary LAN port-punching if desired. |
 | **Console** | `ttyd` · `luci-app-ttyd` | [O] | browser shell (currently config present, app not in world — add the LuCI app). |
 | **Watchdog** | `watchcat` · `luci-app-watchcat` · `kmod-itco-wdt` | [O] | L1 dumb-timer + HW `/dev/watchdog` floor. Brain = `suxwatch` [P] (router-watchdog.md). |
-| **Docker host** | `docker` · `dockerd` · `docker-compose` · `containerd` | [O] | + `kmod-veth kmod-br-netfilter kmod-nf-nat kmod-nft-offload` for container networking. data-root → NVMe (§2.3). |
+| **Docker host** | `docker` · `dockerd` · `docker-compose` · `containerd` | [O] | + `kmod-veth kmod-br-netfilter kmod-nf-nat kmod-nft-offload` for container networking. data-root → NVMe (§2.4). |
 | **Storage** | `parted partx-utils` · `f2fs-tools mkf2fs` · `e2fsprogs resize2fs` · `kmod-fs-ext4` · `blkid losetup blkid` · `nvme-cli` | [O] | manage/grow the NVMe; `nvme-cli` (**add** — currently absent) for SMART/health. ext4 is the live NVMe fs; keep f2fs tools for flexibility. |
 | **Perf** | `kmod-tcp-bbr` · `irqbalance luci-app-irqbalance` · `intel-microcode` · `cpu-perf luci-app-cpu-perf` | [O] | BBR (**add** — not in world; pairs with SQM/2.5GbE), irqbalance across the 4 cores, microcode, cpufreq governor. |
 | **Tools** | `curl wget-ssl ca-bundle jq bash openssl-util ip-full ethtool tcpdump bind-dig coreutils gawk grep sed findutils` | [O] | the shell/diagnostic floor `suxwatch` + dead-drop rely on. |
@@ -93,7 +94,7 @@ kept component or a toy:
 | **`nextdns`** (+ config) | Superseded by Control D (`ctrld`). One upstream filtering provider, not two. |
 | **`adblock-fast`** | ctrld/Control D does the blocking upstream. No on-box blocklist engine. |
 | **`crowdsec`** | Heavy IDS/agent on the SACRED gateway — attack surface + RAM for near-zero benefit on a 1-user LAN. Drop. |
-| **`einat`** (+ config) | eim/full-cone NAT helper; miniupnpd covers NAT-PMP needs. Drop the extra NAT hack. |
+| **`einat`** (+ config) | eim/full-cone NAT helper; drop the extra NAT hack — miniupnpd's NAT-PMP/PCP covers the port-mapping needs (incl. Tailscale). |
 | **`kadnode`** (+ config, S95) | DHT/DNS-over-Kademlia toy. Not a role. Drop. |
 | **`samba4`** (+ config) | **Replaced by `ksmbd`** (kernel SMB3, faster on the 2.5GbE NVMe path, far lighter). Never run both. |
 | **`darkstat`** | Ancient traffic-accounting toy; Grafana/vnstat is the answer if we want traffic history. Drop. |
@@ -323,7 +324,103 @@ NIC can bond streams), `oplocks = yes`. Bind **only** to `lan` (never `wan`/`tai
 unless deliberately sharing over the tailnet). Firewall: no new open ports on wan; SMB
 stays LAN-only.
 
-### 2.3 Docker data-root → NVMe + fstab + recovery hook
+### 2.3 IPv4/IPv6 client correlation + friendly hostnames
+
+**Goal (Colin):** one physical device's **IPv4** (DHCPv4) and **IPv6** (SLAAC + DHCPv6,
+including privacy/temp addresses) resolve to the **same friendly hostname**, and Control D
+**Clients** + logs/Grafana attribute *both* address families to one named device. Today the
+v6 side is nameless — the live NDP table shows raw addresses like
+`2601:601:a484:1500:9930:28c0:425f:a244` with no PTR, and multiple v6 addresses per MAC
+(privacy addressing in action, e.g. several addrs behind `a8:51:ab:93:38:16`).
+
+**The correlation-key nuance (why DUID is not enough):**
+
+- **DUID** identifies a *DHCPv6* client, and DUID-LL/LLT often embeds the MAC — but it only
+  exists for devices that actually do DHCPv6. **SLAAC and RFC-4941 privacy/temporary
+  addresses have NO DUID** (they're self-assigned, never touch the DHCPv6 server). A
+  DUID→lease match therefore names only the DHCPv6 subset and **misses every SLAAC/privacy
+  address** — which, per the live NDP dump, is most of the v6 traffic here.
+- The **robust key is the MAC via the neighbor table (NDP for v6 / ARP for v4)**. Every v6
+  address a device uses — SLAAC, privacy, temporary, link-local, *and* any DHCPv6 lease —
+  shows up in the NDP table bound to that device's MAC (`ip -6 neigh` confirms
+  `<v6addr> … lladdr <mac>`). The same MAC is the key in the DHCPv4 lease. **MAC is the one
+  identifier that spans v4 + all v6 forms;** DUID is a partial view.
+
+**Mechanism — `ip6neigh`.** ip6neigh is the purpose-built OpenWrt tool for exactly this: a
+daemon that **monitors the IPv6 NDP table**, maps each `v6 → MAC → DHCPv4-lease hostname`,
+and writes **forward (AAAA) + reverse (PTR)** records into dnsmasq so every v6 address gets
+the device's friendly name. It **labels SLAAC vs privacy/temporary** addresses (e.g.
+`hostname.lan`, `hostname-tmp.lan`, `hostname-ll.lan`), so it covers DHCPv6 **and** SLAAC
+**and** privacy — precisely the coverage DUID-matching alone cannot reach. It's the
+NDP/MAC-based approach the nuance above demands, packaged.
+
+**Feed availability (verified on the live 25.12.3 box, reproduce-before-theorize):**
+`apk search ip6neigh` and `apk search luci-app-ip6neigh` both return **empty** — ip6neigh is
+**NOT in the 25.12.3 apk feeds** (neither official nor the community feed the box currently
+has enabled). Treat it as a **[P] payload**: install the ip6neigh shell package from source
+(the `hnyman`/`AndreBL` project — pure POSIX-sh + a dnsmasq hook, no compiled deps, so it
+drops onto OpenWrt cleanly) and bake it into the image + the NVMe recovery bundle, exactly
+like `ctrld`/`suxproxy`. **Build-time check:** re-verify each image build whether a
+25.12.3-compatible ip6neigh apk has appeared in a community feed; prefer the packaged form
+if it lands, else ship the vendored script. (If ip6neigh proves unmaintained for 25.12.3,
+the fallback is a small local `ip -6 neigh` → dnsmasq-hosts script doing the same
+MAC-join — but ip6neigh already handles the privacy-label edge cases, so don't reinvent it
+unless forced.)
+
+**Concrete config + how it feeds the rest of the design:**
+
+`/etc/config/ip6neigh` ([P]):
+```
+config ip6neigh 'config'
+    option domain          'home.arpa'      # match dnsmasq's local domain (§2.1)
+    option ll_label        'LL'             # link-local suffix label
+    option ula_label       ''               # ULA gets the plain name (fdf7:c24e:499::/48)
+    option gua_label       ''               # global SLAAC gets the plain name
+    option tmp_label       'TMP'            # RFC-4941 privacy/temp addresses → name-TMP
+    option unknown         '1'              # synthesize names for un-leased MACs too
+    option fritzbox        '0'
+    option dhcpv6_names     '1'             # also name DHCPv6-leased addrs
+    option dhcpv4_names     '1'             # ← the join: reuse the DHCPv4 lease hostname
+    option load_static      '1'
+```
+
+**Data flow (one coherent chain):**
+```
+ DHCPv4 lease (dnsmasq)  ──hostname+MAC──┐
+                                         ▼
+ ip -6 neigh (NDP) ──v6+MAC──►  ip6neigh  ──writes AAAA+PTR (name, name-TMP, name-LL)──►
+                                         │      dnsmasq hosts dir (/tmp/hosts/*)
+                                         ▼
+                          dnsmasq (§2.1, :5353) now authoritative for BOTH
+                          v4 (A/PTR from leases) and v6 (AAAA/PTR from ip6neigh)
+                          under the SAME home.arpa name
+                                         ▼
+             ctrld (front :53) forwards home.arpa/PTR → dnsmasq (upstream.local),
+             and correlates a device's v4+v6 queries by MAC via ARP/NDP for the
+             Control D **Clients** feature → one named device in the dashboard
+                                         ▼
+             Grafana / logs read the same consistent hostname → per-device panels
+             are readable ("colin-iphone") instead of raw v6 hex
+```
+
+- **dnsmasq owns DHCPv4 leases + local names** (§2.1) — the authoritative source of the
+  friendly hostname and the MAC↔name↔v4 binding.
+- **ip6neigh names the v6 side consistently** by joining NDP-derived `v6→MAC` to that same
+  dnsmasq lease, writing records back into dnsmasq's hosts dir (live: `/tmp/hosts/`). One
+  name, all address families, privacy addresses labeled not dropped.
+- **ctrld (front) correlates v4+v6 by MAC via ARP/NDP** for Control D Clients; because
+  ip6neigh has already given every v6 address the device's real hostname, the Control D
+  per-device dashboard **and** Grafana render `hostname`, not opaque hex — the whole point.
+
+**Ordering / dependency:** ip6neigh must start after dnsmasq (needs the lease file) and
+re-run its hook on NDP changes; its records live in dnsmasq's hosts dir, so a dnsmasq
+restart (a `suxwatch` DNS heal) must not clobber them — point ip6neigh at a persistent
+hosts file it re-owns, and add it to `sysupgrade.conf` + the NVMe bundle so names survive a
+reflash. This is additive to the DNS rework (§2.1), touches only naming, and never affects
+resolution correctness if it fails (worst case: v6 goes back to nameless — a cosmetic
+degrade, safe for the SACRED path).
+
+### 2.4 Docker data-root → NVMe + fstab + recovery hook
 
 **The invariant (from the upgrade plan): docker data MUST move off the 29 GB eMMC.** Live
 box still has `Docker Root Dir: /opt/docker` (eMMC) — the render container would fill eMMC
@@ -367,8 +464,8 @@ not to reskin all of LuCI.
 
 | Surface | App | Feed | Verdict |
 |---|---|---|---|
-| **Cloudflare tunnel** | `luci-app-cloudflared` | [O] | **ADOPT.** Official, shows tunnel status/token/metrics endpoint. Good enough; don't build. |
-| **Tailscale** | `luci-app-tailscale-community` | [C] | **ADOPT (mediocre) → improve.** Community app shows up/down + auth; weak on exit-node/subnet-route state. **Improve:** surface "offers exit node", advertised routes, peer list (data is in `tailscale status --json`). Low effort, high clarity. |
+| **Cloudflare tunnel** | `luci-app-sux-cloudflare` | [C] | **BUILT** (owl-tegu-luci, merged). Went beyond adopt-official: integrates the `Router` tunnel, decodes tunnel-id from the token (no secret leak), ready-connection count via the local `/ready` metrics, start/stop/restart. Verified live (4 connections). Supersedes the "adopt `luci-app-cloudflared`" call. |
+| **Tailscale** | `luci-app-sux-tailscale` | [C] | **BUILT** (owl-tegu-luci, merged). The "improve" goal delivered as a clean rebuild of the community app: exit-node use/advertise, advertised routes, peer list, auth — readable, least-privilege ACL, no browser-side DERP fetch. Verified live. Supersedes "adopt+improve `luci-app-tailscale-community`". |
 | **NAS / ksmbd** | `luci-app-ksmbd` | [O] | **ADOPT.** Official share editor. Adequate — expose the perf knobs (§2.2) in the form if not already. |
 | **Firewall** | `luci-app-firewall` | [O] | **ADOPT + accept limits.** Stock fw4 UI. Don't rebuild — OPNsense-grade firewalling is out of scope. Add zone-labels clarity only if trivial. |
 | **DNS / Control D** | *(none)* | — | **BUILD (thin).** No LuCI app for ctrld exists. Build a small status panel: front-`:53` resolver = ctrld (up/down, upstream reachable), captive-policy active, dnsmasq local/DHCP health, "who's my upstream" one-liner. This is the highest-value custom surface — DNS is the reworked, least-visible subsystem. Keep it read-mostly; config edits stay in the toml/uci. |
@@ -379,11 +476,16 @@ not to reskin all of LuCI.
 | **Watchcat** | `luci-app-watchcat` | [O] | **ADOPT.** Tune the L1 window; `suxwatch` state shows on the sux dashboard. |
 | **Attended sysupgrade** | `luci-app-attendedsysupgrade` | [O] | **ADOPT.** Drives the ASU clean-image rebuild. |
 
-**Build list for the LuCI session (in priority order):** (1) the **sux unified dashboard**
-(the pane, composes everything), (2) the **DNS/Control-D status panel** (the one dark
-subsystem), (3) **improve the Tailscale app** (exit-node/routes visibility). Everything
-else = adopt as-is. All three "build" items are **read-mostly status views** — they must
-never mutate the SACRED subsystems from the web UI without an explicit confirm.
+**Build list for the LuCI session (in priority order):**
+- ✅ **`luci-app-sux-cloudflare`** — BUILT & merged (owl-tegu-luci #2), verified live.
+- ✅ **`luci-app-sux-tailscale`** — BUILT & merged (owl-tegu-luci #1), verified live (satisfies the "improve Tailscale" item).
+- ⬜ (1) the **sux unified dashboard** (the pane, composes everything) — next.
+- ⬜ (2) the **DNS/Control-D status panel** (the one dark subsystem) — highest-value custom surface after the dashboard.
+
+The remaining "build" items are **read-mostly status views** — they must never mutate the
+SACRED subsystems from the web UI without an explicit confirm. The shipped apps live in the
+**owl-tegu-luci** repo (modern JS view + ucode RPC; app anatomy + dev loop in its
+`docs/design.md`); bake them into the image via the package/overlay list (§1.1).
 
 ---
 
@@ -445,7 +547,7 @@ physically present). Order:
 2. **Recovery + watchdog first** (router-watchdog.md build order §6): `suxwatch` +
    dead-drop dispatch + watchcat window + `kmod-itco-wdt` + NVMe last-good bundle. This is
    the safety net that must exist **before** touching DNS.
-3. **Docker data-root → NVMe** (§2.3) + fstab ordering. Reversible, off the DNS path;
+3. **Docker data-root → NVMe** (§2.4) + fstab ordering. Reversible, off the DNS path;
    verify render container runs from NVMe.
 4. **ksmbd share** (§2.2). Additive, LAN-only, zero risk to gateway/DNS.
 5. **DNS rework** (§2.1) — the delicate one. Stage ctrld:53 + dnsmasq:5353 side-by-side,
