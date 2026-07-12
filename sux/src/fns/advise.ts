@@ -20,7 +20,7 @@ import {
 	type SourceChunk,
 	topKPassages,
 } from "./_source";
-import { errMsg } from "./_util";
+import { errMsg, oj } from "./_util";
 
 // advise — a GROUNDED personal advisor. You ingest an AUTHORITATIVE source for a domain (a
 // therapy program, a care plan, a cardiac diet, an investment policy, a legal doc); then when you
@@ -149,13 +149,13 @@ export const advise: Fn = {
 					const chunks = await listChunks(env, d);
 					out[d] = { chunks: chunks.length, sources: [...new Set(chunks.map((c) => c.source_id))] };
 				}
-				return ok(JSON.stringify({ action, count: domains.length, domains: out }, null, 2));
+				return ok(oj({ action, count: domains.length, domains: out }));
 			}
 
 			if (action === "profile") {
 				const p = await loadProfile(env, domain);
-				if (!p) return ok(JSON.stringify({ action, domain, found: false, note: `No profile for '${domain}'. Ingest an authoritative source first (action:"ingest").` }, null, 2));
-				return ok(JSON.stringify({ action, domain, found: true, source_ids: p.source_ids, distilled: p.distilled, updated_at: p.updated_at }, null, 2));
+				if (!p) return ok(oj({ action, domain, found: false, note: `No profile for '${domain}'. Ingest an authoritative source first (action:"ingest").` }));
+				return ok(oj({ action, domain, found: true, source_ids: p.source_ids, distilled: p.distilled, updated_at: p.updated_at }));
 			}
 
 			if (action === "forget") {
@@ -171,7 +171,7 @@ export const advise: Fn = {
 					else await deleteProfile(env, domain);
 					redistilled = true;
 				}
-				return ok(JSON.stringify({ action, domain, source_id, deleted, profile_redistilled: redistilled, note: deleted ? `removed ${deleted} chunk(s); the git-versioned vault note remains (git is the vault undo)` : "no chunks for that source_id" }, null, 2));
+				return ok(oj({ action, domain, source_id, deleted, profile_redistilled: redistilled, note: deleted ? `removed ${deleted} chunk(s); the git-versioned vault note remains (git is the vault undo)` : "no chunks for that source_id" }));
 			}
 
 			// ---- AI-dependent actions ----
@@ -215,20 +215,16 @@ export const advise: Fn = {
 				const profile = await distillProfile(env, domain);
 				console.log(`advise: ingested domain=${domain} source=${source_id} chunks=${parts.length} note=${note}`);
 				return ok(
-					JSON.stringify(
-						{
-							action,
-							domain,
-							source_id,
-							note,
-							authority,
-							chunks: parts.length,
-							profile_preview: profile.distilled.slice(0, 400),
-							undo_hint: `advise(action:"forget", domain:"${domain}", source_id:"${source_id}")`,
-						},
-						null,
-						2,
-					),
+					oj({
+						action,
+						domain,
+						source_id,
+						note,
+						authority,
+						chunks: parts.length,
+						profile_preview: profile.distilled.slice(0, 400),
+						undo_hint: `advise(action:"forget", domain:"${domain}", source_id:"${source_id}")`,
+					}),
 				);
 			}
 
@@ -255,20 +251,16 @@ export const advise: Fn = {
 				const authoritativeRefs = [...(profile?.distilled ? ["profile"] : []), ...passages.map((p) => `source:${p.title}#${p.source_id.slice(0, 8)} (${p.score.toFixed(2)})`)];
 				console.log(`advise: answered domain=${domain} passages=${passages.length} profile=${profile ? "loaded" : "none"} gate=${gate}`);
 				return ok(
-					JSON.stringify(
-						{
-							action,
-							domain,
-							question,
-							gate,
-							advice,
-							conflicts: extractConflicts(advice),
-							grounding: { authoritative: authoritativeRefs, contextual: ctx.refs },
-							note: grounded ? undefined : `No authoritative source ingested for '${domain}' — answered from general knowledge, ungated. Ingest a source (action:"ingest") to ground + gate advice.`,
-						},
-						null,
-						2,
-					),
+					oj({
+						action,
+						domain,
+						question,
+						gate,
+						advice,
+						conflicts: extractConflicts(advice),
+						grounding: { authoritative: authoritativeRefs, contextual: ctx.refs },
+						note: grounded ? undefined : `No authoritative source ingested for '${domain}' — answered from general knowledge, ungated. Ingest a source (action:"ingest") to ground + gate advice.`,
+					}),
 				);
 			}
 

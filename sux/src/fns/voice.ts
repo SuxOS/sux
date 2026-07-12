@@ -1,5 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { maybeDecompressString } from "./_gzip";
 
 // AI text-restyler. Rewrites `text` into a target `style` and/or a learned
 // preference `profile` (a distilled spec + a few-shot of writing samples kept in
@@ -36,7 +37,8 @@ function exampleText(e: string | Record<string, unknown>): string {
 async function profileGuidance(env: RtEnv, profile: string): Promise<string[]> {
 	let raw: string | null = null;
 	try {
-		raw = await env.OAUTH_KV.get(`${KV_PREFIX}${profile}`);
+		const stored = await env.OAUTH_KV.get(`${KV_PREFIX}${profile}`);
+		raw = stored === null ? null : await maybeDecompressString(stored);
 	} catch {
 		return [];
 	}

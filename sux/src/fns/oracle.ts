@@ -1,5 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { maybeCompressString, maybeDecompressString } from "./_gzip";
 import { errMsg, fetchText, isHttpUrl, stripHtml, oj } from "./_util";
 import { readability } from "./readability";
 
@@ -52,8 +53,9 @@ type StoredKb = { distilled: string; chunks: string[]; sources: string[]; update
 
 /** Read + parse a stored knowledge base; null if absent or unparseable (never throws). */
 async function loadKb(env: RtEnv, topic: string): Promise<StoredKb | null> {
-	const raw = await env.OAUTH_KV.get(`${KV_PREFIX}${topic}`);
-	if (!raw) return null;
+	const stored = await env.OAUTH_KV.get(`${KV_PREFIX}${topic}`);
+	if (!stored) return null;
+	const raw = await maybeDecompressString(stored);
 	try {
 		const p = JSON.parse(raw) as Partial<StoredKb>;
 		return {
@@ -124,7 +126,7 @@ async function learn(env: RtEnv, topic: string, knowledge: string): Promise<{ so
 	const distilled = (await llm(env, REDISTILL_SYSTEM, combined, 1_800, "consolidate knowledge")).trim() || combined;
 
 	const record: StoredKb = { distilled: distilled.slice(0, KB_CAP), chunks, sources, updated_at: Date.now() };
-	await env.OAUTH_KV.put(`${KV_PREFIX}${topic}`, JSON.stringify(record));
+	await env.OAUTH_KV.put(`${KV_PREFIX}${topic}`, await maybeCompressString(JSON.stringify(record)));
 	console.log(`oracle: learned topic=${topic} chunks=${chunks.length} source=${source}`);
 	return { source, chunk_count: chunks.length, distilled: record.distilled };
 }

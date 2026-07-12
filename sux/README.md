@@ -4,8 +4,9 @@
 Cloudflare's edge, but *queries the web from your own residential IP* through
 infrastructure you control — so it reaches sites that block datacenters. It does
 the fetching, parsing, converting, and AI-summarizing at the edge instead of in
-your context window, and exposes the whole thing to any MCP client as **78
-small, composable tools**.
+your context window, and exposes the whole thing to any MCP client as a suite of
+**small, composable tools** (the exact inventory lives in
+[`sux/FUNCTIONS.md`](FUNCTIONS.md)).
 
 > This README is the single source of truth. Everything the project has learned
 > — architecture, the bot-detection war, the full function catalog, ops, and
@@ -50,7 +51,7 @@ returns 401, and the cache tests stay green.
                           Cloudflare Worker "sux"  (the brain / the edge)
                           ┌───────────────────────────────────────────┐
  MCP client ──HTTPS/──▶   │ • GitHub OAuth gate  (ALLOWED_GITHUB_LOGIN) │
- (Claude, any    JSON-RPC │ • 78 fns / JSON-RPC dispatch                │
+ (Claude, any    JSON-RPC │ • small fns / JSON-RPC dispatch             │
   MCP client)             │ • KV cache (per-fn TTL, CAS keys)           │
                           │ • R2 store  (sux-mcp bucket, /s/<uuid>)     │
                           │ • Workers AI · CF Images · Browser Rendering│
@@ -169,7 +170,7 @@ specifics.
 
 ---
 
-## Function catalog (78)
+## Function catalog
 
 Auto-generated registry: add `sux/src/fns/<name>.ts` (`export const <name>: Fn`)
 and run `npm run gen:index`; ordering is by `scripts/importance.mjs` so the most
@@ -180,133 +181,10 @@ fn, not a separate tool.
 > Six fns were **removed** and are gone for good: `wolfram`, `alphavantage`,
 > `etsy`, `tmdb`, `nyt`, `guardian`.
 
-### Search / web (4)
-| fn | one-liner |
-|---|---|
-| `search` | Kagi web search — numbered results; workflows news/videos/podcasts/images; scope by domain/time/lens. |
-| `web_search` | Multi-engine search over Kagi + native Google (SERP rendered in the mac backend) + Brave + keyless DuckDuckGo; `engine:all` fans out, dedupes by URL, and with `summarize:true` reduces to one AI answer with citations. |
-| `tavily` | Tavily LLM-oriented search: synthesized `answer` + ranked results (needs `TAVILY_API_KEY`). |
-| `find_similar` | Exa neural "more like this" from a `url`, or neural web search from a `query` (needs `EXA_API_KEY`). |
-
-### Fetch / render / crawl (11)
-| fn | one-liner |
-|---|---|
-| `scrape` | Fetch a page through the residential curl-impersonate proxy (direct fallback); raw content, parsed in the cloud. Rung 2. |
-| `proxy` | Low-level raw HTTP transport through the residential exit; `{status,headers,bytes,body}`, `as:base64` for binary. The primitive under `scrape`. |
-| `render` | Headless render; `backend:cf` (Cloudflare Browser Rendering) or `backend:mac` (residential patchright that solves active JS challenges); `as` html/text/screenshot/pdf. |
-| `batch_fetch` | Fetch many URLs concurrently via the proxy (~8 at a time, per-URL failure isolated). |
-| `geo_fetch` | Proxy fetch with an exit-locale hint (`geo`, e.g. `us-ca`). |
-| `crawl` | Breadth-first same-origin crawl from a seed URL → each URL + title. |
-| `sitemap` | Fetch and parse an XML sitemap / sitemap index. |
-| `feed` | Parse an RSS or Atom feed into normalized items. |
-| `robots` | Fetch and parse `robots.txt`; test whether a path is allowed. |
-| `redirects` | Trace a URL's redirect chain hop by hop (residential). |
-| `wayback` | Internet Archive snapshot (closest capture) or history lookups. |
-
-### Extract / parse (9)
-| fn | one-liner |
-|---|---|
-| `extract` | Pull structure from HTML/url — `what` links / jsonld / text. |
-| `readability` | Main article content, dropping nav/header/footer/aside/scripts. |
-| `select` | CSS-selector query over HTML (pure matcher: tag/class/id/attr/descendant). |
-| `grep` | Regex search over `text` or a fetched `url`, line by line, with context. |
-| `tables` | Extract HTML tables → JSON (rows-as-objects) or CSV. |
-| `metadata` | Flatten title/description/canonical/favicon/`og:*`/`twitter:*` into JSON. |
-| `contacts` | Emails, phones, and social profiles from url/html/text. |
-| `entities` | Regex NER: dates, money, %, emails, URLs, phones, @handles, #hashtags. |
-| `declutter` | uBlock-style HTML clean (scripts/ads/consent/trackers) before further processing. |
-
-### Convert (11)
-| fn | one-liner |
-|---|---|
-| `json` | Any source (json/yaml/csv/xml, auto-detected) → pretty JSON. |
-| `csv` | JSON array of objects → RFC4180 CSV. |
-| `xml` | JSON → XML (`@attr`/`#text` conventions). |
-| `yaml` | JSON → YAML (scalars, nested maps, block sequences). |
-| `html` | Markdown → HTML (common subset). |
-| `markdown` | HTML → Markdown (common subset). |
-| `subtitles` | SRT ↔ WebVTT. |
-| `image_convert` | Convert/resize/adjust images via the Cloudflare Images binding. |
-| `pdf` | "Anything → PDF": merge sources, page ranges, TOC/bookmarks, AcroForm fields, OCR, compress. |
-| `fillable` | Add interactive AcroForm fields to a PDF (optionally flatten). |
-| `fontcase` | Convert text between programming cases and unicode font styles. |
-
-### AI — Workers AI / Kagi (5)
-| fn | one-liner |
-|---|---|
-| `summarize` | Summarize text or a `url` (Kagi Universal Summarizer for URLs incl. YouTube; Workers AI for raw text). |
-| `translate` | Translate text (Workers AI m2m100). |
-| `classify` | Zero-shot classify text into provided labels. |
-| `ocr` | Extract text from an image (Workers AI vision). |
-| `redact` | Scrub PII (Luhn-validated cards, range-checked IPs). |
-
-### Compress / encode / hash (5)
-| fn | one-liner |
-|---|---|
-| `compress` | Brotli/zstd/gzip/deflate compress & decompress at max level. |
-| `archive` | Pack/unpack zip or gzip archives (pure-JS fflate). |
-| `encode` | base64 / hex / url encode & decode. |
-| `hash` | sha256/384/512/sha1 of text. |
-| `pack` | Re-encode a JSON array of objects into compact tsv/csv/kv to save tokens. |
-
-### Storage (5)
-| fn | one-liner |
-|---|---|
-| `store` | R2 content-addressed store (sha256 dedupe) — put/get/list/delete; mints `/s/<uuid>` refs. |
-| `kv_get` | Read a value from the user KV namespace (`kv:` prefix). |
-| `kv_put` | Write a value to KV (min 60s TTL). |
-| `kv_list` | List user KV keys by prefix. |
-| `kv_delete` | Delete a user KV key. |
-
-### Compose / meta (4)
-| fn | one-liner |
-|---|---|
-| `pipe` | **COMPOSE** — chain tools into a pipeline; `{{prev}}`/`{{prev.a.b}}` injects the previous step's output. Runs server-side. |
-| `batch` | **MAP + reduce** — run one tool over many inputs (`calls` or `over`+`args`); reduce with none/concat/summarize or a tool-based `reduce_with`. |
-| `issue` | Log a bug/feedback to the server-side KV feedback log (readable at `/feedback`). |
-| `shop` | Google Shopping via `render:mac`; routes big retailers to their dedicated fns. |
-
-### Retail (10)
-| fn | one-liner |
-|---|---|
-| `kroger` | **Official free Kroger API** — products, prices, locations; banners QFC/Fred Meyer/Ralphs/Fry's/King Soopers/Smith's via `chain`. |
-| `walmart` | `render:mac` + solver — solves PerimeterX; products from embedded `__NEXT_DATA__`. |
-| `amazon` | `render:mac` — search tiles / ASIN detail; auto-escalates to the solver on a Robot Check. |
-| `homedepot` | `render:mac` — warms the active Akamai `_abck` sensor; product-pod tiles / `__APOLLO_STATE__`. |
-| `lowes` | `render:mac` — renders the React catalog; `/pd/…` tiles + embedded state. |
-| `ace` | `render:mac` — Kibo/Mozu `mz-productlisting` grid; invisible reCAPTCHA v3 doesn't block. |
-| `costco` | `scrape` (curl-impersonate) — JA3-centric wall; CatalogSearch HTML → products. |
-| `winco` | **Store-locator only** — WinCo has no online product catalog; renders the store directory. |
-| `bestbuy` | Official Best Buy Products API (kept for later — needs `BESTBUY_API_KEY`). |
-| `ebay` | Official eBay Browse API (kept for later — needs `EBAY_CLIENT_ID`/`SECRET`). |
-
-### People / places / social (5)
-| fn | one-liner |
-|---|---|
-| `people` | Public people/org directory search — Kagi (`web`) or the USA.gov federal directory (`usagov`); optional contact extraction. |
-| `places` | Google Places API — local businesses/POIs (needs `GOOGLE_MAPS_KEY`). |
-| `linkedin` | Public LinkedIn profile/company via `render:mac` — **keyless** (Proxycurl shut down July 2025); extracts JSON-LD + og:. |
-| `facebook` | Facebook Graph API (kept for later — needs `FACEBOOK_TOKEN`). |
-| `youtube` | YouTube Data API v3 (kept for later — needs `YOUTUBE_API_KEY`). |
-
-### Academic / data (8)
-| fn | one-liner |
-|---|---|
-| `pubmed` | PubMed/NCBI biomedical literature (keyless; honors `NCBI_API_KEY`). |
-| `arxiv` | arXiv preprints (keyless). |
-| `crossref` | CrossRef Works scholarly DOI metadata (keyless). |
-| `openalex` | OpenAlex 250M+ open scholarly graph (keyless). |
-| `semantic_scholar` | Semantic Scholar Academic Graph (keyless; honors `S2_API_KEY`). |
-| `clinical_trials` | ClinicalTrials.gov NIH registry (keyless). |
-| `stackexchange` | Stack Exchange Q&A across network sites (keyless; honors `STACKEXCHANGE_KEY`). |
-| `coingecko` | CoinGecko crypto prices and coin search (keyless). |
-
-### Notes / knowledge (3)
-| fn | one-liner |
-|---|---|
-| `obsidian` | Work an Obsidian vault — list/read/search/append/write/edit/delete (edit = surgical find/replace, unique match unless `all`). Mutating actions refuse dot-prefixed/traversal paths (no `.github/`, `.obsidian/`). **git backend live** (GitHub-backed private repo `colinxs/obsidian-vault` via `OBSIDIAN_VAULT_REPO`); `remote` backend wraps the vault's Local REST API + its built-in MCP tools (`tools`/`call` are remote-only). Reads are KV-cached in separate git/remote namespaces (git validated by vault HEAD sha, trusted ≤10min when GitHub is unreachable; remote `read` falls back to its cached copy on fetch failure or 5xx — remote list/search are uncached). |
-| `ingest` | Capture into the vault: one of `url` (HTML → markdown; binaries become attachments; 32MB fetch cap) \| `text` \| `query` (search results) → a provenance-stamped note in `Inbox/`, never overwriting (slug collisions get a time suffix). Optional `summarize`/`compress` passes (skipped for binaries; degrade to verbatim without AI). Blobs ≤1MB commit into the vault repo; larger (or `blobs:'dropbox'`) upload to the Dropbox app folder and the note links the **public** shared URL (R2 fallback when `DROPBOX_TOKEN` unset). |
-| `dropbox` | Dropbox app-folder blob store (`DROPBOX_TOKEN`, App-folder scoped — can't see the rest of Dropbox): put/get/list (cursor-paginated)/delete/share; put returns a **public** 'anyone with the link' shared URL. `get` checks metadata first, so oversize files return a link instead of blowing the isolate. The human-facing twin of R2 `store` — files sync to every device. |
+The full, per-function catalog — every fn, its category, test status, and a
+one-line summary — is **generated** into [`sux/FUNCTIONS.md`](FUNCTIONS.md) by
+`npm run docs` (CI-enforced in sync with the sources). Read it there instead of
+a hand-maintained copy here, which only ever drifted.
 
 ---
 

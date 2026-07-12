@@ -5,6 +5,7 @@
 // store — but carries enough per-entry data (message id, origin + target mailbox,
 // cycle id) to REVERSE each move, which a feedback entry never needs.
 import type { RtEnv } from "../registry";
+import { maybeCompressString, maybeDecompressString } from "./_gzip";
 import { errMsg } from "./_util";
 
 export type TriageAction = "acted" | "suggested";
@@ -45,20 +46,29 @@ function safeParse(s: string | null): TriageEntry[] {
 	}
 }
 
+// Read/write the log through the transparent gzip store (the whole 500-entry
+// array is rewritten on every append/undo, so it's worth compressing).
+async function loadLog(env: RtEnv): Promise<TriageEntry[]> {
+	return safeParse(await maybeDecompressString((await env.OAUTH_KV.get(KEY)) ?? ""));
+}
+async function saveLog(env: RtEnv, items: TriageEntry[]): Promise<void> {
+	await env.OAUTH_KV.put(KEY, await maybeCompressString(JSON.stringify(items)));
+}
+
 /** Prepend a batch of entries (newest-first), capped. Returns the new total. */
 export async function appendTriageEntries(env: RtEnv, entries: TriageEntry[]): Promise<number> {
 	if (!entries.length) return 0;
-	const items = safeParse(await env.OAUTH_KV.get(KEY));
+	const items = await loadLog(env);
 	// Prepend newest-first: reverse so the last-processed message ends up first.
 	items.unshift(...[...entries].reverse());
 	if (items.length > CAP) items.length = CAP;
-	await env.OAUTH_KV.put(KEY, JSON.stringify(items));
+	await saveLog(env, items);
 	return items.length;
 }
 
 /** Read entries, optionally filtered to one cycle, newest-first. */
 export async function readTriageEntries(env: RtEnv, opts?: { cycle?: string; limit?: number }): Promise<TriageEntry[]> {
-	let items = safeParse(await env.OAUTH_KV.get(KEY));
+	let items = await loadLog(env);
 	if (opts?.cycle) items = items.filter((i) => i.cycle === opts.cycle);
 	return items.slice(0, Math.max(0, opts?.limit ?? 100));
 }
@@ -89,7 +99,7 @@ const defaultLabeler: Labeler = async (env, ids, keyword, add) => {
 export async function bulkUndo(env: RtEnv, cycle: string, reversers: Reversers = {}): Promise<Record<string, unknown>> {
 	const move = reversers.move ?? defaultMover;
 	const label = reversers.label ?? defaultLabeler;
-	const items = safeParse(await env.OAUTH_KV.get(KEY));
+	const items = await loadLog(env);
 	const acted = items.filter((i) => i.cycle === cycle && i.action === "acted" && !i.undone);
 	const moves = acted.filter((i) => i.op !== "label" && i.from_mailbox);
 	const labels = acted.filter((i) => i.op === "label" && i.keyword);
@@ -117,6 +127,6 @@ export async function bulkUndo(env: RtEnv, cycle: string, reversers: Reversers =
 		}
 	}
 	for (const i of items) if (i.cycle === cycle && i.action === "acted" && reversed.has(i.id)) i.undone = true;
-	await env.OAUTH_KV.put(KEY, JSON.stringify(items));
+	await saveLog(env, items);
 	return { cycle, undone: reversed.size, ids: [...reversed], ...(errors.length ? { errors } : {}) };
 }

@@ -110,6 +110,7 @@ Overlap rule: papers-in-general → `openalex` or `semantic_scholar`;
 | Deep-dig one named person across public sources | `people_finder` (fans UW directory + `linkedin` + `facebook` + `web_search` into one deduped profile; public-listed data only) |
 | LinkedIn profile/company (URL in hand) | `linkedin` |
 | Facebook Graph node/edge | `facebook` |
+| University of Washington person lookup | `uw` (public faculty/staff/student directory at directory.uw.edu; also feeds `people_finder`) |
 
 Retailer note: amazon/walmart/homedepot/lowes/ace ride the mac render backend —
 slow, best-effort; bestbuy/ebay/kroger are official APIs — prefer them when the
@@ -142,6 +143,7 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Teach / persist a preferred writing voice | `preferences` (`action: learn` appends an exemplar and re-distills a style spec in KV; `voice` folds it back) |
 | "What do I know about X?" — recall from YOUR life, cited | `recall` (`question`; `sources`: vault\|mail\|web, default all → fans out across your Obsidian notes + Fastmail + the web and synthesizes ONE answer with each claim tagged [vault:…]/[mail:…]/[web]; READ-only, grounded-not-invented, graceful per-source degrade) |
 | Teach a knowledge base, then answer from it | `oracle` (`knowledge`: text/URL/book → distilled + saved to KV under `topic`; `problem` alone answers using Claude's own knowledge + the learned KB; `action: get\|list\|forget`) |
+| Personal advice GATED by a source you trust, not free-floating LLM opinion | `advise` (grounds each recommendation in an authoritative source you `ingest` first, and cites what it leaned on) |
 | Case/unicode-font conversion | `fontcase` |
 | base64/hex/url, hashes, compression, zip/gzip | `encode`, `hash`, `compress`, `archive` |
 | JSON rows → token-cheap TSV | `pack` |
@@ -160,6 +162,7 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Capture url/text/search-results into the vault (provenance note in Inbox/; blobs ≤1MB → vault attachment, larger → public Dropbox link) | `ingest` (`url` \| `text` \| `query`; `summarize`/`compress` passes; `blobs: dropbox` forces Dropbox; explicit `path` overrides Inbox and overwrites — default paths never do) |
 | Dropbox app-folder files (human-facing blob store; syncs to devices) | `dropbox` (`op: put/get/list/delete/share`; paths relative to /Apps root; `list` paginates via `cursor`; put returns a PUBLIC anyone-with-the-link URL) |
 | Fastmail email/calendars/contacts over the full JMAP protocol | `jmap` (raw conduit: `calls:[[method,args,callId]]` or `method`+`args`; auto session/accountId/`using`; `paginate` past page limits; `upload`/`download` blobs; `allow_send`/`allow_destroy` gate send/destroy; needs `FASTMAIL_TOKEN`). Ergonomic `mail_*` tools (search/read/thread/send/draft/archive/masked) live on the separate **`/mail/mcp`** connector; use `jmap` here when you need the raw protocol (MaskedEmail, calendars, contacts). |
+| Autonomous inbox triage — classify messages and (when armed) act | `mail_triage` (armed mode uses REVERSIBLE ops ONLY — add/remove labels, archive/unarchive, undelete; never sends or hard-deletes) |
 
 ## Infrastructure & meta
 
@@ -169,6 +172,7 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Read your ControlD DNS setup (read-only) | `controld` |
 | Read your Tailscale tailnet control plane | `tailscale` |
 | Report a bug / wrong output from a sux tool | `issue { tool, text }` (lands in the server-side feedback log) |
+| Request a new sux capability / feature | `suggest { text }` (logs a feature request to the same server-side feedback log) |
 
 ## Conventions
 

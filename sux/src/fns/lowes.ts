@@ -1,8 +1,7 @@
 import { looksBlocked, retailRender } from "../retail-render";
 import { oj } from "./_util";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
-import { decodeEntities as decodeMarkupEntities } from "./_markup";
-import { normalizeMoney, type RetailProduct } from "./_retail";
+import { decodeEntities, normalizeMoney, type RetailProduct } from "./_retail";
 
 // Lowe's has no public product API and serves its catalog from a client-side React
 // app, so a plain fetch returns a shell with no products. This fn renders Lowe's
@@ -19,12 +18,6 @@ const NO_PRODUCTS_MSG = "lowes: no products extracted (layout change).";
 // Emitted instead of the layout-change message when the rendered page looks like a
 // bot wall or an empty shell — signals the caller to retry or adjust the backend.
 const BLOCKED_MSG = "lowes: no products — page looks blocked or empty (try again or a different render/backend).";
-
-/** Decode HTML entities that show up in extracted title text (best-effort), then
- * trim the lead/trail space a stripped-tag join (`.replace(/<[^>]+>/g, " ")`) leaves. */
-function decodeEntities(s: string): string {
-	return decodeMarkupEntities(s).trim();
-}
 
 // Zero-products block/layout-change disambiguation delegates to retail-render's
 // canonical looksBlocked (opted into its byte-length check — a bot wall or an

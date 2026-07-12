@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { maybeDecompressString } from "./_gzip";
 import { preferences } from "./preferences";
 import { voice } from "./voice";
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
@@ -65,7 +66,7 @@ describe("preferences", () => {
 		expect(user).toContain("ship it. tests green.");
 
 		// Persisted in the exact shape voice reads back.
-		const stored = JSON.parse(kv.store.get("sux:prefs:colin")!);
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:prefs:colin")!));
 		expect(stored.distilled_spec).toBe("Terse spec v1.");
 		expect(stored.examples).toEqual(["ship it. tests green."]);
 		expect(typeof stored.updated_at).toBe("number");
@@ -98,7 +99,7 @@ describe("preferences", () => {
 	it("caps the rolling few-shot at the last 20 examples, dropping the oldest", async () => {
 		const { env, kv } = makeEnv();
 		for (let i = 0; i < 25; i++) await preferences.run(env, { action: "learn", profile: "cap", sample: `sample ${i}` });
-		const stored = JSON.parse(kv.store.get("sux:prefs:cap")!);
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:prefs:cap")!));
 		expect(stored.examples).toHaveLength(20);
 		expect(stored.examples[0]).toBe("sample 5"); // 0..4 dropped
 		expect(stored.examples[19]).toBe("sample 24");

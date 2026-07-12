@@ -77,16 +77,20 @@
 - [[verb-algebra]] (parked) — Four generic combinators — map, filter, reduce, augment — operating over the [[records-envelope]] instead of one bespoke fn per data shape.
 
 ## Functions (103, universal /mcp surface)
-- Net / transport: scrape, proxy, geo_fetch, redirects, robots, crawl
+- Net / transport: scrape, proxy, geo_fetch, redirects, robots, crawl, render, watch
 - Extract / parse: extract, readability, grep, select, metadata, tables, feed, sitemap, contacts, subtitles
 - Convert: image_convert, csv, fillable, html, json, markdown, pdf, xml, yaml
 - Compress / encode / data: compress, archive, encode, hash
 - Token optimization: pack, declutter
-- Text / AI: summarize, entities, redact, translate, classify, ocr
+- Text / AI: summarize, entities, redact, translate, classify, ocr, fontcase, voice
 - Batching / composition: batch, batch_fetch, pipe
-- Storage (KV): kv_get, kv_put, kv_list, kv_delete, store
-- Feedback / meta: issue
-- Query / APIs: search, wayback, shop, web_search
-- Mail (JMAP): jmap
-- Memory / recall: recall
-- Other: ace, advise, amazon, arxiv, bestbuy, citation, clinical_trials, coingecko, controld, costco, crossref, dropbox, ebay, facebook, find_similar, fn, fontcase, homedepot, ingest, kroger, learn, linkedin, lowes, mail_triage, obsidian, openalex, oracle, people, people_finder, places, preferences, product_search, pubmed, put, reddit, render, selftest, semantic_scholar, stackexchange, suggest, sux, tailscale, tavily, todoist, uw, voice, walmart, watch, weekly_ad, winco, youtube
+- Storage: kv_get, kv_put, kv_list, kv_delete, dropbox, put, store
+- Web search / query: search, wayback, find_similar, tavily, web_search
+- Retail / shopping: ace, amazon, bestbuy, costco, ebay, homedepot, kroger, lowes, product_search, shop, walmart, weekly_ad, winco
+- Research / reference: pubmed, clinical_trials, youtube, arxiv, coingecko, crossref, openalex, reddit, semantic_scholar, stackexchange
+- People / places / social: facebook, linkedin, people, people_finder, places, uw
+- Notes / knowledge / vault: citation, ingest, obsidian
+- Knowledge / learning: advise, learn, oracle, preferences, recall
+- Mail (JMAP): jmap, mail_triage
+- Feedback / meta: issue, suggest
+- Infra / meta: controld, fn, selftest, sux, tailscale, todoist

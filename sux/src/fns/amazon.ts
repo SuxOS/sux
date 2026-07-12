@@ -1,8 +1,7 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { oj } from "./_util";
 import { retailRender } from "../retail-render";
-import { decodeEntities as decodeMarkupEntities } from "./_markup";
-import { normalizeMoney, type RetailProduct } from "./_retail";
+import { decodeEntities, normalizeMoney, type RetailProduct } from "./_retail";
 
 // Amazon has NO usable free API (the Product Advertising API needs affiliate
 // approval), so this fn is render-based exactly like homedepot: it fetches
@@ -25,12 +24,6 @@ const NO_PRODUCTS_MSG = "amazon: no products extracted (layout change).";
 // came back with zero products AND any of these are present, the request was
 // challenged rather than merely mis-parsed — report that distinctly.
 const CHALLENGE_MARKERS = ["Robot Check", "Enter the characters you see", "api-services-support"];
-
-/** Decode HTML entities that show up in extracted title text (best-effort), then
- * trim the lead/trail space a stripped-tag join (`.replace(/<[^>]+>/g, " ")`) leaves. */
-function decodeEntities(s: string): string {
-	return decodeMarkupEntities(s).trim();
-}
 
 /** A valid ASIN is exactly 10 uppercase-alphanumeric chars (Amazon's product id). */
 function isAsin(s: string | undefined): s is string {
