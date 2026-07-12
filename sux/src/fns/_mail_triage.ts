@@ -11,12 +11,15 @@
 //   • MAIL_TRIAGE_ENABLED set, MAIL_TRIAGE_ACT unset → classify + suggest + digest ONLY;
 //     no mailbox is ever mutated (suggest-only by construction — the "first cycle is
 //     suggest-only" acceptance criterion is structural here, not a mutable default).
-//   • both set → it may perform only the REVERSIBLE ops on the auto-act allow-list
-//     (AUTO_ACT_OPS: label add/remove, archive, unarchive, undelete), confidence-gated,
-//     every action logged for one-call bulk-undo. Junk-MOVE is gone (a junk guess now just
-//     adds a reversible label, never files into Junk); delete + undelete's destructive
-//     partner stay exclusively human. Reversible pairs: archive↔unarchive, delete↔undelete,
-//     label-add↔label-remove — the bot only ever emits the safe side of each.
+//   • both set → it may perform only the SAFE-DIRECTION ops on the auto-act allow-list
+//     (AUTO_ACT_OPS: label:add, unarchive, undelete), confidence-gated, every action logged
+//     for one-call bulk-undo. The gate is DIRECTIONAL, not merely reversible ([[safe-direction-
+//     autonomy]]): an autonomous act may only INCREASE attention/visibility (add a label,
+//     restore to the inbox), never reduce it. So a junk/receipt/newsletter/notification guess
+//     LABELS in place (kept visible), it never archives, files into Junk, or deletes — hiding
+//     mail Colin hasn't seen stays human-gated even though archive↔unarchive is reversible.
+//     unarchive/undelete stay allow-listed as the safe (restoring) side of their pairs; the
+//     hiding side (archive/delete/label-remove) is structurally unrepresentable here.
 import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
 import { errMsg, vaultToday } from "./_util";
@@ -52,34 +55,40 @@ export type TriageMsg = { id: string; from?: string; subject?: string; preview?:
  *  in v1 the confidence gate is the ONLY thing between a bad label and a real action. */
 export const CONFIDENCE_THRESHOLD = 0.75;
 
-/** The auto-act allow-list: the EXACT set of reversible ops the bot may perform when armed.
- *  Every op here has a safe inverse (archive↔unarchive, delete↔undelete, label-add↔label-remove)
- *  so a whole cycle reverses with one call. Junk-MOVE and delete are deliberately absent — the
- *  bot can never file into Junk or destroy mail. Enforced by `isAutoActAllowed` at the executor
- *  boundary, and structurally by `TriageOp` (no move-to-junk / delete op is representable). */
-export const AUTO_ACT_OPS = ["label:add", "label:remove", "archive", "unarchive", "undelete"] as const;
+/** The auto-act allow-list: the EXACT set of SAFE-DIRECTION ops the bot may perform when armed.
+ *  Directional, not merely reversible ([[safe-direction-autonomy]]): every op here INCREASES the
+ *  user's attention/visibility — a label-add keeps mail in place + tagged, unarchive/undelete
+ *  restore it to the inbox. The attention-REDUCING side of each reversible pair (archive, delete,
+ *  label-remove) is deliberately absent: hiding mail Colin hasn't seen stays human-gated even
+ *  though it's reversible. Enforced by `isAutoActAllowed` at the executor boundary, and
+ *  structurally by `TriageOp` (no archive/junk-move/delete/label-remove op is representable). */
+export const AUTO_ACT_OPS = ["label:add", "unarchive", "undelete"] as const;
 export type AutoActOp = (typeof AUTO_ACT_OPS)[number];
 
-/** A reversible triage action. archive/unarchive/undelete are mailbox moves (unarchive and
- *  undelete both restore to the inbox — the reverse side of archive/delete); label add/remove
- *  is a non-hiding keyword toggle that leaves the message exactly where it is. */
-export type TriageOp = { kind: "archive" } | { kind: "unarchive" } | { kind: "undelete" } | { kind: "label"; label: string; add: boolean };
+/** A safe-direction triage action. unarchive/undelete are mailbox moves that restore a message to
+ *  the inbox (the attention-increasing side of archive/delete); `label` adds a non-hiding keyword
+ *  that leaves the message exactly where it is. There is no archive/delete/label-remove variant —
+ *  the hiding direction is human-gated, so it isn't representable as an autonomous op. */
+export type TriageOp = { kind: "unarchive" } | { kind: "undelete" } | { kind: "label"; label: string; add: boolean };
 
-const opToken = (op: TriageOp): AutoActOp => (op.kind === "label" ? (op.add ? "label:add" : "label:remove") : op.kind);
+// Widened to `string` (not AutoActOp) so a `label`-remove op — representable but NOT allow-listed —
+// projects to its off-list token and is rejected by the guard rather than failing to type-check.
+const opToken = (op: TriageOp): string => (op.kind === "label" ? (op.add ? "label:add" : "label:remove") : op.kind);
 
-/** Guard: is this op on the auto-act allow-list? Always true for a well-formed `TriageOp`
- *  (junk-move/delete aren't representable), but enforced anyway as defense-in-depth so a
- *  future classifier can never smuggle a non-reversible action past the confidence gate. */
+/** Guard: is this op on the auto-act allow-list? The safe-direction ACTION_FOR ops (label:add,
+ *  and unarchive/undelete were they ever emitted) pass; a label-REMOVE fails here — defense-in-depth
+ *  so a future classifier can never smuggle an attention-reducing action past the confidence gate. */
 export const isAutoActAllowed = (op: TriageOp): boolean => (AUTO_ACT_OPS as readonly string[]).includes(opToken(op));
 
-/** Classifier label → the reversible op to take, or null = never auto-act (personal/unknown
- *  stay in the inbox untouched). A junk guess LABELS (reversible flag), it no longer MOVES into
- *  Junk; declutter labels (receipt/newsletter/notification) archive, whose inverse is unarchive. */
+/** Classifier label → the safe-direction op to take, or null = never auto-act (personal/unknown
+ *  stay in the inbox untouched). Every actionable label ADDS a keyword and keeps the message in the
+ *  inbox — the attention-increasing direction ([[safe-direction-autonomy]]). None archive: hiding
+ *  a receipt/newsletter/notification Colin hasn't read is attention-reducing, so it's human-gated. */
 export const ACTION_FOR: Record<TriageLabel, TriageOp | null> = {
 	junk: { kind: "label", label: "junk", add: true },
-	receipt: { kind: "archive" },
-	newsletter: { kind: "archive" },
-	notification: { kind: "archive" },
+	receipt: { kind: "label", label: "receipt", add: true },
+	newsletter: { kind: "label", label: "newsletter", add: true },
+	notification: { kind: "label", label: "notification", add: true },
 	personal: null,
 	unknown: null,
 };
@@ -89,7 +98,8 @@ export const ACTION_FOR: Record<TriageLabel, TriageOp | null> = {
  *  keyword (undo removes it). Keeps the loop and the undo path reading from one source of truth. */
 function opRecord(op: TriageOp, fromMailbox: string): { to: string; log: Partial<TriageEntry> } {
 	if (op.kind === "label") return { to: `${op.add ? "+" : "-"}label:${op.label}`, log: { op: "label", keyword: op.label } };
-	const to = op.kind === "archive" ? "archive" : "inbox";
+	// The only remaining move ops (unarchive/undelete) both restore the message to the inbox.
+	const to = "inbox";
 	return { to, log: { op: op.kind, from_mailbox: fromMailbox, to_mailbox: to } };
 }
 
@@ -221,7 +231,7 @@ function buildDigest(r: { cycle: string; mailbox: string; actEnabled: boolean; a
 export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps): Promise<TriageReport> {
 	const cycle = String(opts.cycle_id ?? new Date().toISOString().replace(/[:.]/g, "-"));
 	if (!hasMailTriage(env)) {
-		return { cycle, dormant: true, note: "mail_triage is disabled — set MAIL_TRIAGE_ENABLED to classify+suggest+digest; also set MAIL_TRIAGE_ACT to allow the reversible auto-act ops (label/archive/unarchive/undelete). Fail-closed: nothing runs until the flag is set." };
+		return { cycle, dormant: true, note: "mail_triage is disabled — set MAIL_TRIAGE_ENABLED to classify+suggest+digest; also set MAIL_TRIAGE_ACT to allow the safe-direction auto-act ops (label:add/unarchive/undelete). Fail-closed: nothing runs until the flag is set." };
 	}
 	const mailbox = String(opts.mailbox ?? "inbox");
 	const max = numClamp(opts.max, 1, 100, 25);
@@ -336,8 +346,8 @@ export async function defaultDeps(): Promise<TriageDeps> {
 				if (r.isError) throw new Error(r.content?.[0]?.text ?? "label failed");
 				return;
 			}
-			// archive files into Archive; unarchive/undelete both restore to the inbox.
-			const target = op.kind === "archive" ? "archive" : "inbox";
+			// The only auto-emitted move ops are unarchive/undelete, which both restore to the inbox.
+			const target = "inbox";
 			const r = await mail.moveMessages(env, ids, target);
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "move failed");
 		},

@@ -101,25 +101,28 @@ const mkDeps = (msgs: TriageMsg[]): TriageDeps & { actSpy: ReturnType<typeof vi.
 };
 
 const SAMPLE: TriageMsg[] = [
-	{ id: "j1", from: "x@sketchy.tld", subject: "You WON the lottery! Claim your prize now" }, // junk → LABEL (reversible), not a junk-move
-	{ id: "r1", from: "receipts@amazon.com", subject: "Your receipt from Amazon" }, // receipt → archive
+	{ id: "j1", from: "x@sketchy.tld", subject: "You WON the lottery! Claim your prize now" }, // junk → LABEL (attention-increasing), not a junk-move
+	{ id: "r1", from: "receipts@amazon.com", subject: "Your receipt from Amazon" }, // receipt → LABEL (kept visible), never archived
 	{ id: "p1", from: "friend@gmail.com", subject: "lunch tomorrow?" }, // personal → suggest-only
 	{ id: "u1", from: "someone@randomcorp.example", subject: "Quick question" }, // unknown → suggest-only
 ];
 
-describe("auto-act allow-list — reversible ops only", () => {
-	it("AUTO_ACT_OPS is EXACTLY the five reversible ops — no junk-move, no delete", () => {
-		expect([...AUTO_ACT_OPS].sort()).toEqual(["archive", "label:add", "label:remove", "unarchive", "undelete"].sort());
+describe("auto-act allow-list — safe-direction (attention-increasing) ops only", () => {
+	it("AUTO_ACT_OPS is EXACTLY the three safe-direction ops — no archive, no label-remove, no delete", () => {
+		expect([...AUTO_ACT_OPS].sort()).toEqual(["label:add", "unarchive", "undelete"].sort());
 	});
 	it("every allow-listed op passes the guard", () => {
-		const ops: TriageOp[] = [{ kind: "archive" }, { kind: "unarchive" }, { kind: "undelete" }, { kind: "label", label: "junk", add: true }, { kind: "label", label: "junk", add: false }];
+		const ops: TriageOp[] = [{ kind: "unarchive" }, { kind: "undelete" }, { kind: "label", label: "junk", add: true }];
 		for (const op of ops) expect(isAutoActAllowed(op)).toBe(true);
 	});
-	it("junk LABELS (reversible flag) instead of MOVING into Junk", () => {
-		expect(ACTION_FOR.junk).toEqual({ kind: "label", label: "junk", add: true });
+	it("a label-REMOVE (attention-reducing) is rejected by the guard even though it's representable", () => {
+		expect(isAutoActAllowed({ kind: "label", label: "junk", add: false })).toBe(false);
 	});
-	it("declutter labels archive (inverse: unarchive); personal/unknown never auto-act", () => {
-		for (const l of ["receipt", "newsletter", "notification"] as const) expect(ACTION_FOR[l]).toEqual({ kind: "archive" });
+	it("every actionable label ADDS a keyword in place (kept visible); personal/unknown never auto-act", () => {
+		expect(ACTION_FOR.junk).toEqual({ kind: "label", label: "junk", add: true });
+		expect(ACTION_FOR.receipt).toEqual({ kind: "label", label: "receipt", add: true });
+		expect(ACTION_FOR.newsletter).toEqual({ kind: "label", label: "newsletter", add: true });
+		expect(ACTION_FOR.notification).toEqual({ kind: "label", label: "notification", add: true });
 		expect(ACTION_FOR.personal).toBeNull();
 		expect(ACTION_FOR.unknown).toBeNull();
 	});
@@ -157,18 +160,18 @@ describe("runTriage — gating + idempotency", () => {
 		expect(deps.actSpy).not.toHaveBeenCalled();
 	});
 
-	it("ENABLED + ACT → LABELS junk + ARCHIVES receipt (reversible), suggests personal/unknown; NEVER junk-moves", async () => {
+	it("ENABLED + ACT → LABELS junk + receipt in place (attention-increasing), suggests personal/unknown; NEVER archives or junk-moves", async () => {
 		const deps = mkDeps(SAMPLE);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
 		const report = await runTriage(env, { cycle_id: "c3" }, deps);
 		expect(deps.actSpy).toHaveBeenCalledTimes(2);
 		expect(deps.actSpy).toHaveBeenCalledWith(env, ["j1"], { kind: "label", label: "junk", add: true });
-		expect(deps.actSpy).toHaveBeenCalledWith(env, ["r1"], { kind: "archive" });
-		// No call ever files a message into the Junk mailbox — junk-move is gone.
-		for (const call of deps.actSpy.mock.calls) expect((call[2] as TriageOp).kind).not.toBe("junk");
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["r1"], { kind: "label", label: "receipt", add: true });
+		// No call ever hides a message: every auto-act is a label-add, never archive/junk-move.
+		for (const call of deps.actSpy.mock.calls) expect((call[2] as TriageOp).kind).toBe("label");
 		expect(report.acted).toEqual([
 			{ id: "j1", label: "junk", confidence: 0.9, op: "label", to: "+label:junk" },
-			{ id: "r1", label: "receipt", confidence: 0.85, op: "archive", to: "archive" },
+			{ id: "r1", label: "receipt", confidence: 0.85, op: "label", to: "+label:receipt" },
 		]);
 		// personal (0.70, no action) + unknown (0.20, low confidence) → suggestions only, never acted.
 		expect(report.suggested!.map((s) => s.id).sort()).toEqual(["p1", "u1"]);
