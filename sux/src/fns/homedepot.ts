@@ -2,8 +2,7 @@ import { retailRender } from "../retail-render";
 import { oj } from "./_util";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { unlockerRender } from "../unlocker-render";
-import { decodeEntities as decodeMarkupEntities } from "./_markup";
-import { normalizeMoney, type RetailProduct } from "./_retail";
+import { decodeEntities, normalizeMoney, type RetailProduct } from "./_retail";
 
 // Home Depot sits behind an ACTIVE Akamai `_abck` JS challenge a plain fetch can't
 // pass, so this fn renders HD's search page and lifts products out of the rendered
@@ -18,12 +17,6 @@ import { normalizeMoney, type RetailProduct } from "./_retail";
 // throws.
 
 const NO_PRODUCTS_MSG = "homedepot: no products extracted (challenge or layout change).";
-
-/** Decode HTML entities that show up in extracted title text (best-effort), then
- * trim the lead/trail space a stripped-tag join (`.replace(/<[^>]+>/g, " ")`) leaves. */
-function decodeEntities(s: string): string {
-	return decodeMarkupEntities(s).trim();
-}
 
 /**
  * Try an embedded state blob first: HD (and many React/Apollo apps) inline product

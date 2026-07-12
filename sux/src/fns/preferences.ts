@@ -1,5 +1,6 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { maybeCompressString, maybeDecompressString } from "./_gzip";
 import { errMsg, oj } from "./_util";
 
 // A KV-backed style-preference profile that LEARNS over time and continually
@@ -27,8 +28,9 @@ type StoredProfile = { distilled_spec: string; examples: string[]; updated_at: n
 
 /** Read + parse a stored profile; null if absent or unparseable (never throws here). */
 async function loadProfile(env: RtEnv, profile: string): Promise<StoredProfile | null> {
-	const raw = await env.OAUTH_KV.get(`${KV_PREFIX}${profile}`);
-	if (!raw) return null;
+	const stored = await env.OAUTH_KV.get(`${KV_PREFIX}${profile}`);
+	if (!stored) return null;
+	const raw = await maybeDecompressString(stored);
 	try {
 		const p = JSON.parse(raw) as Partial<StoredProfile>;
 		return {
@@ -110,7 +112,7 @@ export const preferences: Fn = {
 				if (!spec.trim()) return failWith("upstream_error", "preferences (learn) distilled an empty spec — retry.");
 
 				const record: StoredProfile = { distilled_spec: spec.trim(), examples, updated_at: Date.now() };
-				await env.OAUTH_KV.put(`${KV_PREFIX}${profile}`, JSON.stringify(record));
+				await env.OAUTH_KV.put(`${KV_PREFIX}${profile}`, await maybeCompressString(JSON.stringify(record)));
 				console.log(`preferences: learned profile=${profile} examples=${examples.length}`);
 				return ok(
 					JSON.stringify(

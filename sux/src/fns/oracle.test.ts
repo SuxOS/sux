@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
+import { maybeDecompressString } from "./_gzip";
 import { oracle } from "./oracle";
 
 // We exercise the REAL guarded llm() (from ../ai) and the REAL fetchText/smartFetch
@@ -85,7 +86,7 @@ describe("oracle — learn", () => {
 		expect(redistill.user).toContain("DISTILLED-CHUNK");
 
 		// Persisted under sux:oracle:<topic> in the documented shape.
-		const stored = JSON.parse(kv.store.get("sux:oracle:bio")!);
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:bio")!));
 		expect(stored.distilled).toBe("CONSOLIDATED-KB");
 		expect(stored.chunks).toEqual(["DISTILLED-CHUNK"]);
 		expect(stored.sources).toEqual(["inline text"]);
@@ -104,7 +105,7 @@ describe("oracle — learn", () => {
 		expect(redistill.user).toContain("DISTILLED-CHUNK");
 		expect(redistill.user).toContain("CHUNK-TWO");
 
-		const stored = JSON.parse(kv.store.get("sux:oracle:bio")!);
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:bio")!));
 		expect(stored.chunks).toEqual(["DISTILLED-CHUNK", "CHUNK-TWO"]);
 		expect(stored.sources).toEqual(["inline text", "inline text"]);
 	});
@@ -115,7 +116,7 @@ describe("oracle — learn", () => {
 			run.mockImplementationOnce(async () => ({ response: `chunk ${i}` }));
 			await oracle.run(env, { knowledge: `material ${i}`, topic: "cap" });
 		}
-		const stored = JSON.parse(kv.store.get("sux:oracle:cap")!);
+		const stored = JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:cap")!));
 		expect(stored.chunks).toHaveLength(15);
 		expect(stored.chunks[0]).toBe("chunk 2"); // 0..1 dropped
 		expect(stored.chunks[14]).toBe("chunk 16");
@@ -195,7 +196,7 @@ describe("oracle — answer", () => {
 		// distill → re-distill → answer.
 		expect(run).toHaveBeenCalledTimes(3);
 		// The knowledge was persisted before the answer ran…
-		expect(JSON.parse(kv.store.get("sux:oracle:rust")!).distilled).toBe("FRESH-KB: ownership moves values.");
+		expect(JSON.parse(await maybeDecompressString(kv.store.get("sux:oracle:rust")!)).distilled).toBe("FRESH-KB: ownership moves values.");
 		// …and the answer's system prompt carried that freshly-updated KB.
 		expect(messages(run, 2).system).toContain("FRESH-KB: ownership moves values.");
 	});

@@ -215,11 +215,13 @@ async function main() {
   drift = report(`Files in plugins/sux-router/skills/ not in .claude/skills/`, extra) || drift;
   drift = report(`Files that differ between .claude/skills/ and plugins/sux-router/skills/`, changed) || drift;
 
-  // Soft, non-failing: the profile snippet is a hand-tuned summary, not exhaustive.
+  // The profile snippet claims to name every function (so skill-less chats can
+  // still route) — hold it to that, same as SKILL.md, so it can't silently rot.
   const snippet = readFileSync(SNIPPET, 'utf8');
-  const unSnippeted = fnNames.filter((n) => !mentioned(snippet, n));
-  if (unSnippeted.length)
-    console.log(`\nFYI (not failing): ${unSnippeted.length} functions not in the profile snippet: ${unSnippeted.join(', ')}`);
+  drift = report(
+    `Functions in ${relative(ROOT, FUNCTIONS)} never mentioned in ${relative(ROOT, SNIPPET)}`,
+    fnNames.filter((n) => !mentioned(snippet, n)),
+  ) || drift;
 
   // Optional live probe: the deployed tools/list is the FRONT DOOR — only the front
   // verbs, not every fn. So diff live against FRONT_VERBS (leaves stay reachable via

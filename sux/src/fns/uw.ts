@@ -1,5 +1,6 @@
 import { type Fn, failWith, ok } from "../registry";
 import { smartFetch } from "../proxy";
+import { oj } from "./_util";
 
 // UW person lookup — directory.uw.edu scrape (works today, no secret) with an
 // optional PWS mutual-TLS tier behind the UW_PWS_CERT binding.
@@ -239,33 +240,25 @@ export const uw: Fn = {
 
 		if (isStudentGated(html, wantStudents)) {
 			return ok(
-				JSON.stringify(
-					{
-						query: rawQuery,
-						method,
-						sign_in_required: true,
-						note: "Student directory entries are FERPA-gated behind UW SAML sign-in (directory.uw.edu/saml/login). sux does not authenticate as a user, so students aren't returned. Faculty/staff lookups work without sign-in.",
-					},
-					null,
-					2,
-				),
+				oj({
+					query: rawQuery,
+					method,
+					sign_in_required: true,
+					note: "Student directory entries are FERPA-gated behind UW SAML sign-in (directory.uw.edu/saml/login). sux does not authenticate as a user, so students aren't returned. Faculty/staff lookups work without sign-in.",
+				}),
 			);
 		}
 
 		const all = parseCards(html);
 		if (!all.length) {
 			return ok(
-				JSON.stringify(
-					{
-						query: rawQuery,
-						method,
-						count: 0,
-						results: [],
-						note: "No public faculty/staff match. Students and suppressed/FERPA-restricted people don't appear in the anonymous directory.",
-					},
-					null,
-					2,
-				),
+				oj({
+					query: rawQuery,
+					method,
+					count: 0,
+					results: [],
+					note: "No public faculty/staff match. Students and suppressed/FERPA-restricted people don't appear in the anonymous directory.",
+				}),
 			);
 		}
 
@@ -283,18 +276,14 @@ export const uw: Fn = {
 		}
 
 		return ok(
-			JSON.stringify(
-				{
-					query: rawQuery,
-					method,
-					count: results.length,
-					truncated: all.length > results.length,
-					total_matches: all.length,
-					results,
-				},
-				null,
-				2,
-			),
+			oj({
+				query: rawQuery,
+				method,
+				count: results.length,
+				truncated: all.length > results.length,
+				total_matches: all.length,
+				results,
+			}),
 		);
 	},
 };

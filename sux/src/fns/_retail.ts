@@ -1,3 +1,5 @@
+import { decodeEntities as decodeMarkupEntities } from "./_markup";
+
 // Shared normalization for the retailer fns (kroger now; ace/costco/homedepot/
 // walmart next). Keep minimal — just what kroger needs today, shaped to extend
 // so every retailer emits one product shape a caller can parse identically.
@@ -34,4 +36,10 @@ export type RetailResult = {
 export function normalizeMoney(v: unknown): number | undefined {
 	const n = typeof v === "number" ? v : typeof v === "string" ? Number(v.replace(/[^0-9.]/g, "")) : Number.NaN;
 	return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** Decode HTML entities that show up in extracted title text (best-effort), then
+ * trim the lead/trail space a stripped-tag join (`.replace(/<[^>]+>/g, " ")`) leaves. */
+export function decodeEntities(s: string): string {
+	return decodeMarkupEntities(s).trim();
 }

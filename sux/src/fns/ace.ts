@@ -1,8 +1,7 @@
 import { looksBlocked, retailRender } from "../retail-render";
 import { oj } from "./_util";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
-import { decodeEntities as decodeMarkupEntities } from "./_markup";
-import { normalizeMoney, type RetailProduct } from "./_retail";
+import { decodeEntities, normalizeMoney, type RetailProduct } from "./_retail";
 
 // Ace Hardware runs on the Kibo/Mozu commerce platform and exposes no public
 // product API, so this fn renders Ace's search page through `retailRender` and lifts
@@ -16,12 +15,6 @@ import { normalizeMoney, type RetailProduct } from "./_retail";
 // guards/try-catches — never throws.
 
 const NO_PRODUCTS_MSG = "ace: no products extracted (layout change).";
-
-/** Decode HTML entities that show up in extracted title text (best-effort), then
- * trim the lead/trail space a stripped-tag join (`.replace(/<[^>]+>/g, " ")`) leaves. */
-function decodeEntities(s: string): string {
-	return decodeMarkupEntities(s).trim();
-}
 
 /**
  * Parse product tiles from the rendered DOM. Ace renders each search result as a
