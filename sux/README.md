@@ -203,19 +203,7 @@ currency, in_stock, url, image, rating}`.
 | **Home Depot** | `render:mac` | Active Akamai `_abck` sensor → needs a real browser to warm it. Product-pod tiles / `__APOLLO_STATE__`. |
 | **Walmart** | **`render:mac` + solver** | PerimeterX **press-and-hold**, forced with `solve:true`. Solved by a real mouse hold gesture (not CapSolver). Lifts `__NEXT_DATA__`. |
 | **Amazon** | `render:mac` | No usable free API (PA-API needs an approved Associate account). Renders `s-search-result` tiles by ASIN; auto-escalates to the solver on a Robot Check. |
-| **WinCo** | **store-locator ONLY** | See below. |
 | Best Buy / eBay | official API (later) | Fns exist and are wired to official APIs, kept dormant until keys are set. |
-
-### WinCo: no product catalog is achievable
-
-**WinCo Foods is a warehouse-style grocer with no e-commerce site** — there is
-no online product catalog to fetch, at any rung. It is also **not indexed by
-Flipp** (unlike Safeway/Albertsons/Fred Meyer), so there's no weekly-ad backdoor
-either. `wincofoods.com` even 403s plain/datacenter fetches, so the `winco` fn
-renders the client-side `/stores` directory through `render:mac` and returns
-**store locations only** (`id/name/address/city/state/zip/phone/hours`), with
-optional `zip`/`state` filters. A WinCo product catalog is **not a solvable
-problem** and should not be attempted.
 
 ---
 
