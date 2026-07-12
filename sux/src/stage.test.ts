@@ -141,3 +141,27 @@ describe("stage-then-commit", () => {
 		await expect(commit(env, "mail_send", s.commit_token, payload)).rejects.toThrow(/spent|invalid|expired/);
 	});
 });
+
+// The annotation IS the safety posture: irreversible:true auto-stages (a human must come back
+// with the token), irreversible:false auto-mutates. These pin the policies that must survive any
+// growth of STAGE_KINDS, so a new outward/destructive verb — or a silent downgrade of an existing
+// one — fails CI here instead of auto-firing an irreversible action in production. The guard is
+// inherited by construction; these lock that no future edit can quietly opt a verb out of it.
+describe("STAGE_KINDS safety-posture invariants", () => {
+	it("no `*_delete` verb is ever reversible — a delete never auto-runs", () => {
+		for (const [kind, ann] of Object.entries(STAGE_KINDS)) {
+			if (kind.endsWith("_delete")) expect(ann.irreversible, `${kind} must stage`).toBe(true);
+		}
+	});
+
+	it("every whole-Dropbox `files_*` write stages — Mode B write is always gated", () => {
+		for (const [kind, ann] of Object.entries(STAGE_KINDS)) {
+			if (kind.startsWith("files_")) expect(ann.irreversible, `${kind} must stage`).toBe(true);
+		}
+	});
+
+	it("outward mail (send + vacation auto-reply) never auto-runs", () => {
+		expect(STAGE_KINDS.mail_send?.irreversible).toBe(true);
+		expect(STAGE_KINDS.mail_vacation?.irreversible).toBe(true);
+	});
+});
