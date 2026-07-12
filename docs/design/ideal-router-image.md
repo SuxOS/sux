@@ -62,7 +62,7 @@ kmod-e1000 kmod-forcedeth`) — **[O]**, keep all (image must boot on any port).
 | | `cloudflared` · `luci-app-sux-cloudflare` | [O]/[C] | `cloudflared` **is** an official pkg (`net/cloudflared`). Render data-plane + OOB. Token is [P] (out of git). **App BUILT** (owl-tegu-luci) — replaces `luci-app-cloudflared`. |
 | **Web / mgmt** | `luci` · `luci-ssl` · `luci-app-firewall` · `luci-app-attendedsysupgrade` | [O] | luci-ssl (currently missing — box serves plain uhttpd); attendedsysupgrade drives the ASU image build. |
 | **NAS** | `ksmbd-server` · `luci-app-ksmbd` | [O] | kernel SMB3 server on the NVMe (§2.2). **Replaces samba4.** |
-| ~~**NAT-PMP/UPnP**~~ | ~~`miniupnpd-nftables` · `luci-app-upnp`~~ | — | **DROPPED** (moved to §1.3). Colin approved dropping UPnP in the LuCI-apps session (2026-07-12); supersedes the keep. Tailscale + the CF tunnel handle inbound, so no device needs NAT-PMP. Re-add if a console/game genuinely requires port-punching. |
+| **NAT-PMP/PCP/UPnP** | `miniupnpd-nftables` · `luci-app-upnp` | [O] | **KEEP** (already live, S94, fw4-native). **Needed for Tailscale NAT traversal** — the gateway offering NAT-PMP/PCP lets LAN tailnet peers (iPhone, MacBook) obtain port mappings and establish **direct** connections instead of relaying through DERP. (Corrects the earlier drop; Colin, 2026-07-12: "we need pmp for tailscale nat.") Optional hardening: restrict to NAT-PMP/PCP + disable UPnP-IGD's arbitrary LAN port-punching if desired. |
 | **Console** | `ttyd` · `luci-app-ttyd` | [O] | browser shell (currently config present, app not in world — add the LuCI app). |
 | **Watchdog** | `watchcat` · `luci-app-watchcat` · `kmod-itco-wdt` | [O] | L1 dumb-timer + HW `/dev/watchdog` floor. Brain = `suxwatch` [P] (router-watchdog.md). |
 | **Docker host** | `docker` · `dockerd` · `docker-compose` · `containerd` | [O] | + `kmod-veth kmod-br-netfilter kmod-nf-nat kmod-nft-offload` for container networking. data-root → NVMe (§2.4). |
@@ -94,8 +94,7 @@ kept component or a toy:
 | **`nextdns`** (+ config) | Superseded by Control D (`ctrld`). One upstream filtering provider, not two. |
 | **`adblock-fast`** | ctrld/Control D does the blocking upstream. No on-box blocklist engine. |
 | **`crowdsec`** | Heavy IDS/agent on the SACRED gateway — attack surface + RAM for near-zero benefit on a 1-user LAN. Drop. |
-| **`einat`** (+ config) | eim/full-cone NAT helper; drop the extra NAT hack (UPnP is dropped too — nothing needs full-cone NAT). |
-| **`miniupnpd-nftables` / `luci-app-upnp`** | **UPnP/NAT-PMP dropped** (Colin, 2026-07-12, LuCI-apps session). UPnP IGD lets any LAN host open WAN holes unauthenticated — attack surface on the SACRED gateway. Tailscale + CF tunnel cover inbound; no device needs NAT-PMP here. Re-add only if a console/game demands it. |
+| **`einat`** (+ config) | eim/full-cone NAT helper; drop the extra NAT hack — miniupnpd's NAT-PMP/PCP covers the port-mapping needs (incl. Tailscale). |
 | **`kadnode`** (+ config, S95) | DHT/DNS-over-Kademlia toy. Not a role. Drop. |
 | **`samba4`** (+ config) | **Replaced by `ksmbd`** (kernel SMB3, faster on the 2.5GbE NVMe path, far lighter). Never run both. |
 | **`darkstat`** | Ancient traffic-accounting toy; Grafana/vnstat is the answer if we want traffic history. Drop. |
