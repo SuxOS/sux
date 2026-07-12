@@ -2,12 +2,12 @@ import type { RtEnv } from "../registry";
 import { fingerprint, ledger } from "../ledger";
 import { obsidian } from "./obsidian";
 
-// Vault-KB write-hooks: as the user teaches sux (learn) or searches (save-on-search),
-// mirror a human-readable line into the Obsidian vault so the knowledge is legible AND
-// git-versioned — git history IS the undo for the vault side (the existing house
-// convention), so these hooks carry a batch marker for traceability but do not invent a
-// vault-delete undo. The authoritative learned set lives in KV (_examples.ts); this is
-// the readable log.
+// Vault-KB write-hooks: as sux's self-distilling KV stores update (learn, save-on-search,
+// oracle knowledge bases, preferences voice specs), mirror a human-readable line/section
+// into the Obsidian vault so the knowledge is legible AND git-versioned — git history IS
+// the undo for the vault side (the existing house convention), so these hooks carry a
+// batch marker for traceability but do not invent a vault-delete undo. The authoritative
+// state lives in KV (_examples.ts, sux:oracle:*, sux:prefs:*); this is the readable log.
 //
 // Both hooks are IDEMPOTENT (ledger fingerprint over the exact content → a re-run of the
 // same learn/search converges instead of duplicating) and BEST-EFFORT: they route
@@ -17,6 +17,8 @@ import { obsidian } from "./obsidian";
 
 const LEARN_NOTE = "sux/Learned.md";
 const SEARCH_NOTE = "sux/Searches.md";
+const ORACLE_NOTE = "sux/Knowledge.md";
+const PREFS_NOTE = "sux/Voice.md";
 
 /** Append via obsidian, deduped by `dedupKey` (the SEMANTIC content — not the rendered line,
  *  whose batch marker is unique per call). Returns true iff it actually wrote. */
@@ -56,4 +58,26 @@ export function appendOnSearch(env: RtEnv, query: string, resultSummary: string)
 	const summary = resultSummary.replace(/\s+/g, " ").trim().slice(0, 500);
 	const line = `- **${q}** — ${summary}`;
 	return appendOnce(env, SEARCH_NOTE, line, "kb:search", q);
+}
+
+/** Mirror an oracle topic's freshly re-distilled knowledge base into the vault as a
+ *  timestamped section. Dedup is on topic+distilled, so the log grows one section per
+ *  distinct KB version — a legible git-versioned history of the topic's evolution. */
+export function appendOnOracle(env: RtEnv, topic: string, distilled: string): Promise<boolean> {
+	const t = topic.replace(/\s+/g, " ").trim() || "default";
+	const body = distilled.trim();
+	if (!body) return Promise.resolve(false);
+	const section = `\n## ${t} — ${new Date().toISOString()}\n\n${body}\n`;
+	return appendOnce(env, ORACLE_NOTE, section, "kb:oracle", `${t}\n${body.replace(/\s+/g, " ")}`);
+}
+
+/** Mirror a preferences profile's freshly re-distilled voice spec into the vault as a
+ *  timestamped section. Dedup is on profile+spec, so each distinct spec version appends
+ *  once — a legible git-versioned history of how the voice has been tuned. */
+export function appendOnPreferences(env: RtEnv, profile: string, spec: string): Promise<boolean> {
+	const p = profile.replace(/\s+/g, " ").trim() || "default";
+	const body = spec.trim();
+	if (!body) return Promise.resolve(false);
+	const section = `\n## ${p} — ${new Date().toISOString()}\n\n${body}\n`;
+	return appendOnce(env, PREFS_NOTE, section, "kb:prefs", `${p}\n${body.replace(/\s+/g, " ")}`);
 }

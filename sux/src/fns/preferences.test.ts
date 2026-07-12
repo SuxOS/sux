@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The vault mirror rides obsidian.run — mock it (its own suite covers it) so we can
+// assert the learn action mirrors the re-distilled voice spec without a configured vault.
+vi.mock("./obsidian", () => ({ obsidian: { run: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }] })) } }));
+
 import { maybeDecompressString } from "./_gzip";
+import { obsidian } from "./obsidian";
 import { preferences } from "./preferences";
 import { voice } from "./voice";
 import { DATA_CLOSE, DATA_OPEN } from "../ai";
+
+const obs = obsidian.run as unknown as ReturnType<typeof vi.fn>;
 
 // We exercise the REAL guarded llm() (from ../ai) and only stub env.AI.run + a
 // Map-backed OAUTH_KV — so the assertions see the actual <<<DATA>>> fence
@@ -70,6 +78,23 @@ describe("preferences", () => {
 		expect(stored.distilled_spec).toBe("Terse spec v1.");
 		expect(stored.examples).toEqual(["ship it. tests green."]);
 		expect(typeof stored.updated_at).toBe("number");
+	});
+
+	it("mirrors the re-distilled voice spec into the vault, idempotently", async () => {
+		const { env } = makeEnv("Terse. No hedging.");
+		await preferences.run(env, { action: "learn", profile: "colin", sample: "ship it. tests green." });
+
+		// One vault append with the profile-headed section containing the spec.
+		expect(obs).toHaveBeenCalledTimes(1);
+		const [, append] = obs.mock.calls[0];
+		expect(append).toMatchObject({ action: "append", path: "sux/Voice.md" });
+		expect(append.content).toContain("## colin —");
+		expect(append.content).toContain("Terse. No hedging.");
+
+		// A learn that re-distills to the same spec does not double-append.
+		obs.mockClear();
+		await preferences.run(env, { action: "learn", profile: "colin", sample: "another sample" });
+		expect(obs).not.toHaveBeenCalled();
 	});
 
 	it("get returns the stored spec + example count after a learn", async () => {
