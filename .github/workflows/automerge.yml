@@ -55,6 +55,26 @@ jobs:
           app-id: ${{ secrets.SUX_BOT_APP_ID }}
           private-key: ${{ secrets.SUX_BOT_PRIVATE_KEY }}
 
+      # FAIL-CLOSED protection assertion. The safe-to-auto-merge property depends on
+      # main requiring a status check — if branch protection is silently dropped
+      # (the going-private incident), auto-merge would happily merge red PRs to the
+      # auto-deploying main. Verify required_status_checks is present and non-empty
+      # BEFORE enabling auto-merge; on any doubt (missing protection, empty checks, or
+      # an unreadable API response) emit ::error:: and exit non-zero so the stall is
+      # LOUD, never a silent unguarded merge.
+      - name: Assert main branch protection requires a status check
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          prot=$(gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" 2>/dev/null || echo '{}')
+          checks=$(echo "$prot" | jq '[(.required_status_checks.contexts // [])[], (.required_status_checks.checks // [])[]] | length')
+          if [ "${checks:-0}" -lt 1 ]; then
+            echo "::error::main branch protection has no required_status_checks (or is unreadable) — refusing to enable auto-merge. Restore branch protection requiring the CI status check on main."
+            exit 1
+          fi
+          echo "branch protection OK: main requires $checks status check(s)"
+
       - name: Decide eligibility and enable auto-merge
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
