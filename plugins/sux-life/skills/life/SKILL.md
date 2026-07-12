@@ -17,10 +17,10 @@ plus **remember** for the things that must never be lost.
 
 ## The stores (what you're writing to)
 
-Everything rides the one sux connector (`/mcp`, the `sux-router` plugin) — vault/mail/files are
-front-door verb families on it, not separate connectors.
+The universal plane rides the advertised sux connector (`/mcp`, the `sux-router` plugin); vault/mail/files
+live on their own separate `/vault/mcp`, `/mail/mcp`, `/files/mcp` connectors (unadvertised by default, `?all=1` to opt in).
 
-| Store | Verbs (all on the one `/mcp` connector) | Tools |
+| Store | Verbs (on the store's own `/<domain>/mcp` connector) | Tools |
 |---|---|---|
 | **Notes / knowledge** | `vault_*` | `vault_capture`, `vault_daily_append`, `vault_daily_read`, `vault_write`, `vault_append`, `vault_edit`, `vault_read`, `vault_list`, `vault_delete` |
 | **Mail / calendar / contacts** | `mail_*` / `cal_*` / `contact_*` | `mail_search`, `mail_read`, `mail_thread`, `mail_send`, `mail_draft`, `mail_archive`, `mail_masked`, and raw `jmap` (calendars/contacts) |

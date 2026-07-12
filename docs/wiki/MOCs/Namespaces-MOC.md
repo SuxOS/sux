@@ -3,17 +3,17 @@ title: Namespaces
 status: reference
 cluster: namespaces
 type: moc
-summary: "The active build path — the personal-data namespaces (vault, mail, files — all live as front-door verbs on the one /mcp connector) + the cross-store write/act layer."
+summary: "The active build path — the personal-data namespaces (vault, mail, files — live on their own separate /<domain>/mcp connectors, unadvertised by default) + the cross-store write/act layer."
 tags: [sux, namespaces, moc]
 updated: 2026-07-09
 ---
 
 # Namespaces MOC
 
-The **active build path.** sux is one Worker exposing a single `/mcp` connector:
-the universal query plane plus every personal-data store, all reached as
-front-door verbs (`vault_`/`mail_`/`files_`/`cal_`/`contact_`, plus `recall`)
-behind the shared [[oauth-gate]]. The organizing idea is
+The **active build path.** sux is one Worker exposing the advertised `/mcp`
+connector — the universal query plane, `recall`, and the `fn` escape — plus the
+personal-data stores on their own separate `/<domain>/mcp` connectors
+(`vault_`/`mail_`/`files_`/`cal_`/`contact_` verbs), all behind the shared [[oauth-gate]]. The organizing idea is
 [[namespace-architecture]]; the two cross-cutting laws are
 [[handle-discipline]] (references, not payloads) and the [[unblocked-gated-law]]
 (unblocked where git can undo, gated where the world can't).
@@ -21,8 +21,8 @@ behind the shared [[oauth-gate]]. The organizing idea is
 ## The architecture
 
 - [[namespace-architecture]] — one Worker, one OAuth, one advertised connector
-- [[connector-surface-policy]] — why the per-domain connectors retired into the single `/mcp` front door
-- [[three-mcps]] — the namespace map (vault · mail · files), as originally proposed before they collapsed onto one connector
+- [[connector-surface-policy]] — why the per-domain connectors stay separate but unadvertised behind the one advertised `/mcp` front door
+- [[three-mcps]] — the namespace map (vault · mail · files), as originally proposed (per-domain plugins that never shipped)
 - [[sux-verbs]] — the universal `/mcp` surface as ten front-door verbs + `batch`/`pipe`
 - [[domains]] — the nine personal-data domains mapped onto the hub
 - [[handle-discipline]] · [[unblocked-gated-law]] — the two invariants every namespace obeys

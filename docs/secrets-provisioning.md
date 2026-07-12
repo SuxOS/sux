@@ -78,7 +78,7 @@ the Worker runtime.
   Token → Create Custom Token** (`dash.cloudflare.com/profile/api-tokens`).
 - **Scopes (least-privilege)**: **Account → Workers Scripts : Edit** (add **Account →
   Workers KV Storage : Edit** only if you also manage KV from CI). Scope the token to
-  the **single account that owns the Worker** (`1e0d4133619d9e9998d9488f3a5f8e1e`),
+  the **single account that owns the Worker** (find its ID via `wrangler whoami`),
   not "All accounts". Prefer the Custom token over the broader "Edit Cloudflare
   Workers" template, and never a Global API Key. (Audit finding 4; matches
   `.github/workflows/deploy.yml` header.)
@@ -91,9 +91,9 @@ the Worker runtime.
   re-seed op, `--github`.
 
 ## `CLOUDFLARE_ACCOUNT_ID`
-- **Service / where**: not a secret — the account identifier. Cloudflare dashboard →
-  **Workers & Pages** overview, or `wrangler whoami`. Value:
-  `1e0d4133619d9e9998d9488f3a5f8e1e`.
+- **Service / where**: not a secret — the account identifier. Read it from the
+  Cloudflare dashboard → **Workers & Pages** overview, or `wrangler whoami` (the doc
+  deliberately doesn't print the value).
 - **Scopes**: n/a (an identifier, not a credential). Stored as a GitHub secret only
   to keep it out of the committed config.
 - **Store**: Tier-1 slot but non-sensitive. `op item create … --title

@@ -3,14 +3,14 @@ title: Three MCP namespaces
 status: shipped
 cluster: namespaces
 type: proposal
-summary: "Point-in-time proposal: one Worker, N per-domain /mcp connectors (vault/mail/files). SUPERSEDED — those connectors were later retired into the single /mcp front door; the namespaces now ship as vault_/mail_/files_ verbs on the one sux-router connector. Read as history."
+summary: "Point-in-time proposal: one Worker, N per-domain /mcp connectors (vault/mail/files). Still the live shape — the separate /vault/mcp, /mail/mcp, /files/mcp connectors stay routed + OAuth-authorized, but were retired from the default discovery manifest (unadvertised, no plugin; ?all=1 to opt in). Read the plugin-per-domain packaging as history."
 tags: [sux, namespaces, shipped]
 updated: 2026-07-09
 ---
 
 # Three MCP namespaces — vault · mail · sux
 
-> **⚠️ Superseded — point-in-time design record.** This doc proposes vault/mail/files as *separate per-domain connectors* (`/vault/mcp`, `/mail/mcp`, `/files/mcp`), each its own plugin. That split was later **retired into the single `/mcp` front door**: vault/mail/files now ship as `vault_`/`mail_`/`files_` (+ `cal_`/`contact_`) front-door verbs on the one `sux-router` connector. The per-domain paths still route + stay OAuth-authorized for back-compat, but they are dormant (no plugin, `advertised:false`). Read the endpoint/plugin tables below as history; for the current shape see [[namespace-architecture]] and [[connector-surface-policy]].
+> **⚠️ Superseded — point-in-time design record.** This doc proposes vault/mail/files as *separate per-domain connectors* (`/vault/mcp`, `/mail/mcp`, `/files/mcp`), each its own plugin. Those per-domain connectors still exist and route — vault/mail/files remain *separate* `/vault/mcp`, `/mail/mcp`, `/files/mcp` connectors serving the `vault_`/`mail_`/`files_` (+ `cal_`/`contact_`) verbs, OAuth-authorized — but were retired from the *default discovery manifest*: no per-domain plugin ships (`advertised:false`, `?all=1` to opt in), and only `/mcp` is advertised. No verb-merge onto `/mcp` happened. Read the endpoint/plugin tables below as history; for the current shape see [[namespace-architecture]] and [[connector-surface-policy]].
 
 **Corrected 2026-07-09 after reading the branch.** The earlier draft proposed 3 separate workers and a parallel verb vocabulary; both were wrong. The real architecture is Colin's (commit 220ed15) and the vault namespace is already built (`sux/src/vault-mcp.ts`). This doc now reflects reality.
 

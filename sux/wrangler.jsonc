@@ -32,7 +32,7 @@
 	// Colin flips it (dashboard/secret) to move from suggest-only to acting on the reversible-only
 	// allow-list (label/archive/unarchive/undelete). Escape hatch: unset MAIL_TRIAGE_ENABLED (whole
 	// feature dormant) or run mail_triage {action:"undo", cycle_id} to reverse a cycle.
-	"vars": { "DEBUG_MCP": "0", "MAIL_TRIAGE_ENABLED": "1" },
+	"vars": { "MAIL_TRIAGE_ENABLED": "1" },
 	// Per-user rate limit (same as core).
 	"unsafe": {
 		"bindings": [

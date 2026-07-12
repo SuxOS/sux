@@ -3,7 +3,7 @@ title: The one-shot spec prompt
 status: reference
 cluster: meta
 type: reference
-summary: "A single self-contained prompt that reconstructs sux from zero — the architecture, the one /mcp connector with its universal + vault/mail/files verb families, the safety model, and the house rules, compressed to the minimum an agent needs to one-shot it."
+summary: "A single self-contained prompt that reconstructs sux from zero — the architecture, the advertised /mcp front door plus the separate (unadvertised) vault/mail/files connectors, the safety model, and the house rules, compressed to the minimum an agent needs to one-shot it."
 tags: [sux, meta, reference]
 updated: 2026-07-10
 related: ["[[SUX]]", "[[three-mcps]]", "[[files]]", "[[keys]]", "[[architecture]]"]
@@ -45,8 +45,8 @@ ARCHITECTURE
   Enumerate the connector PATHS from ONE source of truth (a CONNECTORS array) that also drives the OAuth
   apiRoute and a GET /mcp/connectors discovery manifest. The design once split these onto per-domain
   connectors (/vault/mcp, /mail/mcp, /files/mcp, each its own plugin); those paths stay in the CONNECTORS
-  array — routed + OAuth-authorized for back-compat — but are retired from the advertised surface into the
-  one /mcp front door (advertised:false, no plugin). Keep the raw protocol conduit (jmap, dropbox) exposed
+  array — routed + OAuth-authorized — but are retired from the advertised surface (advertised:false, no
+  plugin); they remain separate per-domain connectors, discoverable via ?all=1. Keep the raw protocol conduit (jmap, dropbox) exposed
   as the debugging escape hatch — ergonomic verbs on top, raw underneath.
 
 THE TWO HARD FACTS
@@ -81,7 +81,7 @@ HOW WE WORK (the gates that let us move fast)
 - Fan out with subagents/workflows for research, design tournaments, and adversarial review; keep the
   actual file-mutating commits serial to stay conflict-free and mergeable.
 
-DELIVER: the Worker, the one /mcp connector with its front-door verb families (universal + vault/mail/files),
+DELIVER: the Worker, the advertised /mcp connector (universal verbs) plus the separate unadvertised /vault/mcp, /mail/mcp, /files/mcp connectors (personal verb families),
 the fn registry + generators, the OAuth gate, the safety gates above, tests for each, the discovery manifest,
 and the marketplace plugins. Deploy additively; the personal namespaces stay dormant (not_configured) until
 their secrets are set.

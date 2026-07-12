@@ -3,7 +3,7 @@ title: Use sux from your phone
 status: reference
 cluster: infrastructure
 type: reference
-summary: "How to add the one sux connector to claude.ai on your phone, what's live right now (vault/mail/files all behind it), and the memory workflow to drive it."
+summary: "How to add the sux connectors to claude.ai on your phone — the advertised /mcp front door plus the separate (unadvertised) vault/mail/files connectors — what's live right now, and the memory workflow to drive it."
 tags: [sux, mobile, connectors, reference]
 updated: 2026-07-10
 related: ["[[token-setup]]", "[[keys]]", "[[digital-life-spine]]", "[[connector-surface-policy]]"]
@@ -12,9 +12,11 @@ related: ["[[token-setup]]", "[[keys]]", "[[digital-life-spine]]", "[[connector-
 # Use sux from your phone
 
 Everything runs on one OAuth-gated Cloudflare Worker (`https://sux.colinxs.workers.dev`).
-To use it from the **claude.ai app on your phone**, add the **one** sux connector once. It
-logs in with your GitHub account (the same gate as everywhere else). Vault, mail, and files
-all live behind that single front door — there are no separate per-domain connectors to add.
+To use it from the **claude.ai app on your phone**, add the sux connector once. It
+logs in with your GitHub account (the same gate as everywhere else). The advertised `/mcp`
+front door carries the universal tools; your personal vault, mail, and files live on their
+own separate `/vault/mcp`, `/mail/mcp`, `/files/mcp` connectors — routed and OAuth-authorized,
+but unadvertised by default (add each one explicitly to reach its tools).
 
 ## Add the connector (claude.ai app → Settings → Connectors)
 
@@ -23,11 +25,14 @@ the GitHub login in the browser sheet:
 
 | Connector | URL | What it gives you |
 |---|---|---|
-| **sux** | `https://sux.colinxs.workers.dev/mcp` | everything: web search, scrape/render, research, documents, transforms, capture, storage — PLUS your personal vault/mail/files via the `vault_`/`mail_`/`files_`/`cal_`/`contact_` verbs (+ `recall`, + the `fn` escape) |
+| **sux** (advertised) | `https://sux.colinxs.workers.dev/mcp` | the universal plane: web search, scrape/render, research, documents, transforms, capture, storage, `recall`, + the `fn` escape |
+| **vault** | `https://sux.colinxs.workers.dev/vault/mcp` | your notes: `vault_` verbs (read/write/edit/capture + daily notes) |
+| **mail** | `https://sux.colinxs.workers.dev/mail/mcp` | Fastmail/JMAP: `mail_`/`cal_`/`contact_` verbs + raw `jmap` |
+| **files** | `https://sux.colinxs.workers.dev/files/mcp` | Dropbox blobs: `files_` verbs (Mode A + gated Mode B) |
 
-> The former per-domain connectors (`/vault/mcp`, `/mail/mcp`, `/files/mcp`) are retired into
-> this one front door. Their routes still resolve for back-compat, but you don't add them —
-> the personal tools ride the single `/mcp` connector as front-door verbs.
+> The per-domain connectors (`/vault/mcp`, `/mail/mcp`, `/files/mcp`) are **unadvertised** — they
+> don't show up in the default discovery manifest and ship no marketplace plugin, but they route
+> and stay OAuth-authorized. Add each one explicitly on your phone to reach its personal tools.
 
 > After adding or updating the connector, if the tools don't appear, toggle it
 > off/on (the client caches the tool list).

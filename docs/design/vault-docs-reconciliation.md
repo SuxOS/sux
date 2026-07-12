@@ -3,7 +3,7 @@ title: Docs ⇄ vault reconciliation
 status: designed
 cluster: knowledge
 type: design
-summary: "Two SoT repos, one Obsidian view: gitignored symlink mounts public docs/ into the private vault; repo reaches the vault via the vault_* tools on the one /mcp connector; no cross-repo copy, so no divergence."
+summary: "Two SoT repos, one Obsidian view: gitignored symlink mounts public docs/ into the private vault; repo reaches the vault via the vault_* tools on the /vault/mcp connector; no cross-repo copy, so no divergence."
 tags: [sux, knowledge, vault]
 updated: 2026-07-11
 related: ["[[wiki-protocol]]", "[[vault-stack]]", "[[namespace-architecture]]", "[[vault-backends-matrix]]"]
