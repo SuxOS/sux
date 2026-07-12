@@ -12,6 +12,7 @@ import { hasAI, llm } from "./ai";
 // would cost more than the tokens it saves, and may even grow the text).
 const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
+import { SUX_SKILL_DESCRIPTION, SUX_SKILL_PROMPT } from "./skill-prompt";
 import { selfImproveTick } from "./fns/_self_improve";
 import { runSubJob } from "./cron-heartbeat";
 import { recordCall } from "./metrics";
@@ -41,6 +42,12 @@ const inflight = new Map<string, Promise<CleanResult>>();
 //     payload and must not gain a marker).
 //   • MAX_ARG_BYTES / MAX_ARG_DEPTH — reject a pathological args blob before it
 //     reaches normalizeArgs/run (memory/CPU DoS, or stack blowup on deep nesting).
+// The single MCP prompt this server advertises: the sux routing SKILL, embedded
+// from .claude/skills/sux/SKILL.md at build time. Reachable via prompts/get on any
+// client — mobile/Cowork/Desktop remote connectors carry prompts but not the local
+// plugin skill, so this is how they get routing guidance. Takes no arguments.
+const SUX_PROMPT = { name: "sux", title: "sux routing", description: SUX_SKILL_DESCRIPTION, arguments: [] as const };
+
 export const FN_DEADLINE_MS = 60_000;
 const MAX_OUTPUT_CHARS = 1_000_000;
 const MAX_ARG_BYTES = 256_000;
@@ -139,7 +146,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			id,
 			result: {
 				protocolVersion: "2025-06-18",
-				capabilities: { tools: { listChanged: false } },
+				capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
 				serverInfo: { name: "research-tools", version: "0.1.0" },
 			},
 		});
@@ -150,6 +157,24 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// name or via the `fn` escape) and discoverable (`sux` map) — the list is just
 		// legible instead of ~95 tools deep.
 		return sseResponse({ jsonrpc: "2.0", id, result: { tools: frontToolList(FUNCTIONS) } });
+	}
+	if (method === "prompts/list") {
+		// One prompt: the sux routing SKILL. No pagination (single entry, no cursor).
+		return sseResponse({ jsonrpc: "2.0", id, result: { prompts: [SUX_PROMPT] } });
+	}
+	if (method === "prompts/get") {
+		const name = rpc?.params?.name ?? "";
+		if (name !== SUX_PROMPT.name) {
+			return sseResponse({ jsonrpc: "2.0", id, error: { code: -32602, message: `unknown prompt: ${name}` } });
+		}
+		return sseResponse({
+			jsonrpc: "2.0",
+			id,
+			result: {
+				description: SUX_PROMPT.description,
+				messages: [{ role: "user", content: { type: "text", text: SUX_SKILL_PROMPT } }],
+			},
+		});
 	}
 	if (method === "tools/call") {
 		let name = rpc?.params?.name ?? "";

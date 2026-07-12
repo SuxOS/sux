@@ -18,6 +18,7 @@
     "wiki": "node scripts/gen-wiki.mjs",
     "check:wiki": "node scripts/gen-wiki.mjs --check",
     "gen:index": "node sux/scripts/gen-index.mjs",
+    "gen:skill": "node sux/scripts/gen-skill-prompt.mjs",
     "build:node": "node sux/node/build-deploy.mjs",
     "check:node": "node sux/node/build-deploy.mjs --check",
     "bench:costs": "node sux/scripts/benchmark-costs.mjs",
