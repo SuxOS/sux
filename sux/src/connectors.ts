@@ -13,26 +13,39 @@ export type Connector = {
 	plugin: string;
 	/** One line for the discovery manifest. */
 	summary: string;
+	/**
+	 * Whether this connector surfaces in the default discovery manifest. Unset ⇒ true.
+	 * The vault/mail/files personal namespaces are retired from the default `/mcp/connectors`
+	 * view (front-door declutter) but stay routed + OAuth-authorized (CONNECTOR_PATHS is
+	 * never filtered) and remain discoverable via the explicit `?all=1` opt-in — hidden
+	 * from the passive view, one deliberate call away, mirroring the `fn` escape hatch.
+	 */
+	advertised?: boolean;
 };
 
 export const CONNECTORS: Connector[] = [
 	{ path: "/mcp", name: "sux", plugin: "sux-router", summary: "Universal research + data tools (web, papers, shopping, transforms, pipe/batch)." },
-	{ path: "/vault/mcp", name: "vault", plugin: "sux-vault", summary: "Obsidian knowledge base — read/write/edit/capture + daily notes over the git store." },
-	{ path: "/mail/mcp", name: "mail", plugin: "sux-mail", summary: "Fastmail/JMAP — search/read/thread/send/draft/archive + masked-email + raw jmap." },
-	{ path: "/files/mcp", name: "files", plugin: "sux-files", summary: "Dropbox blobs — app-folder workspace (Mode A) + gated whole-account ops (Mode B)." },
+	{ path: "/vault/mcp", name: "vault", plugin: "sux-vault", summary: "Obsidian knowledge base — read/write/edit/capture + daily notes over the git store.", advertised: false },
+	{ path: "/mail/mcp", name: "mail", plugin: "sux-mail", summary: "Fastmail/JMAP — search/read/thread/send/draft/archive + masked-email + raw jmap.", advertised: false },
+	{ path: "/files/mcp", name: "files", plugin: "sux-files", summary: "Dropbox blobs — app-folder workspace (Mode A) + gated whole-account ops (Mode B).", advertised: false },
 ];
 
 /** The connector paths — the single source the OAuth apiRoute + the per-path dispatch use. */
 export const CONNECTOR_PATHS: string[] = CONNECTORS.map((c) => c.path);
 
-/** Shape the runtime discovery manifest from live tool counts. Pure — the caller supplies counts. */
-export function buildManifest(origin: string, counts: Record<string, number>): {
+/**
+ * Shape the runtime discovery manifest from live tool counts. Pure — the caller supplies counts.
+ * By default only advertised connectors surface (the personal namespaces are retired from the
+ * passive view); pass `{ all: true }` to include the dormant-but-reachable ones on purpose.
+ */
+export function buildManifest(origin: string, counts: Record<string, number>, opts: { all?: boolean } = {}): {
 	name: string;
 	connectors: Array<{ name: string; plugin: string; summary: string; url: string; tools: number | null }>;
 } {
+	const shown = opts.all ? CONNECTORS : CONNECTORS.filter((c) => c.advertised !== false);
 	return {
 		name: "sux",
-		connectors: CONNECTORS.map((c) => ({
+		connectors: shown.map((c) => ({
 			name: c.name,
 			plugin: c.plugin,
 			summary: c.summary,

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Fn, RtEnv } from "./registry";
 import { cacheKey, extractRpcFromText, type JsonRpc } from "./mcp-util";
 import { FUNCTIONS } from "./fns";
-import { handleRpc, oauthErrorResponse } from "./index";
+import { handleRpc, oauthErrorResponse, rtServer } from "./index";
 
 // End-to-end coverage of the REAL tools/call dispatch chain in index.ts
 // (parseJsonRpc → findFn → normalizeArgs/raw bypass → run → normalizeText →
@@ -534,5 +534,56 @@ describe("summarize-before-return meta-arg", () => {
 		} finally {
 			FUNCTIONS.splice(FUNCTIONS.indexOf(probe), 1);
 		}
+	});
+});
+
+// The runtime discovery manifest + the dormant personal-namespace routes live in
+// rtServer.fetch (upstream of handleRpc), so drive them through the gate directly.
+describe("rtServer.fetch — connector manifest + dormant namespace routes", () => {
+	const gateCtx = () => ({ waitUntil: () => {}, props: { login: ALLOWED } }) as unknown as Parameters<typeof rtServer.fetch>[2];
+
+	type Manifest = { name: string; connectors: Array<{ name: string; url: string; tools: number | null }> };
+
+	it("GET /mcp/connectors default view surfaces only the advertised sux-router connector", async () => {
+		const { kv } = makeKv();
+		const res = await rtServer.fetch(new Request("https://sux.example.dev/mcp/connectors"), makeEnv(kv), gateCtx());
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Manifest;
+		expect(body.name).toBe("sux");
+		expect(body.connectors).toHaveLength(1);
+		expect(body.connectors[0]).toMatchObject({ name: "sux", url: "https://sux.example.dev/mcp" });
+		expect(typeof body.connectors[0].tools).toBe("number"); // live count folded in
+		expect(body.connectors.find((c) => c.name === "vault")).toBeUndefined();
+	});
+
+	it("GET /mcp/connectors?all=1 surfaces all four connectors with live per-namespace counts", async () => {
+		const { kv } = makeKv();
+		const res = await rtServer.fetch(new Request("https://sux.example.dev/mcp/connectors?all=1"), makeEnv(kv), gateCtx());
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Manifest;
+		const names = body.connectors.map((c) => c.name);
+		expect(names).toEqual(expect.arrayContaining(["sux", "vault", "mail", "files"]));
+		expect(body.connectors).toHaveLength(4);
+		for (const c of body.connectors) expect(typeof c.tools).toBe("number");
+	});
+
+	// Regression guard: retiring the connectors from the manifest must NOT change routing —
+	// each personal namespace still reaches its own handler (dormant/reachable, not broken).
+	it.each([
+		["/vault/mcp", "vault"],
+		["/vault/mcp/", "vault"],
+		["/mail/mcp", "mail"],
+		["/files/mcp", "files"],
+	])("POST initialize to %s still routes to the %s handler", async (path, name) => {
+		const { kv } = makeKv();
+		const req = new Request(`https://sux.example.dev${path}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+		});
+		const res = await rtServer.fetch(req, makeEnv(kv), gateCtx());
+		expect(res.status).toBe(200);
+		const rpc = extractRpcFromText(await res.text(), res.headers.get("content-type"));
+		expect(rpc?.result.serverInfo.name).toBe(name);
 	});
 });

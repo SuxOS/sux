@@ -154,6 +154,15 @@ describe("registry conformance", () => {
 		for (const v of FRONT_VERBS) expect(names, `FRONT_VERBS references \`${v}\``).toContain(v);
 	});
 
+	it("every registered fn is either a front verb or reachable by name through `fn` (surface is exhaustive)", () => {
+		// The front-door hides ~85 leaves from tools/list but keeps them one call away:
+		// a leaf that is not a front verb must still resolve through the `fn` escape.
+		for (const f of FUNCTIONS) {
+			if (FRONT_VERBS.has(f.name)) continue;
+			expect(unwrapFnCall({ name: "fn", arguments: { name: f.name } }, FUNCTIONS), `\`${f.name}\` is unreachable via fn`).toEqual({ name: f.name, args: {} });
+		}
+	});
+
 	it("unwrapFnCall resolves fn({name,args}) to the real leaf, and only for a valid inner name", () => {
 		// Valid inner leaf → unwrapped, args passed through.
 		expect(unwrapFnCall({ name: "fn", arguments: { name: "hash", args: { text: "x" } } }, FUNCTIONS)).toEqual({ name: "hash", args: { text: "x" } });

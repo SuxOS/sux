@@ -373,12 +373,16 @@ export const rtServer = {
 		// startsWith('/vault/mcp'), so an exact-only check would let '/vault/mcp/'
 		// silently fall through to the research-tools server (wrong tools, authed).
 		const pathname = new URL(request.url).pathname;
-		// Runtime connector discovery: GET /mcp/connectors self-describes every live
-		// namespace + its tool count, from the one CONNECTORS source. Authenticated
-		// (post-gate) — it exposes namespace names + counts, never secrets or tool args.
+		// Runtime connector discovery: GET /mcp/connectors self-describes the advertised
+		// connector(s) + tool counts from the one CONNECTORS source (the personal
+		// namespaces are retired from this default view but stay routed below; `?all=1`
+		// surfaces them on purpose). Authenticated (post-gate) — exposes namespace names
+		// + counts, never secrets or tool args.
 		if (isBodyless && (pathname === "/mcp/connectors" || pathname === "/connectors")) {
+			const url = new URL(request.url);
+			const all = url.searchParams.get("all") === "1";
 			const counts = await connectorCounts();
-			return new Response(JSON.stringify(buildManifest(new URL(request.url).origin, counts), null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
+			return new Response(JSON.stringify(buildManifest(url.origin, counts, { all }), null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
 		}
 		if (pathname === "/vault/mcp" || pathname.startsWith("/vault/mcp/")) {
 			const { handleVaultRpc } = await import("./vault-mcp");
