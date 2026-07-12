@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FUNCTIONS } from "./fns/index";
-import { FAIL_CODES, type FailCode, failWith, type RtEnv, type ToolResult } from "./registry";
+import { FAIL_CODES, type FailCode, failWith, type RtEnv, TOOL_ANNOTATIONS, toolList, type ToolResult } from "./registry";
 
 // Inert binding stubs: {} args should fail validation inside each fn before any
 // binding is touched, so these never need to do real work.
@@ -94,6 +94,44 @@ describe("registry conformance", () => {
 			expect(FAIL_CODES).toContain(r.errorCode);
 			expect(r.content[0].text.startsWith(`[${code}] `), `${name} text carries the [code] prefix`).toBe(true);
 		}
+	});
+
+	it("toolList carries name/description/inputSchema and threads annotations when present", () => {
+		const tools = toolList(FUNCTIONS);
+		expect(tools.length).toBe(FUNCTIONS.length);
+		const byName = new Map(tools.map((t) => [t.name, t]));
+		for (const t of tools) {
+			expect(typeof t.name).toBe("string");
+			expect(typeof t.description).toBe("string");
+			expect(t.inputSchema).toBeTypeOf("object");
+		}
+		// A web-reaching read-only tool advertises both hints…
+		expect(byName.get("search")?.annotations).toEqual({ readOnlyHint: true, openWorldHint: true });
+		// …a mutating store advertises destructive+non-idempotent…
+		expect(byName.get("store")?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false });
+		// …a per-fn override wins over the central map (sux self-declares)…
+		expect(byName.get("sux")?.annotations).toEqual({ readOnlyHint: true, idempotentHint: true, openWorldHint: false });
+		// …and an unclassified/mixed tool omits the key entirely (no empty object).
+		expect("annotations" in (byName.get("jmap") as object)).toBe(false);
+	});
+
+	it("every annotation hint is a boolean over the four known keys, and destructive⇒not read-only", () => {
+		const allowed = new Set(["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"]);
+		for (const t of toolList(FUNCTIONS)) {
+			const a = t.annotations;
+			if (!a) continue;
+			for (const [k, v] of Object.entries(a)) {
+				expect(allowed.has(k), `${t.name}: unknown annotation ${k}`).toBe(true);
+				expect(typeof v, `${t.name}.${k}`).toBe("boolean");
+			}
+			// destructiveHint is only meaningful when the tool is not read-only.
+			if (a.destructiveHint) expect(a.readOnlyHint, `${t.name} destructive but read-only`).not.toBe(true);
+		}
+	});
+
+	it("the central annotation map only references registered fns", () => {
+		const names = new Set(FUNCTIONS.map((f) => f.name));
+		for (const key of Object.keys(TOOL_ANNOTATIONS)) expect(names, `TOOL_ANNOTATIONS references \`${key}\``).toContain(key);
 	});
 
 	it("flags: kv_* are not cacheable; hash/encode/compress are raw", () => {

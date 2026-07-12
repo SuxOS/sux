@@ -170,6 +170,26 @@ export const fail = (text: string): ToolResult => ({ content: [{ type: "text", t
  */
 export const failWith = (code: FailCode, text: string): ToolResult => ({ content: [{ type: "text", text: `[${code}] ${text}` }], isError: true, errorCode: code });
 
+/**
+ * MCP tool behavior hints (2025-06-18 tool `annotations`). All optional, all
+ * advisory — a client MAY use them to schedule/guard, but MUST NOT trust them for
+ * security (a server can lie). We emit them so a client can act without prose:
+ *   readOnlyHint    — the tool does not modify its environment (safe to run/retry,
+ *                     and Claude Code dispatches read-only tools concurrently).
+ *   destructiveHint — only meaningful when readOnly is false: the update may be
+ *                     destructive (overwrite/delete), so drive a confirm prompt.
+ *   idempotentHint  — only meaningful when readOnly is false: repeating the call
+ *                     with the same args has no additional effect.
+ *   openWorldHint   — the tool reaches external entities (the live web / third-party
+ *                     APIs), so results are non-deterministic and network-dependent.
+ */
+export type ToolAnnotations = {
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
+};
+
 export type Fn = {
 	name: string;
 	description: string;
@@ -182,11 +202,68 @@ export type Fn = {
 	ttl?: number;
 
 	raw?: boolean;
+
+	// Which advertised surface this fn belongs to: "front" = one of the ~10 root
+	// verbs meant to be the primary tools/list surface; "leaf" = a specific
+	// capability reached directly or via the `sux` capability map. Unset = leaf by
+	// default. Dormant metadata for now — the front-door PR is what actually hides
+	// leaves; here it only rides on the tool so that later pass has it to filter on.
+	surface?: "front" | "leaf";
+
+	// Per-fn override for the MCP tool annotations emitted by toolList. When unset,
+	// toolList falls back to the central TOOL_ANNOTATIONS map (keyed by name), so a
+	// fn can either self-declare here or be tagged in one place — whichever reads
+	// better at the fn's own site.
+	annotations?: ToolAnnotations;
+
 	run: (env: RtEnv, args: any) => Promise<ToolResult>;
 };
 
-export function toolList(fns: Fn[]): Array<{ name: string; description: string; inputSchema: unknown }> {
-	return fns.map((f) => ({ name: f.name, description: f.description, inputSchema: f.inputSchema }));
+// Central behavior-hint map, keyed by fn name. A fn's own `annotations` field wins;
+// this is the default tagging so the obvious buckets are declared in one auditable
+// place instead of sprinkled across ~95 files. Only the clearly-classifiable fns are
+// listed — a mixed read/write namespace tool (jmap/obsidian/todoist) or an ambiguous
+// one stays unannotated rather than claim a hint it can't honor.
+const READ_WEB: ToolAnnotations = { readOnlyHint: true, openWorldHint: true };
+const READ_LOCAL: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
+const WRITE_DESTRUCTIVE: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
+
+export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
+	// Read-only + reaches the live web / third-party APIs (search, fetch, scrape,
+	// research DBs, retail lookups, geo/people/crypto/media reads, recall/oracle).
+	...Object.fromEntries(
+		[
+			"search", "web_search", "tavily", "scrape", "render", "proxy", "geo_fetch", "batch_fetch", "crawl",
+			"wayback", "redirects", "robots", "sitemap", "feed", "subtitles",
+			"arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar",
+			"shop", "product_search", "amazon", "walmart", "costco", "homedepot", "lowes", "kroger", "bestbuy", "ebay", "ace", "winco", "weekly_ad",
+			"places", "people", "people_finder", "coingecko", "youtube", "watch", "linkedin", "facebook",
+			"recall", "oracle",
+		].map((n) => [n, READ_WEB]),
+	),
+	// Read-only + purely local: parse/extract over provided input, AI text transforms,
+	// format converters, and the read side of KV. No environment mutation, no network.
+	...Object.fromEntries(
+		[
+			"extract", "readability", "tables", "metadata", "contacts", "entities", "select", "grep",
+			"summarize", "translate", "classify", "redact", "ocr",
+			"markdown", "html", "csv", "json", "xml", "yaml", "encode", "hash", "compress", "archive", "pack", "declutter", "fontcase",
+			"kv_get", "kv_list",
+		].map((n) => [n, READ_LOCAL]),
+	),
+	// Mutating: content stores + capture. Marked destructive so a client drives a
+	// confirm prompt (store/dropbox/kv_delete can remove data; kv_put overwrites;
+	// ingest writes new notes/blobs into the vault).
+	...Object.fromEntries(["store", "ingest", "dropbox", "kv_put", "kv_delete"].map((n) => [n, WRITE_DESTRUCTIVE])),
+};
+
+export function toolList(fns: Fn[]): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations }> {
+	return fns.map((f) => {
+		const annotations = f.annotations ?? TOOL_ANNOTATIONS[f.name];
+		return annotations
+			? { name: f.name, description: f.description, inputSchema: f.inputSchema, annotations }
+			: { name: f.name, description: f.description, inputSchema: f.inputSchema };
+	});
 }
 
 export function findFn(fns: Fn[], name: string): Fn | undefined {
