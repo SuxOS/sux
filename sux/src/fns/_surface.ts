@@ -50,16 +50,16 @@ export const DOMAINS: DomainSpec[] = [
 	},
 	{
 		key: "storage",
-		blurb: "R2 content-addressed blob store, KV, and the Dropbox app-folder.",
-		leaves: ["store", "kv_get", "kv_put", "kv_list", "kv_delete", "dropbox"],
+		blurb: "R2 content-addressed blob store, KV, the Dropbox app-folder, and the `files` namespace verb (whole-Dropbox on the one /mcp connector).",
+		leaves: ["store", "kv_get", "kv_put", "kv_list", "kv_delete", "dropbox", "files"],
 	},
 	{
 		key: "recall",
-		blurb: "Memory: capture into the vault (ingest), then recall/oracle synthesize a cited answer across your stores.",
-		leaves: ["obsidian", "ingest", "recall", "oracle"],
+		blurb: "Memory: capture into the vault (ingest / the `vault` namespace verb), then recall/oracle synthesize a cited answer across your stores.",
+		leaves: ["obsidian", "vault", "ingest", "recall", "oracle"],
 	},
-	{ key: "tasks", blurb: "Todoist tasks & projects.", leaves: ["todoist"] },
-	{ key: "mail", blurb: "Fastmail over the raw JMAP conduit (byte-exact methodCalls + auth + gates).", leaves: ["jmap"] },
+	{ key: "tasks", blurb: "Todoist tasks & projects, plus calendar + tasks via the `cal` namespace verb (Fastmail CalDAV).", leaves: ["todoist", "cal"] },
+	{ key: "mail", blurb: "Fastmail over the raw JMAP conduit (byte-exact methodCalls + auth + gates), plus the `mail` + `contact` namespace verbs on the one /mcp connector.", leaves: ["jmap", "mail", "contact"] },
 	{ key: "compose", blurb: "Server-side combinators — map+reduce (batch), parallel fetch (batch_fetch), and {{prev}}-piping (pipe).", leaves: ["batch", "batch_fetch", "pipe"] },
 	{ key: "meta", blurb: "This map (sux), the `fn` escape hatch (call any leaf by name), preferences, feedback issues, and self-diagnostics.", leaves: ["sux", "fn", "preferences", "issue", "selftest"] },
 ];

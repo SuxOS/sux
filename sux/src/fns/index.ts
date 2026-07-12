@@ -52,8 +52,10 @@ import { advise } from "./advise";
 import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { bestbuy } from "./bestbuy";
+import { cal } from "./cal";
 import { citation } from "./citation";
 import { coingecko } from "./coingecko";
+import { contact } from "./contact";
 import { controld } from "./controld";
 import { costco } from "./costco";
 import { crossref } from "./crossref";
@@ -62,6 +64,7 @@ import { declutter } from "./declutter";
 import { dropbox } from "./dropbox";
 import { ebay } from "./ebay";
 import { facebook } from "./facebook";
+import { files } from "./files";
 import { fillable } from "./fillable";
 import { find_similar } from "./find_similar";
 import { fontcase } from "./fontcase";
@@ -74,6 +77,7 @@ import { kroger } from "./kroger";
 import { learn } from "./learn";
 import { linkedin } from "./linkedin";
 import { lowes } from "./lowes";
+import { mail } from "./mail";
 import { mail_triage } from "./mail_triage";
 import { markdown } from "./markdown";
 import { uw } from "./uw";
@@ -99,6 +103,7 @@ import { sux } from "./sux";
 import { tailscale } from "./tailscale";
 import { tavily } from "./tavily";
 import { todoist } from "./todoist";
+import { vault } from "./vault";
 import { voice } from "./voice";
 import { walmart } from "./walmart";
 import { watch } from "./watch";
@@ -157,8 +162,10 @@ export const FUNCTIONS: Fn[] = [
 	amazon,
 	arxiv,
 	bestbuy,
+	cal,
 	citation,
 	coingecko,
+	contact,
 	controld,
 	costco,
 	crossref,
@@ -167,6 +174,7 @@ export const FUNCTIONS: Fn[] = [
 	dropbox,
 	ebay,
 	facebook,
+	files,
 	fillable,
 	find_similar,
 	fontcase,
@@ -179,6 +187,7 @@ export const FUNCTIONS: Fn[] = [
 	learn,
 	linkedin,
 	lowes,
+	mail,
 	mail_triage,
 	markdown,
 	uw,
@@ -204,6 +213,7 @@ export const FUNCTIONS: Fn[] = [
 	tailscale,
 	tavily,
 	todoist,
+	vault,
 	voice,
 	walmart,
 	watch,
