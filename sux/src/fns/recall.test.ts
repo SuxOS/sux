@@ -121,6 +121,37 @@ describe("recall", () => {
 		expect(out.sources.vault).toBe("1 hit(s)"); // vault contributed rather than being silently dropped
 	});
 
+	// A Map-backed OAUTH_KV seeded with a taught example, plus an embed-aware AI.run so the
+	// `learned` source (fromLearned → listExamples + embedOne + kNN) can be exercised.
+	function learnedEnv(examples: Array<{ id: string; label: string; input: string; embedding: number[] }>, queryVec: number[]) {
+		const store = new Map<string, string>();
+		for (const e of examples) store.set(`sux:learn:example:${e.id}`, JSON.stringify({ ...e, batch: e.id, ts: 1 }));
+		const kv = {
+			get: vi.fn(async (k: string) => (store.has(k) ? store.get(k)! : null)),
+			put: vi.fn(async (k: string, v: string) => void store.set(k, v)),
+			delete: vi.fn(async (k: string) => void store.delete(k)),
+			list: vi.fn(async ({ prefix }: { prefix?: string } = {}) => ({ keys: [...store.keys()].filter((k) => !prefix || k.startsWith(prefix)).map((name) => ({ name })), list_complete: true as const })),
+		};
+		// AI.run answers embeddings ({data}) for the embed model and synthesis ({response}) for text.
+		const run = vi.fn(async (model: string, inputs: any) => (model.includes("bge") ? { data: (inputs.text as string[]).map(() => queryVec) } : { response: "From what you taught me [learned:vip]." }));
+		return { env: { AI: { run }, OAUTH_KV: kv } as any, run };
+	}
+
+	it("adds `learned` as a 5th source — kNN over the taught set surfaces the nearest label, cited [learned:…]", async () => {
+		const { env } = learnedEnv([{ id: "x1", label: "vip", input: "escalate anything from the board", embedding: [1, 0, 0] }], [1, 0, 0]);
+		const out = parse(await recall.run(env, { question: "how do I handle board mail?", sources: ["learned"] }));
+		expect(out.sources.learned).toBe("1 hit(s)");
+		expect(out.citations).toEqual(expect.arrayContaining(["learned:vip"]));
+		expect(out.answer).toContain("learned:vip");
+	});
+
+	it("`learned` degrades to 'no matches' (not 'unavailable') when nothing has been taught", async () => {
+		// No OAUTH_KV → listExamples returns [] → the source degrades quietly, mirroring fromFiles-unconfigured.
+		const out = parse(await recall.run(env(), { question: "anything?", sources: ["learned", "vault"] }));
+		expect(out.sources.learned).toBe("no matches");
+		expect(out.sources.vault).toBe("1 hit(s)"); // the other source still answers
+	});
+
 	it("uses the REMOTE backend for vault search when OBSIDIAN_REMOTE_URL/KEY are set (git can't search a private repo)", async () => {
 		const backends: string[] = [];
 		obs.mockImplementation(async (_e: any, a: any) => {

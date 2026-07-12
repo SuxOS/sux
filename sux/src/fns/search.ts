@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { kagiTool } from "../kagi";
+import { appendOnSearch } from "./_kb";
 
 const SCOPE_ARGS = ["include_domains", "exclude_domains", "time_relative", "after", "before", "file_type", "lens_id"] as const;
 
@@ -24,6 +25,7 @@ export const search: Fn = {
 			file_type: { type: "string", description: "e.g. pdf." },
 			lens_id: { type: "string" },
 			proxy: { type: "boolean", description: "Route the query through the Tailscale residential proxy (direct fallback if the node is down).", default: false },
+			remember: { type: "boolean", description: "Save-on-search: fire-and-forget mirror this query + a result snippet into the vault KB (git-versioned). Best-effort and no-op if the vault is unconfigured. Default false.", default: false },
 		},
 	},
 	cacheable: true,
@@ -42,6 +44,13 @@ export const search: Fn = {
 		const result = await kagiTool(env, "kagi_search_fetch", kagiArgs, args?.proxy === true ? "proxy" : "auto");
 		if (!result || result.isError) return fail(`Search failed for "${query}".`);
 		const text = result.content?.[0]?.text ?? "";
+
+		// Save-on-search: OFF by default (dormant). Only when the caller opts in AND the
+		// search actually returned something do we best-effort mirror it into the vault KB
+		// — fire-and-forget, never failing or delaying the search on a vault-write error.
+		if (args?.remember === true && text && text !== "(no results)") {
+			void appendOnSearch(env, query, text).catch(() => {});
+		}
 		return ok(text || "(no results)");
 	},
 };
