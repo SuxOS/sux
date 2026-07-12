@@ -115,6 +115,34 @@ describe("vault MCP server (/vault/mcp)", () => {
 		expect(putBody).toContain("# Log\nnew entry"); // section body replaced, heading kept
 	});
 
+	it("vault_patch PUTs the read-time sha — a concurrent write yields a 409, not a silent lost update", async () => {
+		let putSha: string | undefined;
+		routes.handler = (url, init) => {
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (init?.method === "PUT") {
+				putSha = JSON.parse(init.body).sha;
+				return new Response(JSON.stringify({ message: "does not match" }), { status: 409 }); // note moved under us
+			}
+			if (path === "P/a.md") return new Response(JSON.stringify({ content: b64("---\ntype: project\n---\n# Log\nold"), sha: "read-sha" }), { status: 200 });
+			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+		};
+		const out = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_patch", arguments: { path: "P/a.md", heading: "Log", content: "new" } })));
+		expect(putSha).toBe("read-sha"); // the sha threaded from the read, not a re-fetched HEAD-at-write
+		expect(out.result.isError).toBe(true);
+		expect(out.result.content[0].text).toMatch(/changed since read/);
+	});
+
+	it("codes the obvious error buckets via failWith ([bad_input]/[not_found])", async () => {
+		routes.handler = () => new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+		const bad = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_query", arguments: {} })));
+		expect(bad.result.isError).toBe(true);
+		expect(bad.result.content[0].text).toMatch(/^\[bad_input\]/); // missing field/filter
+		const gone = await parse(await handleVaultRpc(ENV, CTX, rpc("tools/call", { name: "vault_patch", arguments: { path: "missing.md", heading: "H", content: "x" } })));
+		expect(gone.result.isError).toBe(true);
+		expect(gone.result.content[0].text).toMatch(/^\[not_found\]/); // patch a note that isn't there
+	});
+
 	it("vault_daily_append targets today's daily note", async () => {
 		let putPath = "";
 		routes.handler = (url, init) => {
