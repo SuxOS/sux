@@ -1,6 +1,8 @@
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { smartFetch } from "../proxy";
+import { looksBlocked } from "../retail-render";
 import { unlockerRender } from "../unlocker-render";
+import { decodeEntities } from "./_markup";
 import { normalizeMoney, type RetailProduct, type RetailResult } from "./_retail";
 import { errMsg } from "./_util";
 
@@ -24,14 +26,7 @@ function absUrl(href: string): string {
 
 /** Strip tags/entities to trimmed, whitespace-collapsed text. */
 function stripText(html: string): string {
-	return html
-		.replace(/<[^>]+>/g, " ")
-		.replace(/&nbsp;/g, " ")
-		.replace(/&amp;/g, "&")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&#0*39;|&#x0*27;|&apos;/gi, "'")
+	return decodeEntities(html.replace(/<[^>]+>/g, " "))
 		.replace(/\s+/g, " ")
 		.trim();
 }
@@ -211,7 +206,7 @@ export const costco: Fn = {
 
 		let products = extractProducts(html).slice(0, limit);
 		if (!products.length) {
-			const blocked = /Access Denied|sec-cpt/i.test(html) || html.trim().length < 1000;
+			const blocked = looksBlocked(html, 1000);
 			if (blocked) {
 				// Akamai blocked the residential proxy fetch — escalate to the paid unlocker.
 				// No-ops instantly when UNLOCKER_API_* is unset, falling straight through to

@@ -1,5 +1,6 @@
-import { retailRender } from "../retail-render";
+import { looksBlocked, retailRender } from "../retail-render";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
+import { decodeEntities as decodeMarkupEntities } from "./_markup";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Ace Hardware runs on the Kibo/Mozu commerce platform and exposes no public
@@ -15,19 +16,10 @@ import { normalizeMoney, type RetailProduct } from "./_retail";
 
 const NO_PRODUCTS_MSG = "ace: no products extracted (layout change).";
 
-/** Decode HTML entities that show up in extracted title text (best-effort). */
+/** Decode HTML entities that show up in extracted title text (best-effort), then
+ * trim the lead/trail space a stripped-tag join (`.replace(/<[^>]+>/g, " ")`) leaves. */
 function decodeEntities(s: string): string {
-	return s
-		.replace(/&amp;/g, "&")
-		.replace(/&#38;/g, "&")
-		.replace(/&quot;/g, '"')
-		.replace(/&#34;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&apos;/g, "'")
-		.replace(/&nbsp;/g, " ")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.trim();
+	return decodeMarkupEntities(s).trim();
 }
 
 /**
@@ -89,16 +81,11 @@ function fromTiles(html: string): RetailProduct[] {
 	return out;
 }
 
-/**
- * Distinguish a genuine block from a mere layout change when zero products come
- * back. A tiny body or an explicit block/verification phrase means we were walled;
- * anything else is treated as a layout drift. NOTE: the string "recaptcha" alone is
- * NOT a block — Ace runs an invisible reCAPTCHA v3 in the background that scores but
- * never walls, so we deliberately do not key off it.
- */
-function looksBlocked(body: string): boolean {
-	return body.length < 1000 || /Access Denied|unusual activity|please verify you are a human/i.test(body);
-}
+// Zero-products block/layout-change disambiguation delegates to retail-render's
+// canonical looksBlocked (opted into its byte-length check — a tiny body at this
+// point, after extraction already found nothing, is a strong wall/empty-shell
+// signal). NOTE: "recaptcha" alone is NOT a block marker — Ace runs an invisible
+// reCAPTCHA v3 in the background that scores but never walls the page.
 
 export const ace: Fn = {
 	name: "ace",
@@ -136,7 +123,7 @@ export const ace: Fn = {
 		products = products.filter((p) => p.id && p.title).slice(0, limit);
 		if (products.length === 0) {
 			// No products: decide block vs. layout change so the caller gets a real hint.
-			if (looksBlocked(r.body)) return failWith("blocked", "ace: blocked (challenge wall or access denied).");
+			if (looksBlocked(r.body, 1000)) return failWith("blocked", "ace: blocked (challenge wall or access denied).");
 			return failWith("layout_change", NO_PRODUCTS_MSG);
 		}
 		return ok(JSON.stringify({ retailer: "ace", action: "search", count: products.length, products }, null, 2));

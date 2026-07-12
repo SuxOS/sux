@@ -1,5 +1,6 @@
-import { retailRender } from "../retail-render";
+import { looksBlocked, retailRender } from "../retail-render";
 import { type Fn, fail, ok, type RtEnv } from "../registry";
+import { decodeEntities as decodeMarkupEntities } from "./_markup";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Lowe's has no public product API and serves its catalog from a client-side React
@@ -18,30 +19,15 @@ const NO_PRODUCTS_MSG = "lowes: no products extracted (layout change).";
 // bot wall or an empty shell — signals the caller to retry or adjust the backend.
 const BLOCKED_MSG = "lowes: no products — page looks blocked or empty (try again or a different render/backend).";
 
-/** Decode HTML entities that show up in extracted title text (best-effort). */
+/** Decode HTML entities that show up in extracted title text (best-effort), then
+ * trim the lead/trail space a stripped-tag join (`.replace(/<[^>]+>/g, " ")`) leaves. */
 function decodeEntities(s: string): string {
-	return s
-		.replace(/&amp;/g, "&")
-		.replace(/&#38;/g, "&")
-		.replace(/&quot;/g, '"')
-		.replace(/&#34;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&apos;/g, "'")
-		.replace(/&nbsp;/g, " ")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.trim();
+	return decodeMarkupEntities(s).trim();
 }
 
-/**
- * Detect an obviously-unusable render: a bot wall ("Access Denied" / an Akamai
- * "Reference #" error / an "unusual traffic" interstitial) or a near-empty shell
- * (< 1000 bytes). Returns true so the caller can emit the blocked hint instead of
- * the generic layout-change message.
- */
-function looksBlocked(body: string): boolean {
-	return body.length < 1000 || /Access Denied|Reference #|unusual traffic/i.test(body);
-}
+// Zero-products block/layout-change disambiguation delegates to retail-render's
+// canonical looksBlocked (opted into its byte-length check — a bot wall or an
+// empty shell here reads as < 1000 bytes just as reliably as it did locally).
 
 /**
  * Try an embedded state blob first: Lowe's inlines product records inside `<script>`
@@ -209,7 +195,7 @@ export const lowes: Fn = {
 			if (!r.ok) return fail(`lowes: blocked or render failed — ${r.error}`);
 			// A product must at least carry a title or a price to be worth returning.
 			const products = fromProductPage(r.body, itemId).filter((p) => p.id && (p.title || p.price)).slice(0, limit);
-			if (products.length === 0) return fail(looksBlocked(r.body) ? BLOCKED_MSG : NO_PRODUCTS_MSG);
+			if (products.length === 0) return fail(looksBlocked(r.body, 1000) ? BLOCKED_MSG : NO_PRODUCTS_MSG);
 			return ok(JSON.stringify({ retailer: "lowes", action, count: products.length, products }, null, 2));
 		}
 
@@ -230,7 +216,7 @@ export const lowes: Fn = {
 		let products = fromStateBlob(r.body);
 		if (products.length === 0) products = fromAnchors(r.body);
 		products = products.filter((p) => p.id && p.title).slice(0, limit);
-		if (products.length === 0) return fail(looksBlocked(r.body) ? BLOCKED_MSG : NO_PRODUCTS_MSG);
+		if (products.length === 0) return fail(looksBlocked(r.body, 1000) ? BLOCKED_MSG : NO_PRODUCTS_MSG);
 		return ok(JSON.stringify({ retailer: "lowes", action: "search", count: products.length, products }, null, 2));
 	},
 };

@@ -1,5 +1,6 @@
 import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { retailRender } from "../retail-render";
+import { decodeEntities as decodeMarkupEntities } from "./_markup";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Amazon has NO usable free API (the Product Advertising API needs affiliate
@@ -24,19 +25,10 @@ const NO_PRODUCTS_MSG = "amazon: no products extracted (layout change).";
 // challenged rather than merely mis-parsed — report that distinctly.
 const CHALLENGE_MARKERS = ["Robot Check", "Enter the characters you see", "api-services-support"];
 
-/** Decode HTML entities that show up in extracted title text (best-effort). */
+/** Decode HTML entities that show up in extracted title text (best-effort), then
+ * trim the lead/trail space a stripped-tag join (`.replace(/<[^>]+>/g, " ")`) leaves. */
 function decodeEntities(s: string): string {
-	return s
-		.replace(/&amp;/g, "&")
-		.replace(/&#38;/g, "&")
-		.replace(/&quot;/g, '"')
-		.replace(/&#34;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&apos;/g, "'")
-		.replace(/&nbsp;/g, " ")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.trim();
+	return decodeMarkupEntities(s).trim();
 }
 
 /** A valid ASIN is exactly 10 uppercase-alphanumeric chars (Amazon's product id). */
