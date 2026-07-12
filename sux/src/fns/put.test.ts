@@ -134,6 +134,19 @@ describe("put", () => {
 		expect(new TextDecoder().decode(pdfBytes.slice(0, 5))).toBe("%PDF-");
 	});
 
+	it("defaults to a self-expiring handle when no ttl_seconds is given (no permanent handle)", async () => {
+		const env = mkEnv();
+		const r = await put.run(env, { urls: ["https://a.com"] });
+		const out = JSON.parse(r.content[0].text);
+		const uuid = out[0].ref.split("/s/")[1];
+		const handle = JSON.parse(env.OAUTH_KV._m.get(`store:${uuid}`));
+		// Bulk downloads self-expire by default — a permanent handle would accrete storage.
+		expect(typeof handle.expiry).toBe("number");
+		const now = Math.floor(Date.now() / 1000);
+		expect(handle.expiry).toBeGreaterThan(now);
+		expect(handle.expiry).toBeLessThanOrEqual(now + 7 * 24 * 60 * 60 + 5);
+	});
+
 	it("passes ttl_seconds through to a self-expiring handle and rejects a bad ttl", async () => {
 		const env = mkEnv();
 		const r = await put.run(env, { urls: ["https://a.com"], ttl_seconds: 3600 });

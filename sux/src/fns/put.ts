@@ -1,6 +1,6 @@
 import zlib from "node:zlib";
 import { type Fn, fail, ok } from "../registry";
-import { errMsg, FANOUT_BUDGET_MS, fromB64, isHttpUrl, pool, putBlob, toB64 } from "./_util";
+import { type ByteBudget, byteBudget, errMsg, FANOUT_BUDGET_MS, FANOUT_BYTE_BUDGET, FANOUT_STORE_TTL_S, fromB64, isHttpUrl, oj, pool, putBlob, toB64 } from "./_util";
 import { fetchBytes, MAX_STORE_BYTES } from "./batch_fetch";
 import { pdf as pdfFn } from "./pdf";
 
@@ -40,9 +40,15 @@ const pdfKind = (ct: string): "html" | "auto" => (/html/i.test(ct) ? "html" : "a
 /** Download → optional pdf → optional gzip → store, for one URL. Every failure
  * mode (bad URL, fetch throw, oversize, pdf error) is captured per-URL so one bad
  * input never aborts the batch. */
-async function processUrl(env: any, rawUrl: unknown, opts: Opts): Promise<UrlResult> {
+async function processUrl(env: any, rawUrl: unknown, opts: Opts, budget: ByteBudget): Promise<UrlResult> {
 	const url = typeof rawUrl === "string" ? rawUrl : "";
 	if (!isHttpUrl(url)) return { url, error: "not an absolute http(s) URL." };
+	// Reserve the worst-case bytes this item may buffer BEFORE downloading, so N
+	// concurrent downloads can't sum past the isolate memory ceiling (the per-item
+	// MAX_STORE_BYTES cap bounds only one). pdf conversion holds the input, its
+	// base64 copy, and the pdf-lib output at once — reserve extra headroom for it.
+	const reserve = MAX_STORE_BYTES * (opts.pdf ? 3 : 1);
+	await budget.acquire(reserve);
 	try {
 		const got = await fetchBytes(env, url, opts.method);
 		// Oversize aborts before buffering (no OOM) — report it, store nothing.
@@ -72,6 +78,8 @@ async function processUrl(env: any, rawUrl: unknown, opts: Opts): Promise<UrlRes
 		return { url, status: got.status, src_bytes: srcBytes, bytes: bytes.length, content_type: contentType, ref: ref.url, ...(applied.length ? { applied } : {}) };
 	} catch (e) {
 		return { url, error: errMsg(e) };
+	} finally {
+		budget.release(reserve);
 	}
 }
 
@@ -79,7 +87,7 @@ export const put: Fn = {
 	name: "put",
 	description:
 		"Bulk DOWNLOAD-and-shelve: fetch many URLs concurrently via the residential proxy and content-address each into sux's R2 store, returning a compact /s/<uuid> handle per URL instead of dragging the bytes through context. urls: array of absolute http(s) URLs (max 100); method: GET (default). Runs ~8 at a time under a time budget — a wide run near the hard deadline returns the URLs it managed (the rest come back as skipped [timeout] entries) rather than losing everything; per-URL failures and oversize files (>25MB) are isolated. " +
-		"Optional per-file transforms applied before storing: pdf:true converts each download to PDF (HTML/text/images → PDF), gzip:true gzips it (level 9). ttl_seconds sets an ephemeral handle expiry (omit for a permanent handle). " +
+		"Optional per-file transforms applied before storing: pdf:true converts each download to PDF (HTML/text/images → PDF), gzip:true gzips it (level 9). ttl_seconds sets the handle expiry (default 7 days — bulk downloads are staging artifacts that self-expire; pass a larger value to keep them longer, or use `store` for a permanent handle). " +
 		"Returns a JSON array of { url, status, src_bytes, bytes, content_type, ref, applied? } (or { url, error } / { url, oversize } for a skipped one). Composes batch_fetch (download), pdf (convert) and the store — the bulk sibling of `store`.",
 	inputSchema: {
 		type: "object",
@@ -90,7 +98,7 @@ export const put: Fn = {
 			method: { type: "string", default: "GET", description: "HTTP method (default GET)." },
 			pdf: { type: "boolean", default: false, description: "Convert each downloaded file to PDF before storing (HTML/text/images → PDF)." },
 			gzip: { type: "boolean", default: false, description: "Gzip each file (level 9) before storing." },
-			ttl_seconds: { type: "integer", minimum: 1, description: "Optional seconds until each uuid handle self-expires (ephemeral); omit for a permanent handle." },
+			ttl_seconds: { type: "integer", minimum: 1, description: "Seconds until each uuid handle self-expires (default 7 days; pass a larger value to keep longer, or use `store` for a permanent handle)." },
 		},
 	},
 	cacheable: false,
@@ -107,15 +115,21 @@ export const put: Fn = {
 			ttlSeconds = Number(args.ttl_seconds);
 			if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1) return fail("`ttl_seconds` must be a positive integer.");
 		}
-		const opts: Opts = { method: String(args?.method ?? "GET").toUpperCase(), pdf: args?.pdf === true, gzip: args?.gzip === true, ttlSeconds };
+		// Bulk downloads are staging artifacts — default them to a self-expiring handle
+		// (FANOUT_STORE_TTL_S) so a wide run doesn't accrete permanent storage; a caller
+		// wanting longer passes an explicit ttl_seconds.
+		const opts: Opts = { method: String(args?.method ?? "GET").toUpperCase(), pdf: args?.pdf === true, gzip: args?.gzip === true, ttlSeconds: ttlSeconds ?? FANOUT_STORE_TTL_S };
 
 		// Time budget: stop firing new downloads near the hard deadline so a wide run
 		// returns the URLs it stored instead of the whole run being killed with none.
 		const deadline = Date.now() + FANOUT_BUDGET_MS;
-		const raw = await pool(urls, CONCURRENCY, (rawUrl) => processUrl(env, rawUrl, opts), deadline);
+		// Aggregate memory budget shared across the pool: workers reserve/release bytes
+		// so CONCURRENCY downloads can't sum past the isolate ceiling.
+		const budget = byteBudget(FANOUT_BYTE_BUDGET);
+		const raw = await pool(urls, CONCURRENCY, (rawUrl) => processUrl(env, rawUrl, opts, budget), deadline);
 		// Un-run URLs (time budget hit) come back undefined; surface each as skipped so
 		// the array stays 1:1 with `urls` and the caller sees exactly what didn't run.
 		const results: UrlResult[] = raw.map((r, i) => r ?? { url: typeof urls[i] === "string" ? (urls[i] as string) : "", error: "[timeout] skipped: put time budget reached before this URL was processed." });
-		return ok(JSON.stringify(results, null, 2));
+		return ok(oj(results));
 	},
 };
