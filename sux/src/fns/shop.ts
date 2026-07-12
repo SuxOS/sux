@@ -3,13 +3,13 @@ import { type Fn, failWith, type RtEnv } from "../registry";
 // shop is a thin DISPATCHER over the dedicated retail fns — it does NOT scrape.
 // The old SerpAPI / Google Shopping path is dead (SerpAPI's product engine went
 // away and Google Shopping needs JS + anti-bot that isn't worth re-scraping when
-// every major retailer already has a robust, structured sux fn). `store` picks
-// the retailer; shop translates its {query, limit, optional zip} into that fn's
-// args, invokes it through the FUNCTIONS registry, and returns its result
-// verbatim (already normalized to the shared retail shape).
+// every major retailer already has a robust, structured sux fn). The `retailer`
+// arg picks the retail fn; shop translates its {query, limit, optional zip} into
+// that fn's args, invokes it through the FUNCTIONS registry, and returns its
+// result verbatim (already normalized to the shared retail shape).
 
 /**
- * How to route each `store` to a dedicated retail fn: the target fn's name and a
+ * How to route each `retailer` to a dedicated retail fn: the target fn's name and a
  * builder that shapes shop's {term, limit, zip} into that fn's own args. `deals`
  * routes to weekly_ad (Flipp) rather than a single retailer.
  */
@@ -33,22 +33,22 @@ const ROUTES: Record<string, Route> = {
 	deals: { fn: "weekly_ad", args: ({ term, limit, zip }) => ({ term, limit, zip }) },
 };
 
-const STORES = Object.keys(ROUTES);
+const RETAILERS = Object.keys(ROUTES);
 
 export const shop: Fn = {
 	name: "shop",
 	cost: 3,
 	description:
-		"Product search — a router over the dedicated retail fns (no Google Shopping / SerpAPI; that path is dead). Pick a retailer with `store` and pass `query`; shop dispatches to that fn and returns its normalized result. " +
-		`\`store\`: ${STORES.join(", ")} — amazon/walmart/lowes/ace/costco (mac render), home_depot→homedepot (mac render, honors \`zip\`), bestbuy (Best Buy Products API) and ebay (eBay Browse API), kroger and fred_meyer (Kroger API, \`zip\` auto-resolves a store for prices; fred_meyer via the Kroger chain filter), and deals→weekly_ad (Flipp grocery flyer, requires a 5-digit \`zip\`). ` +
+		"Product search — a router over the dedicated retail fns (no Google Shopping / SerpAPI; that path is dead). Pick a retailer with `retailer` and pass `query`; shop dispatches to that fn and returns its normalized result. " +
+		`\`retailer\`: ${RETAILERS.join(", ")} — amazon/walmart/lowes/ace/costco (mac render), home_depot→homedepot (mac render, honors \`zip\`), bestbuy (Best Buy Products API) and ebay (eBay Browse API), kroger and fred_meyer (Kroger API, \`zip\` auto-resolves a store for prices; fred_meyer via the Kroger chain filter), and deals→weekly_ad (Flipp grocery flyer, requires a 5-digit \`zip\`). ` +
 		"`limit` caps results (1..25, default 10). For the full arg surface / product-detail lookups, call the retailer fn directly.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
-		required: ["query", "store"],
+		required: ["query", "retailer"],
 		properties: {
 			query: { type: "string", description: "Product / deal search text." },
-			store: { type: "string", enum: STORES, description: "Which retailer to search (deals = weekly-ad flyer across merchants)." },
+			retailer: { type: "string", enum: RETAILERS, description: "Which retailer to search (deals = weekly-ad flyer across merchants)." },
 			zip: { type: "string", description: "5-digit ZIP — required for `deals`; localizes home_depot; auto-resolves a store (prices) for kroger/fred_meyer." },
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 		},
@@ -58,12 +58,12 @@ export const shop: Fn = {
 	run: async (env: RtEnv, args) => {
 		const query = String(args?.query ?? "").trim();
 		if (!query) return failWith("bad_input", "query is required.");
-		const store = String(args?.store ?? "").trim().toLowerCase();
-		const route = ROUTES[store];
-		if (!route) return failWith("bad_input", `store must be one of: ${STORES.join(", ")}.`);
+		const retailer = String(args?.retailer ?? "").trim().toLowerCase();
+		const route = ROUTES[retailer];
+		if (!route) return failWith("bad_input", `retailer must be one of: ${RETAILERS.join(", ")}.`);
 		const limit = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 		const zip = args?.zip ? String(args.zip).trim() : "";
-		if (store === "deals" && !/^\d{5}$/.test(zip)) return failWith("bad_input", "store='deals' (weekly_ad) requires a 5-digit `zip`.");
+		if (retailer === "deals" && !/^\d{5}$/.test(zip)) return failWith("bad_input", "retailer='deals' (weekly_ad) requires a 5-digit `zip`.");
 
 		// Dispatch through the registry (dynamic import avoids the shop↔index cycle).
 		const { FUNCTIONS } = (await import("./index")) as { FUNCTIONS: Fn[] };
