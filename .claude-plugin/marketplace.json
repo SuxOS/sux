@@ -1,6 +1,6 @@
 {
   "name": "sux",
-  "description": "Marketplace for sux: ONE universal OAuth-gated connector (https://sux.colinxs.workers.dev/mcp) whose front-door verbs cover web/data/compute AND your personal namespaces (vault_/mail_/files_/cal_/contact_ + recall + the `fn` escape) — plus the sux-life memory skill. The per-domain connectors are retired into the single front door; their routes stay dormant on the Worker.",
+  "description": "Marketplace for sux: ONE universal OAuth-gated connector (https://sux.colinxs.workers.dev/mcp) whose front-door verbs cover web/data/compute AND your personal namespaces (vault_/mail_/files_/cal_/contact_ + recall + the `fn` escape) — plus the sux-life memory skill. The per-domain connectors are retired into the single front door; their routes stay live and OAuth-gated on the Worker, just unadvertised in the default manifest (reachable via `?all=1`).",
   "owner": { "name": "colinxs" },
   "plugins": [
     {
