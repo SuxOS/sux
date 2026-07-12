@@ -57,6 +57,32 @@ describe("classifier — rules stub", () => {
 		// A non-personal domain may qualify on a preview cue even without a newsletter-y address.
 		expect(classifyMessage({ id: "n3", from: "hi@somebrand.example", subject: "hello", preview: "you can unsubscribe any time" }).label).toBe("newsletter");
 	});
+	it("labels GitHub notifications by TYPE with a reversible label op (never archived)", () => {
+		const cases: Array<[TriageMsg, string]> = [
+			[{ id: "g1", from: "notifications@github.com", subject: "[owner/repo] Run failed: CI (main)" }, "gh:ci-fail"],
+			[{ id: "g2", from: "notifications@github.com", subject: "Bump lodash from 4.17.20 to 4.17.21 (#42)" }, "gh:dependabot"],
+			[{ id: "g3", from: "notifications@github.com", subject: "[owner/repo] PR title (#7)", preview: "colinxs mentioned you in this thread" }, "gh:mention"],
+			[{ id: "g4", from: "notifications@github.com", subject: "[owner/repo] review requested on PR #7" }, "gh:review"],
+			[{ id: "g5", from: "notifications@github.com", subject: "[owner/repo] Something happened (#9)" }, "gh:activity"], // no subtype cue → generic, but NOT a subtype... falls to :notification
+		];
+		for (const [msg, keyword] of cases.slice(0, 4)) {
+			const c = classifyMessage(msg);
+			expect(c.label).toBe("notification");
+			expect(c.op).toEqual({ kind: "label", label: keyword, add: true });
+			expect(c.confidence).toBeGreaterThanOrEqual(CONFIDENCE_THRESHOLD);
+			expect(isAutoActAllowed(c.op!)).toBe(true); // reversible-only
+		}
+		// A GitHub sender with no recognizable subtype still gets a reversible generic label, kept visible.
+		const generic = classifyMessage({ id: "g5", from: "notifications@github.com", subject: "[owner/repo] Something happened (#9)" });
+		expect(generic.op).toEqual({ kind: "label", label: "gh:notification", add: true });
+	});
+	it("generalizes lightly to other services (GitLab/Vercel/CI) with a reversible generic label", () => {
+		for (const [from, prefix] of [["noreply@gitlab.com", "gitlab"], ["notifications@vercel.com", "vercel"], ["builds@circleci.com", "ci"]] as const) {
+			const c = classifyMessage({ id: "s", from, subject: "pipeline update" });
+			expect(c.label).toBe("notification");
+			expect(c.op).toEqual({ kind: "label", label: `${prefix}:notification`, add: true });
+		}
+	});
 	it("gives unmatched mail LOW confidence so the gate stays meaningful", () => {
 		expect(classifyMessage({ id: "x", from: "a@randomcorp.example", subject: "hey" }).confidence).toBeLessThan(CONFIDENCE_THRESHOLD);
 	});
@@ -146,6 +172,18 @@ describe("runTriage — gating + idempotency", () => {
 		]);
 		// personal (0.70, no action) + unknown (0.20, low confidence) → suggestions only, never acted.
 		expect(report.suggested!.map((s) => s.id).sort()).toEqual(["p1", "u1"]);
+	});
+
+	it("ENABLED + ACT → a GitHub CI-failure gets a reversible TYPE label, never archived", async () => {
+		const gh: TriageMsg[] = [{ id: "gh1", from: "notifications@github.com", subject: "[owner/repo] Run failed: CI (main)" }];
+		const deps = mkDeps(gh);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const report = await runTriage(env, { cycle_id: "gh", mailbox: "inbox", unread: false }, deps);
+		expect(deps.actSpy).toHaveBeenCalledTimes(1);
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["gh1"], { kind: "label", label: "gh:ci-fail", add: true });
+		// It's a label op, so nothing is moved out of the inbox (archive never called).
+		for (const call of deps.actSpy.mock.calls) expect((call[2] as TriageOp).kind).toBe("label");
+		expect(report.acted).toEqual([{ id: "gh1", label: "notification", confidence: 0.9, op: "label", to: "+label:gh:ci-fail" }]);
 	});
 
 	it("idempotent pull: a re-run performs ZERO new actions on already-seen ids", async () => {
