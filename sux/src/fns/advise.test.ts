@@ -8,11 +8,18 @@ import { DATA_CLOSE, DATA_OPEN } from "../ai";
 // (only env.AI.run + a Map-backed OAUTH_KV are stubbed). So the assertions see the actual gate prompt,
 // the real <<<DATA>>> fence around the untrusted question, and real KV round-trips.
 const ingestRun = vi.fn(async (_env: any, args: any) => ({ content: [{ type: "text", text: JSON.stringify({ ok: true, note: `Sources/${args.tags?.[1]?.split("/")[1] ?? "d"}/note.md`, created: true }) }] }));
-const recallRun = vi.fn(async (_env: any, _args: any) => ({ content: [{ type: "text", text: JSON.stringify({ answer: "You have logged low energy in the mornings. [vault:journal]", citations: ["vault:journal"] }) }] }));
+// advise now reuses recall's GATHER half — it feeds the RAW gathered passages into its own gate
+// (no intermediate recall synthesis), so we mock gatherRecall to return the raw {materials,citations}.
+const gatherRecallMock = vi.fn(async (_env: any, _q: string, _sources?: string[]) => ({
+	materials: ["[vault:journal]\nYou have logged low energy in the mornings."],
+	citations: ["vault:journal"],
+	status: { vault: "1 hit(s)", mail: "no matches", files: "no matches" },
+	chosen: ["vault", "mail", "files"],
+}));
 const obsidianRun = vi.fn(async (_env: any, _args: any) => ({ content: [{ type: "text", text: "---\ntype: capture\n---\n\n# Program\n\nAvoid sodium above 1500mg daily.\n\nWalk for exercise thirty minutes." }] }));
 
 vi.mock("./ingest", () => ({ ingest: { name: "ingest", run: (...a: any[]) => ingestRun(a[0], a[1]) } }));
-vi.mock("./recall", () => ({ recall: { name: "recall", run: (...a: any[]) => recallRun(a[0], a[1]) } }));
+vi.mock("./recall", () => ({ gatherRecall: (...a: any[]) => gatherRecallMock(a[0], a[1], a[2]) }));
 vi.mock("./obsidian", () => ({ obsidian: { name: "obsidian", run: (...a: any[]) => obsidianRun(a[0], a[1]) } }));
 
 const { advise } = await import("./advise");

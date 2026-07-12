@@ -150,6 +150,41 @@ async function fromLearned(env: RtEnv, question: string): Promise<Gathered> {
 const SOURCES: Record<string, (env: RtEnv, q: string) => Promise<Gathered>> = { vault: fromVault, files: fromFiles, mail: fromMail, web: fromWeb, learned: fromLearned };
 const DEFAULT_SOURCES = ["vault", "files", "mail", "web", "learned"];
 
+/** The GATHER half of recall: fan out across the chosen stores (each degrading independently)
+ *  and return the RAW gathered passages + citations + per-store status — WITHOUT the llm()
+ *  synthesis. recall.run wraps this then synthesizes; advise reuses the raw materials directly
+ *  and feeds them into its own gate, so it never pays for a synthesis it would immediately
+ *  re-process. `chosen` echoes which requested sources were actually searched (unknown ones drop). */
+export async function gatherRecall(
+	env: RtEnv,
+	question: string,
+	sources?: string[],
+): Promise<{ materials: string[]; citations: string[]; status: Record<string, string>; chosen: string[] }> {
+	const wanted = Array.isArray(sources) && sources.length ? sources.map(String) : DEFAULT_SOURCES;
+	const chosen = wanted.filter((s: string) => s in SOURCES);
+	const materials: string[] = [];
+	const citations: string[] = [];
+	const status: Record<string, string> = {};
+	if (!chosen.length) return { materials, citations, status, chosen };
+
+	const results = await Promise.allSettled(chosen.map((s: string) => SOURCES[s](env, question)));
+	chosen.forEach((s: string, i: number) => {
+		const r = results[i];
+		if (r.status === "fulfilled") {
+			if (r.value.material) {
+				materials.push(r.value.material);
+				citations.push(...r.value.refs);
+				status[s] = `${r.value.refs.length} hit(s)`;
+			} else {
+				status[s] = "no matches";
+			}
+		} else {
+			status[s] = `unavailable (${errMsg(r.reason).replace(/^\[[a-z_]+\]\s*/, "").slice(0, 90)})`;
+		}
+	});
+	return { materials, citations, status, chosen };
+}
+
 const recallSystem = (question: string): string =>
 	"You are a personal recall assistant. Using ONLY the MATERIAL provided to you as data — gathered from the user's own notes (vault), files (Dropbox), email (mail), the web, and examples they have taught sux (learned) — answer this question:\n\n" +
 	`QUESTION: ${question}\n\n` +
@@ -176,28 +211,8 @@ export const recall: Fn = {
 		if (!question) return failWith("bad_input", "recall needs a `question`.");
 		if (!hasAI(env)) return failWith("not_configured", "Workers AI binding not configured — needed to synthesize the answer.");
 
-		const wanted = Array.isArray(args?.sources) && args.sources.length ? args.sources.map(String) : DEFAULT_SOURCES;
-		const chosen = wanted.filter((s: string) => s in SOURCES);
+		const { materials, citations, status, chosen } = await gatherRecall(env, question, Array.isArray(args?.sources) ? args.sources : undefined);
 		if (!chosen.length) return failWith("bad_input", "sources must include at least one of: vault, files, mail, web.");
-
-		const results = await Promise.allSettled(chosen.map((s: string) => SOURCES[s](env, question)));
-		const materials: string[] = [];
-		const citations: string[] = [];
-		const status: Record<string, string> = {};
-		chosen.forEach((s: string, i: number) => {
-			const r = results[i];
-			if (r.status === "fulfilled") {
-				if (r.value.material) {
-					materials.push(r.value.material);
-					citations.push(...r.value.refs);
-					status[s] = `${r.value.refs.length} hit(s)`;
-				} else {
-					status[s] = "no matches";
-				}
-			} else {
-				status[s] = `unavailable (${errMsg(r.reason).replace(/^\[[a-z_]+\]\s*/, "").slice(0, 90)})`;
-			}
-		});
 
 		if (!materials.length) {
 			return ok(oj({ question, answer: "I couldn't find anything about that in your notes, mail, or the web I could reach.", sources: status, citations: [] }));
