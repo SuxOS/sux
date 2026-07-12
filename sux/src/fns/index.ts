@@ -48,6 +48,7 @@ import { suggest } from "./suggest";
 import { imageConvert } from "./image_convert";
 import { recall } from "./recall";
 import { ace } from "./ace";
+import { advise } from "./advise";
 import { amazon } from "./amazon";
 import { arxiv } from "./arxiv";
 import { bestbuy } from "./bestbuy";
@@ -152,6 +153,7 @@ export const FUNCTIONS: Fn[] = [
 	imageConvert,
 	recall,
 	ace,
+	advise,
 	amazon,
 	arxiv,
 	bestbuy,

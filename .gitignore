@@ -190,3 +190,10 @@ sux/mac-render/extensions/
 .obsidian/cache
 .obsidian/plugins/
 .obsidian/themes/
+
+# Local-only personal-vault mount(s) — never commit private KB into this PUBLIC repo.
+# See docs/design/vault-docs-reconciliation.md: mount direction is public docs/ → private
+# vault, never the reverse. These reserve the in-tree paths so an accidental private-vault
+# symlink here can't be committed.
+/.vault/
+/vault-mount/

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CONFIDENCE_THRESHOLD, classifyMessage, hasMailTriage, hasMailTriageAct, runTriage, type TriageDeps, type TriageMsg } from "./_mail_triage";
+import { ACTION_FOR, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, classifyMessage, hasMailTriage, hasMailTriageAct, isAutoActAllowed, runTriage, type TriageDeps, type TriageMsg, type TriageOp } from "./_mail_triage";
 import { appendTriageEntries, bulkUndo, readTriageEntries } from "./_mail_triage_log";
 
 // A single OAUTH_KV stub, TTL-aware only enough for the ledger (opts ignored). Mirrors the
@@ -43,6 +43,20 @@ describe("classifier — rules stub", () => {
 			expect(classifyMessage(msg).label).toBe(label);
 		});
 	}
+	it("does NOT call a personal-domain sender a newsletter on a preview cue alone (no auto-archive of real mail)", () => {
+		// "weekly"/"unsubscribe" in a preview must not, by itself, override the sender check —
+		// a gmail.com human whose message merely contains those words stays PERSONAL, not newsletter.
+		for (const preview of ["let's meet weekly going forward", "unsubscribe me from the group calendar?"]) {
+			const c = classifyMessage({ id: "n", from: "friend@gmail.com", subject: "lunch tomorrow?", preview });
+			expect(c.label).not.toBe("newsletter");
+			expect(c.label).toBe("personal");
+		}
+	});
+	it("still labels a real bulk sender a newsletter (cue + newsletter-sender signal)", () => {
+		expect(classifyMessage({ id: "n2", from: "newsletter@substack.com", subject: "Weekly Digest", preview: "unsubscribe" }).label).toBe("newsletter");
+		// A non-personal domain may qualify on a preview cue even without a newsletter-y address.
+		expect(classifyMessage({ id: "n3", from: "hi@somebrand.example", subject: "hello", preview: "you can unsubscribe any time" }).label).toBe("newsletter");
+	});
 	it("gives unmatched mail LOW confidence so the gate stays meaningful", () => {
 		expect(classifyMessage({ id: "x", from: "a@randomcorp.example", subject: "hey" }).confidence).toBeLessThan(CONFIDENCE_THRESHOLD);
 	});
@@ -54,17 +68,36 @@ describe("classifier — rules stub", () => {
 	});
 });
 
-const mkDeps = (msgs: TriageMsg[]): TriageDeps & { moved: ReturnType<typeof vi.fn>; digested: ReturnType<typeof vi.fn> } => {
-	const moved = vi.fn(async () => {});
+const mkDeps = (msgs: TriageMsg[]): TriageDeps & { actSpy: ReturnType<typeof vi.fn>; digested: ReturnType<typeof vi.fn> } => {
+	const actSpy = vi.fn(async () => {});
 	const digested = vi.fn(async () => {});
-	return { search: async () => msgs, move: moved, digestAppend: digested, moved, digested };
+	return { search: async () => msgs, act: actSpy, digestAppend: digested, actSpy, digested };
 };
 
 const SAMPLE: TriageMsg[] = [
-	{ id: "j1", from: "x@sketchy.tld", subject: "You WON the lottery! Claim your prize now" },
-	{ id: "p1", from: "friend@gmail.com", subject: "lunch tomorrow?" },
-	{ id: "u1", from: "someone@randomcorp.example", subject: "Quick question" },
+	{ id: "j1", from: "x@sketchy.tld", subject: "You WON the lottery! Claim your prize now" }, // junk → LABEL (reversible), not a junk-move
+	{ id: "r1", from: "receipts@amazon.com", subject: "Your receipt from Amazon" }, // receipt → archive
+	{ id: "p1", from: "friend@gmail.com", subject: "lunch tomorrow?" }, // personal → suggest-only
+	{ id: "u1", from: "someone@randomcorp.example", subject: "Quick question" }, // unknown → suggest-only
 ];
+
+describe("auto-act allow-list — reversible ops only", () => {
+	it("AUTO_ACT_OPS is EXACTLY the five reversible ops — no junk-move, no delete", () => {
+		expect([...AUTO_ACT_OPS].sort()).toEqual(["archive", "label:add", "label:remove", "unarchive", "undelete"].sort());
+	});
+	it("every allow-listed op passes the guard", () => {
+		const ops: TriageOp[] = [{ kind: "archive" }, { kind: "unarchive" }, { kind: "undelete" }, { kind: "label", label: "junk", add: true }, { kind: "label", label: "junk", add: false }];
+		for (const op of ops) expect(isAutoActAllowed(op)).toBe(true);
+	});
+	it("junk LABELS (reversible flag) instead of MOVING into Junk", () => {
+		expect(ACTION_FOR.junk).toEqual({ kind: "label", label: "junk", add: true });
+	});
+	it("declutter labels archive (inverse: unarchive); personal/unknown never auto-act", () => {
+		for (const l of ["receipt", "newsletter", "notification"] as const) expect(ACTION_FOR[l]).toEqual({ kind: "archive" });
+		expect(ACTION_FOR.personal).toBeNull();
+		expect(ACTION_FOR.unknown).toBeNull();
+	});
+});
 
 describe("runTriage — gating + idempotency", () => {
 	it("is a DORMANT no-op when MAIL_TRIAGE_ENABLED is unset", async () => {
@@ -73,21 +106,21 @@ describe("runTriage — gating + idempotency", () => {
 		const report = await runTriage(envWith(), { cycle_id: "c" }, { ...deps, search: searchSpy });
 		expect(report.dormant).toBe(true);
 		expect(searchSpy).not.toHaveBeenCalled();
-		expect(deps.moved).not.toHaveBeenCalled();
+		expect(deps.actSpy).not.toHaveBeenCalled();
 		expect(deps.digested).not.toHaveBeenCalled();
 	});
 
-	it("ENABLED but ACT unset → classifies + writes a digest but NEVER moves", async () => {
+	it("ENABLED but ACT unset → classifies + writes a digest but NEVER acts", async () => {
 		const deps = mkDeps(SAMPLE);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
 		const report = await runTriage(env, { cycle_id: "c1" }, deps);
 		expect(report.dormant).toBeUndefined();
 		expect(report.act_enabled).toBe(false);
-		expect(deps.moved).not.toHaveBeenCalled(); // the core regression guard
+		expect(deps.actSpy).not.toHaveBeenCalled(); // the core regression guard
 		expect(deps.digested).toHaveBeenCalledTimes(1);
-		// junk would-act but suggest-only → it lands in suggested, nothing acted.
+		// junk + receipt would-act but suggest-only → they land in suggested, nothing acted.
 		expect(report.acted).toHaveLength(0);
-		expect(report.suggested!.length).toBe(3);
+		expect(report.suggested!.length).toBe(4);
 	});
 
 	it("dry_run forces suggest-only even with ACT set", async () => {
@@ -95,17 +128,23 @@ describe("runTriage — gating + idempotency", () => {
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
 		const report = await runTriage(env, { cycle_id: "c2", dry_run: true }, deps);
 		expect(report.act_enabled).toBe(false);
-		expect(deps.moved).not.toHaveBeenCalled();
+		expect(deps.actSpy).not.toHaveBeenCalled();
 	});
 
-	it("ENABLED + ACT → moves the junk (reversible) and leaves personal/unknown as suggestions", async () => {
+	it("ENABLED + ACT → LABELS junk + ARCHIVES receipt (reversible), suggests personal/unknown; NEVER junk-moves", async () => {
 		const deps = mkDeps(SAMPLE);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
 		const report = await runTriage(env, { cycle_id: "c3" }, deps);
-		expect(deps.moved).toHaveBeenCalledTimes(1);
-		expect(deps.moved).toHaveBeenCalledWith(env, ["j1"], "junk");
-		expect(report.acted).toEqual([{ id: "j1", label: "junk", confidence: 0.9, to: "junk" }]);
-		// personal (0.70, no action) + unknown (0.20, low confidence) → suggestions only, never moved.
+		expect(deps.actSpy).toHaveBeenCalledTimes(2);
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["j1"], { kind: "label", label: "junk", add: true });
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["r1"], { kind: "archive" });
+		// No call ever files a message into the Junk mailbox — junk-move is gone.
+		for (const call of deps.actSpy.mock.calls) expect((call[2] as TriageOp).kind).not.toBe("junk");
+		expect(report.acted).toEqual([
+			{ id: "j1", label: "junk", confidence: 0.9, op: "label", to: "+label:junk" },
+			{ id: "r1", label: "receipt", confidence: 0.85, op: "archive", to: "archive" },
+		]);
+		// personal (0.70, no action) + unknown (0.20, low confidence) → suggestions only, never acted.
 		expect(report.suggested!.map((s) => s.id).sort()).toEqual(["p1", "u1"]);
 	});
 
@@ -113,13 +152,13 @@ describe("runTriage — gating + idempotency", () => {
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
 		const deps1 = mkDeps(SAMPLE);
 		await runTriage(env, { cycle_id: "r1" }, deps1);
-		expect(deps1.moved).toHaveBeenCalledTimes(1);
+		expect(deps1.actSpy).toHaveBeenCalledTimes(2);
 		// Same env (same KV ledger) → every id already marked seen.
 		const deps2 = mkDeps(SAMPLE);
 		const report2 = await runTriage(env, { cycle_id: "r2" }, deps2);
-		expect(deps2.moved).not.toHaveBeenCalled();
+		expect(deps2.actSpy).not.toHaveBeenCalled();
 		expect(report2.new).toBe(0);
-		expect(report2.skipped_seen).toBe(3);
+		expect(report2.skipped_seen).toBe(4);
 	});
 
 	it("self-bounds its wall-clock budget and reports truncated", async () => {
@@ -131,30 +170,89 @@ describe("runTriage — gating + idempotency", () => {
 	});
 });
 
+describe("runTriage — unread-default scan (autonomous lane leaves read mail alone)", () => {
+	it("defaults the scan to unread-only so intentionally-read inbox mail is never touched", async () => {
+		const deps = mkDeps(SAMPLE);
+		const searchSpy = vi.fn(async (_env: any, _o: any) => SAMPLE);
+		await runTriage(envWith({ MAIL_TRIAGE_ENABLED: "1" }), { cycle_id: "ud1" }, { ...deps, search: searchSpy });
+		expect(searchSpy).toHaveBeenCalledTimes(1);
+		expect(searchSpy.mock.calls[0][1]).toMatchObject({ unread: true });
+	});
+	it("keeps an explicit override: unread:false scans read mail too", async () => {
+		const deps = mkDeps(SAMPLE);
+		const searchSpy = vi.fn(async (_env: any, _o: any) => SAMPLE);
+		await runTriage(envWith({ MAIL_TRIAGE_ENABLED: "1" }), { cycle_id: "ud2", unread: false }, { ...deps, search: searchSpy });
+		expect(searchSpy.mock.calls[0][1]).toMatchObject({ unread: false });
+	});
+});
+
+describe("runTriage — reversibility: undo-log is written BEFORE a message is marked seen", () => {
+	// A KV whose ledger-mark writes throw, simulating an abnormal exit (crash / isolate eviction)
+	// the instant AFTER a message is acted+marked but — if the ordering were wrong — before its
+	// undo-log landed. With log-then-mark, the acted entry must already be durable + undoable.
+	const throwingLedgerKV = () => {
+		const store = new Map<string, string>();
+		return {
+			store,
+			get: async (k: string) => store.get(k) ?? null,
+			put: async (k: string, v: string) => {
+				if (k.startsWith("sux:ledger:mail_triage:")) throw new Error("simulated crash marking message seen");
+				store.set(k, v);
+			},
+			delete: async (k: string) => void store.delete(k),
+		};
+	};
+
+	it("an acted message is logged (and thus undoable) even if marking it seen then crashes", async () => {
+		const env = { OAUTH_KV: throwingLedgerKV(), MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" } as any;
+		const deps = mkDeps(SAMPLE);
+		// The crash on led.mark propagates out of runTriage — the act + the log write already happened.
+		await expect(runTriage(env, { cycle_id: "crash" }, deps)).rejects.toThrow(/crash marking/);
+		// The first actioned message (j1: junk → label) was acted on...
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["j1"], { kind: "label", label: "junk", add: true });
+		// ...and its undo-log entry is already persisted — never acted-but-unlogged.
+		const logged = await readTriageEntries(env);
+		const j1 = logged.find((e) => e.id === "j1");
+		expect(j1).toMatchObject({ action: "acted", op: "label", keyword: "junk" });
+		// Which means a bulk-undo can still reverse it.
+		const label = vi.fn(async () => {});
+		const res: any = await bulkUndo(env, "crash", { label, move: vi.fn(async () => {}) });
+		expect(res.undone).toBe(1);
+		expect(label).toHaveBeenCalledWith(env, ["j1"], "junk", false);
+	});
+});
+
 describe("action log + bulk undo", () => {
-	it("logs moves and reverses a whole cycle, idempotently", async () => {
+	it("reverses each op by its allow-listed inverse (archive→unarchive, label→un-label), idempotently", async () => {
 		const env = envWith();
 		await appendTriageEntries(env, [
-			{ cycle: "u", id: "a", action: "acted", label: "junk", confidence: 0.9, reason: "r", from_mailbox: "inbox", to_mailbox: "junk", at: 1 },
-			{ cycle: "u", id: "b", action: "acted", label: "newsletter", confidence: 0.8, reason: "r", from_mailbox: "inbox", to_mailbox: "archive", at: 2 },
-			{ cycle: "u", id: "c", action: "suggested", label: "unknown", confidence: 0.2, reason: "r", at: 3 },
+			{ cycle: "u", id: "a", action: "acted", label: "newsletter", confidence: 0.8, reason: "r", op: "archive", from_mailbox: "inbox", to_mailbox: "archive", at: 1 },
+			{ cycle: "u", id: "b", action: "acted", label: "receipt", confidence: 0.85, reason: "r", op: "archive", from_mailbox: "inbox", to_mailbox: "archive", at: 2 },
+			{ cycle: "u", id: "k", action: "acted", label: "junk", confidence: 0.9, reason: "r", op: "label", keyword: "junk", at: 3 },
+			{ cycle: "u", id: "c", action: "suggested", label: "unknown", confidence: 0.2, reason: "r", at: 4 },
 		]);
-		const mover = vi.fn(async () => {});
-		const res: any = await bulkUndo(env, "u", mover);
-		expect(res.undone).toBe(2);
-		// Both acted messages moved back to their origin (inbox), grouped into one call.
-		expect(mover).toHaveBeenCalledTimes(1);
-		const [, movedIds, target] = mover.mock.calls[0] as unknown as [unknown, string[], string];
+		const move = vi.fn(async () => {});
+		const label = vi.fn(async () => {});
+		const res: any = await bulkUndo(env, "u", { move, label });
+		expect(res.undone).toBe(3);
+		// The two archived messages move back to their origin (inbox), grouped into one call.
+		expect(move).toHaveBeenCalledTimes(1);
+		const [, movedIds, target] = move.mock.calls[0] as unknown as [unknown, string[], string];
 		expect([...movedIds].sort()).toEqual(["a", "b"]);
 		expect(target).toBe("inbox");
+		// The labeled message is un-labeled (keyword removed), never moved/deleted.
+		expect(label).toHaveBeenCalledTimes(1);
+		expect(label).toHaveBeenCalledWith(env, ["k"], "junk", false);
 		// A suggestion is never reversed.
-		expect(res.ids.sort()).toEqual(["a", "b"]);
+		expect(res.ids.sort()).toEqual(["a", "b", "k"]);
 
 		// Second undo is a safe no-op (entries already marked undone).
-		mover.mockClear();
-		const res2: any = await bulkUndo(env, "u", mover);
+		move.mockClear();
+		label.mockClear();
+		const res2: any = await bulkUndo(env, "u", { move, label });
 		expect(res2.undone).toBe(0);
-		expect(mover).not.toHaveBeenCalled();
+		expect(move).not.toHaveBeenCalled();
+		expect(label).not.toHaveBeenCalled();
 	});
 
 	it("readTriageEntries filters by cycle, newest-first", async () => {

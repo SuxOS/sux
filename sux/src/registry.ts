@@ -73,16 +73,16 @@ export type RtEnv = Env &
 		// Self-improvement loop (fns/_self_improve.ts, rides the daily cron). ALL
 		// fail-closed, defaults OFF, set via `wrangler secret` (NOT declared in
 		// wrangler.jsonc — like DROPBOX_FULL_*). Unset ⇒ the whole loop is dormant.
-		//   SELF_IMPROVE_KILL   — any truthy value = hard stop, checked before enable.
-		//   SELF_IMPROVE_ENABLE — master enable; unset ⇒ loop inert.
-		//   SELF_IMPROVE_PR     — 'on' + a GITHUB_TOKEN ⇒ may open PRs; else review-only.
-		//   SELF_IMPROVE_ARM    — 'armed' (exact sentinel) ⇒ auto-merge fix/refactor/
-		//                         cleanup PRs whose CI is green; security/feature never.
+		//   SELF_IMPROVE_KILL   — a truthy toggle (flagOn) = hard stop, checked before enable.
+		//   SELF_IMPROVE_ENABLE — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		//   SELF_IMPROVE_PR     — 'on' (exact) + a GITHUB_TOKEN ⇒ may open PRs; else review-only.
+		//                         The loop never merges: it opens a stub PR, labels it
+		//                         `self-improve` (NOT auto-merge-eligible), and hands
+		//                         authoring to the existing @claude autofix/mention loop.
 		//   SELF_IMPROVE_REPO   — 'owner/repo' target (default the sux repo).
 		SELF_IMPROVE_KILL?: string;
 		SELF_IMPROVE_ENABLE?: string;
 		SELF_IMPROVE_PR?: string;
-		SELF_IMPROVE_ARM?: string;
 		SELF_IMPROVE_REPO?: string;
 
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
@@ -142,6 +142,11 @@ export type RtEnv = Env &
 		// first cycle is suggest-only by construction. It never deletes.
 		MAIL_TRIAGE_ENABLED?: string;
 		MAIL_TRIAGE_ACT?: string;
+
+		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
+		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
+		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.
+		SUX_CRON_TOKEN?: string;
 
 
 		TAVILY_API_KEY?: string;

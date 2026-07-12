@@ -70,9 +70,14 @@ reads as active if you only skim it). [[Status-Dashboard]] surfaces that from
 frontmatter, so the discipline reduces to: *when reality moves, flip the
 `status:` field.* One field, one regen.
 
-## Ingesting this wiki into the vault (optional, self-hosting)
+## This wiki and the runtime vault (the seam, now decided)
 
-This repo's own `ingest` / `obsidian` fns write to the `colinxs/obsidian-vault` store, not
-here — but nothing stops a future step from projecting these wiki notes into that
-vault (or the reverse). See [[vault-stack]] and [[namespace-architecture]]. Out
-of scope for now; noted so the seam is visible.
+This repo's own `ingest` / `obsidian` fns write to the `colinxs/obsidian-vault`
+store, not here — two corpora with different authorities (public code-docs vs
+Colin's private KB). The stance is now **decided, not parked**: unify the *view*,
+never copy the *content*. A gitignored symlink mounts this public `docs/` *into*
+the private vault (public→private is safe), and the repo reaches the vault the
+other way through the already-built `/vault/mcp` tools — so both are accessible
+and editable from either surface with **no cross-repo copy, hence no divergence**.
+See [[vault-docs-reconciliation]] for the full design (mount direction, edit-flow,
+phased plan), plus [[vault-stack]] and [[namespace-architecture]].
