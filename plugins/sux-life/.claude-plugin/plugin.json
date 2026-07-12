@@ -2,13 +2,14 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "sux-life",
   "displayName": "sux life",
-  "version": "0.1.0",
-  "description": "The digital-life memory layer — a skill that turns the sux vault + mail connectors into a personal memory system: capture a thought in seconds, remember a durable fact/person/decision, recall across your notes + mail + files + the web with citations, and consolidate it all into a linked knowledge graph. Git is the undo, so it writes unblocked. Pairs with sux-vault (/vault/mcp) and sux-mail (/mail/mcp); no new infra.",
+  "version": "0.2.0",
+  "description": "The digital-life memory layer — a skill (no connector of its own) that turns the one sux connector into a personal memory system: capture a thought in seconds, remember a durable fact/person/decision, recall across your notes + mail + files + the web with citations, and consolidate it all into a linked knowledge graph. Git is the undo, so it writes unblocked. Rides on sux-router's single front door (/mcp) via `vault_`/`mail_` verbs; install sux-router alongside it. Skills load only where the plugin is enabled (Code/CLI/Cowork), not through the synced remote connector — see the connector-surface policy.",
   "author": {
     "name": "colinxs"
   },
   "homepage": "https://sux.colinxs.workers.dev",
   "repository": "https://github.com/colinxs/sux",
   "license": "MIT",
-  "keywords": ["memory", "knowledge-base", "obsidian", "vault", "capture", "recall", "personal", "second-brain"]
+  "keywords": ["memory", "knowledge-base", "obsidian", "vault", "capture", "recall", "personal", "second-brain"],
+  "skills": "./skills/"
 }

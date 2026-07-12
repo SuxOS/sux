@@ -1,11 +1,11 @@
 ---
 name: life
-description: The digital-life memory system over the sux vault + mail connectors — capture a thought in seconds, remember durable facts/people/decisions, recall across notes + mail + files + the web with citations, organize the inbox into a linked knowledge graph, and consolidate over time. Use whenever the user wants to save something to remember ("note this", "remember that…", "capture this"), asks what they know / what they decided / when something happened ("what do I know about X", "remind me…", "did I ever…"), wants to organize/triage their notes or mail, or wants their life/knowledge tied together. Git is the undo, so writes are unblocked.
+description: The digital-life memory system over the one sux connector (/mcp) — capture a thought in seconds, remember durable facts/people/decisions, recall across notes + mail + files + the web with citations, organize the inbox into a linked knowledge graph, and consolidate over time. Use whenever the user wants to save something to remember ("note this", "remember that…", "capture this"), asks what they know / what they decided / when something happened ("what do I know about X", "remind me…", "did I ever…"), wants to organize/triage their notes or mail, or wants their life/knowledge tied together. Git is the undo, so writes are unblocked.
 ---
 
 # life — your memory, organized
 
-A memory system for a real life, built on the sux connectors. The stores are
+A memory system for a real life, built on the one sux connector. The stores are
 already there; this skill is the **discipline** that turns them into a second
 brain. Six verbs, one loop: **capture → triage → link → retrieve → consolidate**,
 plus **remember** for the things that must never be lost.
@@ -17,14 +17,20 @@ plus **remember** for the things that must never be lost.
 
 ## The stores (what you're writing to)
 
-| Store | Connector | Tools |
-|---|---|---|
-| **Notes / knowledge** | `/vault/mcp` (sux-vault) | `vault_capture`, `vault_daily_append`, `vault_daily_read`, `vault_write`, `vault_append`, `vault_edit`, `vault_read`, `vault_list`, `vault_delete` |
-| **Mail / calendar / contacts** | `/mail/mcp` (sux-mail) | `mail_search`, `mail_read`, `mail_thread`, `mail_send`, `mail_draft`, `mail_archive`, `mail_masked`, and raw `jmap` (calendars/contacts) |
-| **Web + capture + recall** | `/mcp` (sux-router) | `search`, `ingest` (url/text/query → vault note), `oracle` (learn-then-answer KB), `scrape`/`readability` |
-| **Files** | Dropbox / R2 | `dropbox`, `store` (blobs; the vault holds the *note*, files hold the *bytes*) |
+Everything is reached through the **one sux connector** — the `sux-router` front
+door at `/mcp`. The former per-domain connectors (`/vault/mcp`, `/mail/mcp`) are
+retired into it; their routes stay dormant on the Worker. Personal stores are
+just verb families on that single connector:
 
-If a store isn't connected, say so plainly and use what is — never fail silently.
+| Store | Reached via (all on `/mcp`) | Tools |
+|---|---|---|
+| **Notes / knowledge** | `vault_` verbs | `vault_capture`, `vault_daily_append`, `vault_daily_read`, `vault_write`, `vault_append`, `vault_edit`, `vault_read`, `vault_list`, `vault_delete` |
+| **Mail / calendar / contacts** | `mail_` verbs + raw `jmap` | `mail_search`, `mail_read`, `mail_thread`, `mail_send`, `mail_draft`, `mail_archive`, `mail_masked`, and `jmap` (calendars/contacts) |
+| **Web + capture + recall** | front verbs | `search`, `ingest` (url/text/query → vault note), `oracle` (learn-then-answer KB), `scrape`/`readability` |
+| **Files** | `dropbox` / `store` | blobs on Dropbox / R2 (the vault holds the *note*, files hold the *bytes*) |
+
+If a verb family isn't reachable (connector not installed, or a route still
+dormant), say so plainly and use what is — never fail silently.
 
 ## Vault conventions (so the graph stays navigable)
 

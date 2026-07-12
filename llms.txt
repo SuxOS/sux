@@ -54,7 +54,7 @@
 - [[wiki-conventions]] (reference) — The rules every wiki note obeys so the vault stays coherent and the generator
 
 ## Concept graph
-- [[connector-surface-policy]] (shipped) — The sux marketplace ships two plugins today, each pinned to one endpoint on the same Worker.
+- [[connector-surface-policy]] (shipped) — The sux marketplace ships two plugins, but only one carries a connector.
 - [[content-addressed-cache]] (shipped) — Every cacheable fn in the [[fn-registry]] gets a KV entry keyed by cacheKey: a sha256 of the fn name (namespaced ::summarize when the universal summarize flag is set) plus a stably-stringified copy of its normalized arguments — same inputs, same key, regardless of key order.
 - [[fanout]] (parked) — The shared parallel-dispatch core, sux/src/fns/_fanout.ts, extracted from three hand-rolled Promise.allSettled loops so every fan-out verb gets error isolation and ledger accounting for free.
 - [[fetch-ladder]] (shipped) — Cloudflare Workers egress from datacenter IPs, and datacenter IPs get blocked on reputation alone — residential egress is why sux exists at all.
