@@ -41,7 +41,11 @@ export const hasMailTriageAct = (env: RtEnv): boolean => hasMailTriage(env) && f
 
 // ── Classifier (rules stub) ───────────────────────────────────────────────────
 export type TriageLabel = "junk" | "receipt" | "newsletter" | "notification" | "personal" | "unknown";
-export type Classification = { label: TriageLabel; confidence: number; reason: string };
+/** `op` is an optional PER-MESSAGE reversible override of the label's default `ACTION_FOR` op —
+ *  used by service-notification classification to attach a type-specific label keyword (e.g.
+ *  `gh:ci-fail`) instead of the label's blanket action. It is still funnelled through the same
+ *  auto-act allow-list + confidence gate, so an override can never smuggle a non-reversible op. */
+export type Classification = { label: TriageLabel; confidence: number; reason: string; op?: TriageOp };
 export type TriageMsg = { id: string; from?: string; subject?: string; preview?: string };
 
 /** Confidence at/above which an actionable label may auto-act. Conservative on purpose:
@@ -96,6 +100,40 @@ const NEWSLETTER_FROM = /(newsletter|no-?reply|news@|updates?@|hello@|team@|mark
 const NOTIFY_FROM = /(no-?reply|do-?not-?reply|notif|alert|updates?@|automated|@notifications?\.)/i;
 const PERSONAL_DOMAINS = new Set(["gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "me.com", "proton.me", "protonmail.com", "aol.com"]);
 
+// ── Service-notification rule ──────────────────────────────────────────────────
+// Dev/CI service notifications (GitHub, GitLab, Vercel, CircleCI) are worth KEEPING visible and
+// sorted by TYPE, not blanket-archived like a generic `notification`. This rule is reversible-only
+// by construction: it always emits a `label:add` op (`<svc>:<type>`), never archive/delete — so a
+// mislabel is a one-call un-label away and a CI failure or mention is never hidden from the inbox.
+const SERVICE_SENDERS: Array<{ re: RegExp; prefix: string; sub: boolean }> = [
+	{ re: /@(.*\.)?github\.com\b/i, prefix: "gh", sub: true }, // notifications@github.com et al.
+	{ re: /@(.*\.)?gitlab\.com\b/i, prefix: "gitlab", sub: false },
+	{ re: /@(.*\.)?vercel\.com\b/i, prefix: "vercel", sub: false },
+	{ re: /@(.*\.)?circleci\.com\b/i, prefix: "ci", sub: false },
+];
+// GitHub-style subtypes, first match wins; only cues that survive on subject/preview ALONE (no
+// X-GitHub-Reason header available here) are used, so we stay honest and fall back to `:activity`.
+const SERVICE_SUBTYPES: Array<{ re: RegExp; type: string }> = [
+	{ re: /\bdependabot\b|^\s*bump\b|\bbuild\(deps\b/i, type: "dependabot" },
+	{ re: /\b(run failed|build failed|deploy(ment)? failed|workflow.*fail|ci (failed|failure)|checks? failed|job failed|is failing)\b/i, type: "ci-fail" },
+	{ re: /\bmentioned you\b/i, type: "mention" },
+	{ re: /\b(review requested|requested (your|a) review|requested changes|approved these changes|new review on)\b/i, type: "review" },
+];
+
+/** Classify a dev/CI service notification into a reversible type-label op, or null if the sender
+ *  isn't a known service. Sender match gives the `<prefix>`; subject+preview cues give the subtype
+ *  (GitHub only — others get `<prefix>:notification`). Always a `label:add`, never a hiding move. */
+export function detectServiceNotification(from: string, subject: string, preview: string): Classification | null {
+	const svc = SERVICE_SENDERS.find((s) => s.re.test(from));
+	if (!svc) return null;
+	const hay = `${subject}\n${preview}`;
+	const sub = svc.sub ? SERVICE_SUBTYPES.find((t) => t.re.test(hay))?.type : undefined;
+	const type = sub ?? "notification";
+	// A recognized subtype is a strong signal (sender + cue); a bare service sender is still solid.
+	const confidence = sub ? 0.9 : 0.8;
+	return { label: "notification", confidence, reason: `${svc.prefix} ${type} notification`, op: { kind: "label", label: `${svc.prefix}:${type}`, add: true } };
+}
+
 /** Pure rules-stub classifier: sender-domain + subject/preview heuristics against a small
  *  fixed category set. Returns LOW confidence for anything unmatched, so the confidence gate
  *  stays meaningful without any learned model. Table-driven and side-effect-free (unit-tested). */
@@ -108,6 +146,11 @@ export function classifyMessage(msg: TriageMsg): Classification {
 	const isPersonal = PERSONAL_DOMAINS.has(domain);
 	if (JUNK_SUBJECT.test(hay)) return { label: "junk", confidence: 0.9, reason: "spam-signal subject/body" };
 	if (RECEIPT.test(subject)) return { label: "receipt", confidence: 0.85, reason: "receipt/invoice subject" };
+	// Dev/CI service notifications: label by type + KEEP visible. Checked before the newsletter/
+	// notify branches, both of which a GitHub sender would otherwise match (notifications@github.com
+	// hits NOTIFY_FROM's `notif`, and a "digest" subject hits the newsletter cue) — and be archived.
+	const svc = detectServiceNotification(from, subject, preview);
+	if (svc) return svc;
 	// Newsletter needs a SENDER signal, never a body/preview cue alone: a bulk-sender address
 	// (NEWSLETTER_FROM), or — only for a NON-personal domain — a preview cue. Gating the
 	// preview-only path behind !isPersonal stops a real person's mail that merely says
@@ -214,7 +257,9 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			continue;
 		}
 		const c = classify(env, m);
-		const op = ACTION_FOR[c.label];
+		// A classification may carry a per-message reversible op override (service notifications
+		// attach a type-specific label); otherwise fall back to the label's default action.
+		const op = c.op ?? ACTION_FOR[c.label];
 		// Allow-list guard sits BEFORE the confidence gate: an op not on AUTO_ACT_OPS can never act.
 		const wouldAct = !!op && isAutoActAllowed(op) && c.confidence >= CONFIDENCE_THRESHOLD;
 		const rec = op ? opRecord(op, mailbox) : null;
