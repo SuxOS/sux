@@ -54,7 +54,20 @@ const SECOND_LEG_MS = 12_000;
 // Reference #), PerimeterX-HUMAN (Pardon Our Interruption / verify you are human / px-captcha),
 // Cloudflare/Imperva challenge.
 const BLOCK_RE = /Access Denied|sec-cpt|Pardon Our Interruption|verify you are (a )?human|px-captcha|Attention Required|Just a moment|Incapsula|Request unsuccessful|Reference #\d/i;
-export const looksBlocked = (html: string | undefined): boolean => !!html && BLOCK_RE.test(html);
+
+// `minBytes` is opt-in and OFF by default (0) so the ladder's own escalation calls below
+// stay marker-only, per the no-blanket-length-check rule above. A caller that already knows
+// zero products were extracted from an ostensibly-successful render has a stronger signal —
+// a short body at that point is far more likely an empty/challenge shell than a genuinely
+// terse real page — so it can opt in with e.g. `looksBlocked(body, 1000)` to also flag those.
+// This is THE canonical bot-wall check: retailer fns should route their own "was this
+// zero-product result actually a wall?" logic through this rather than hand-rolling a
+// drifted regex (the drift is how a marker one retailer added never reached the others).
+export function looksBlocked(html: string | undefined, minBytes = 0): boolean {
+	if (html == null) return false;
+	if (BLOCK_RE.test(html)) return true;
+	return html.length < minBytes;
+}
 
 /**
  * Render a retail page across the cf + mac backends with a deadline-safe fallback.

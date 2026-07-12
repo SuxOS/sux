@@ -2,6 +2,7 @@ import { retailRender } from "../retail-render";
 import { oj } from "./_util";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { unlockerRender } from "../unlocker-render";
+import { decodeEntities as decodeMarkupEntities } from "./_markup";
 import { normalizeMoney, type RetailProduct } from "./_retail";
 
 // Home Depot sits behind an ACTIVE Akamai `_abck` JS challenge a plain fetch can't
@@ -18,19 +19,10 @@ import { normalizeMoney, type RetailProduct } from "./_retail";
 
 const NO_PRODUCTS_MSG = "homedepot: no products extracted (challenge or layout change).";
 
-/** Decode HTML entities that show up in extracted title text (best-effort). */
+/** Decode HTML entities that show up in extracted title text (best-effort), then
+ * trim the lead/trail space a stripped-tag join (`.replace(/<[^>]+>/g, " ")`) leaves. */
 function decodeEntities(s: string): string {
-	return s
-		.replace(/&amp;/g, "&")
-		.replace(/&#38;/g, "&")
-		.replace(/&quot;/g, '"')
-		.replace(/&#34;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&apos;/g, "'")
-		.replace(/&nbsp;/g, " ")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.trim();
+	return decodeMarkupEntities(s).trim();
 }
 
 /**
