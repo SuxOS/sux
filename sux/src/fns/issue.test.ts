@@ -44,4 +44,14 @@ describe("issue", () => {
 		await issue.run(env, { text: "bug" });
 		expect(await readFeedback(env, "suggest")).toHaveLength(0);
 	});
+
+	it("redacts PII before persisting to the public /feedback sink", async () => {
+		const env = fakeEnv();
+		await issue.run(env, { text: "search broke for user alice@example.com from 10.0.0.1" });
+		const stored = (await readFeedback(env, "issue"))[0].text;
+		expect(stored).not.toContain("alice@example.com");
+		expect(stored).not.toContain("10.0.0.1");
+		expect(stored).toContain("[REDACTED:email]");
+		expect(stored).toContain("[REDACTED:ip]");
+	});
 });
