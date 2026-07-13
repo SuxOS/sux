@@ -1,5 +1,5 @@
 import { type Fn, fail, ok } from "../registry";
-import { fetchText, isHttpUrl, oj } from "./_util";
+import { FANOUT_BUDGET_MS, fetchText, isHttpUrl, oj, pool } from "./_util";
 import { type RobotsGroup, isPathAllowed, parseRobots } from "./robots";
 
 // Pages within a frontier level are fetched by a small index-claiming worker
@@ -66,6 +66,13 @@ export const crawl: Fn = {
 		const results: Array<{ url: string; title: string | null; depth: number }> = [];
 		let frontier: Array<{ url: string; depth: number }> = [{ url: seed, depth: 0 }];
 
+		// Time budget: a large crawl over slow residential fetches can outrun
+		// index.ts's FN_DEADLINE_MS, whose withDeadline would then kill the run and
+		// return ZERO pages. Instead stop near the budget and return the partials we
+		// already have, flagged truncated (mirrors batch.ts / put.ts / _dropbox-full).
+		const deadline = Date.now() + FANOUT_BUDGET_MS;
+		let truncated = false;
+
 		// The seed is a candidate URL too: honour robots before fetching it.
 		if (respectRobots && !(await robotsAllows(seed))) {
 			skippedByRobots.push(seed);
@@ -73,32 +80,42 @@ export const crawl: Fn = {
 		}
 
 		while (frontier.length && results.length < maxPages) {
+			// Out of time budget before starting the next level: return what we have.
+			if (Date.now() >= deadline) {
+				truncated = true;
+				break;
+			}
 			// Only fetch what the remaining budget can index.
 			const level = frontier.slice(0, maxPages - results.length);
 
-			// Fetch the level in parallel (index-claiming pool); everything else —
-			// indexing, link extraction, dedupe — stays sequential in index order so
-			// the output is deterministic regardless of fetch completion order.
-			const fetched: Array<{ status: number; html: string } | { error: string }> = new Array(level.length);
-			let nextClaim = 0;
-			async function worker(): Promise<void> {
-				for (;;) {
-					const i = nextClaim++;
-					if (i >= level.length) return;
+			// Fetch the level in parallel (shared deadline-raced index-claiming pool);
+			// everything else — indexing, link extraction, dedupe — stays sequential in
+			// index order so the output is deterministic regardless of completion order.
+			// Un-run slots (deadline fired mid-level) come back undefined.
+			const fetched = await pool(
+				level,
+				CONCURRENCY,
+				async (item): Promise<{ status: number; html: string } | { error: string }> => {
 					try {
-						const f = await fetchText(env, level[i].url, { maxBytes: PAGE_MAX_BYTES });
-						fetched[i] = { status: f.status, html: f.text };
+						const f = await fetchText(env, item.url, { maxBytes: PAGE_MAX_BYTES });
+						return { status: f.status, html: f.text };
 					} catch (e) {
-						fetched[i] = { error: e instanceof Error ? e.message : String(e) };
+						return { error: e instanceof Error ? e.message : String(e) };
 					}
-				}
-			}
-			await Promise.all(Array.from({ length: Math.min(CONCURRENCY, level.length) }, () => worker()));
+				},
+				deadline,
+			);
 
 			const next: Array<{ url: string; depth: number }> = [];
 			for (let i = 0; i < level.length; i++) {
 				const { url, depth } = level[i];
 				const got = fetched[i];
+				// Un-fetched slot: the time budget fired mid-level. Flag and skip — a
+				// partial (even seed-only) beats a deadline-killed empty crawl.
+				if (got === undefined) {
+					truncated = true;
+					continue;
+				}
 				if ("error" in got) {
 					// A dead seed is an error, not an empty (cacheable) crawl.
 					if (depth === 0) return fail(`seed fetch failed: ${got.error}`);
@@ -135,6 +152,6 @@ export const crawl: Fn = {
 			}
 			frontier = next;
 		}
-		return ok(oj({ seed, pages: results.length, results, ...(respectRobots ? { skipped_by_robots: skippedByRobots } : {}) }));
+		return ok(oj({ seed, pages: results.length, results, ...(truncated ? { truncated: true, reason: "time" } : {}), ...(respectRobots ? { skipped_by_robots: skippedByRobots } : {}) }));
 	},
 };
