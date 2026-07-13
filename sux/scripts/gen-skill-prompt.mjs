@@ -1,8 +1,12 @@
 // Generate sux/src/skill-prompt.ts — the sux + life SKILLs embedded as strings,
 // so the /mcp server can serve them as MCP prompts to every client (mobile
 // included) that can't load the local plugin skills. Sources of truth are
-// .claude/skills/{sux,life}/SKILL.md. Run: `npm run gen:skill`.
-import { readFileSync, writeFileSync } from "node:fs";
+// .claude/skills/{sux,life}/SKILL.md (+ any references/*.md — a Cloudflare
+// Worker has no runtime filesystem, so it can't lazily load references/ the
+// way local Claude Code does; the embedded prompt inlines them so mobile/
+// remote clients still get the full guidance, not just the skill's slim
+// progressive-disclosure body). Run: `npm run gen:skill`.
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,12 +16,23 @@ const SKILLS = ["sux", "life"];
 
 // Split the YAML frontmatter (---\n…\n---) from the markdown body. The body is the
 // prompt text; the frontmatter `description` becomes the prompt's description.
+// Any references/*.md files are appended, sorted by filename, so the embedded
+// copy is self-contained (no cross-file pointers a filesystem-less client can't follow).
 function extract(name) {
-	const raw = readFileSync(join(ROOT, ".claude", "skills", name, "SKILL.md"), "utf8");
+	const dir = join(ROOT, ".claude", "skills", name);
+	const raw = readFileSync(join(dir, "SKILL.md"), "utf8");
 	const m = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
 	const front = m ? m[1] : "";
-	const body = (m ? m[2] : raw).trim();
+	let body = (m ? m[2] : raw).trim();
 	const description = (front.match(/^description:\s*(.*)$/m)?.[1] ?? `${name} skill guidance`).trim();
+
+	const refsDir = join(dir, "references");
+	if (existsSync(refsDir)) {
+		const refs = readdirSync(refsDir).filter((f) => f.endsWith(".md")).sort();
+		for (const f of refs) {
+			body += `\n\n${readFileSync(join(refsDir, f), "utf8").trim()}`;
+		}
+	}
 	return { body, description };
 }
 
