@@ -3,11 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("../proxy", () => ({ smartFetch: vi.fn() }));
 
 import { smartFetch } from "../proxy";
+import { FANOUT_BUDGET_MS } from "./_util";
 import { crawl } from "./crawl";
 
 const mockFetch = smartFetch as unknown as ReturnType<typeof vi.fn>;
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.clearAllMocks();
+});
 
 describe("crawl", () => {
 	it("rejects a non-absolute url", async () => {
@@ -168,6 +172,33 @@ describe("crawl", () => {
 		expect(o.skipped_by_robots).toBeUndefined(); // default output unchanged
 		expect(mockFetch).toHaveBeenCalledWith(expect.anything(), "https://ex.com/private", expect.anything());
 		expect(mockFetch).not.toHaveBeenCalledWith(expect.anything(), "https://ex.com/robots.txt", expect.anything());
+	});
+
+	it("returns the pages gathered so far flagged truncated when the time budget runs out mid-crawl", async () => {
+		const links = Array.from({ length: 3 }, (_, i) => `<a href="https://ex.com/p${i}">l</a>`).join("");
+		let seedDone = false;
+		mockFetch.mockImplementation(async (_env: unknown, url: string) => {
+			if (url === "https://ex.com/") {
+				const res = new Response(`<title>Home</title>${links}`, { status: 200 });
+				seedDone = true; // budget is now spent — next level must not fetch
+				return res;
+			}
+			return new Response("<title>Child</title>", { status: 200 });
+		});
+		// Freeze time until the seed is fetched, then jump past the budget so the
+		// second frontier level is cut off. Seed still lands; children never fetch.
+		const start = 1_000_000;
+		vi.spyOn(Date, "now").mockImplementation(() => (seedDone ? start + FANOUT_BUDGET_MS + 1 : start));
+
+		const r = await crawl.run({} as any, { url: "https://ex.com/", depth: 1, max: 25 });
+		expect(r.isError).toBeFalsy();
+		const out = JSON.parse(r.content[0].text);
+		expect(out.pages).toBe(1);
+		expect(out.results.map((x: any) => x.url)).toEqual(["https://ex.com/"]);
+		expect(out.truncated).toBe(true);
+		expect(out.reason).toBe("time");
+		// children were discovered but the budget cut them off before any fetch
+		expect(mockFetch).not.toHaveBeenCalledWith(expect.anything(), "https://ex.com/p0", expect.anything());
 	});
 
 	it("caps each page body read at 512KB (links past the cap are not seen)", async () => {
