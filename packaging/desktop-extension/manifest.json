@@ -8,7 +8,7 @@
     "name": "Colin Summers",
     "url": "https://github.com/colinxs/sux-mcp"
   },
-  "homepage": "https://sux.colinxs.workers.dev",
+  "homepage": "https://suxos.net",
   "server": {
     "type": "node",
     "entry_point": "mcp-remote",
@@ -27,7 +27,7 @@
       "title": "sux MCP URL",
       "description": "The remote sux MCP endpoint. Leave as-is unless you self-host a different deployment.",
       "required": true,
-      "default": "https://sux.colinxs.workers.dev/mcp"
+      "default": "https://suxos.net/mcp"
     }
   },
   "compatibility": {

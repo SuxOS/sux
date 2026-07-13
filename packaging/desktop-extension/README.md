@@ -1,6 +1,6 @@
 # sux — Claude Desktop
 
-sux is a **remote, OAuth-gated** MCP server (`https://sux.colinxs.workers.dev/mcp`).
+sux is a **remote, OAuth-gated** MCP server (`https://suxos.net/mcp`).
 Claude Desktop offers two ways to connect it. **Option A (native custom connector) is the
 recommended path** — it's built for exactly this case. The bundled `.mcpb` in Option B
 exists only because `.mcpb`/`.dxt` bundles were designed for *local* servers, so it wraps
@@ -14,7 +14,7 @@ Claude Desktop can talk to a remote MCP server directly, no bundle required.
 
 1. Open **Claude Desktop → Settings → Connectors**.
 2. Click **Add custom connector**.
-3. **Name:** `sux`  ·  **Remote MCP server URL:** `https://sux.colinxs.workers.dev/mcp`
+3. **Name:** `sux`  ·  **Remote MCP server URL:** `https://suxos.net/mcp`
 4. Leave **Advanced settings** (OAuth Client ID / Secret) **empty** — sux supports OAuth
    *dynamic client registration* (`/register`), so no pre-provisioned client is needed.
 5. Click **Add**, then complete the GitHub OAuth sign-in when prompted.
@@ -58,7 +58,7 @@ mcpb pack .                          # produces sux.mcpb
 ### Install
 
 Double-click `sux.mcpb` (or **Claude Desktop → Settings → Extensions → Install from
-file…**). Confirm the pre-filled **sux MCP URL** (`https://sux.colinxs.workers.dev/mcp`)
+file…**). Confirm the pre-filled **sux MCP URL** (`https://suxos.net/mcp`)
 and enable it. On first tool use, a browser window opens for GitHub OAuth; approve it once.
 
 ### Equivalent manual config
@@ -71,7 +71,7 @@ If you'd rather skip the bundle, add this to `claude_desktop_config.json`
   "mcpServers": {
     "sux": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://sux.colinxs.workers.dev/mcp"]
+      "args": ["-y", "mcp-remote", "https://suxos.net/mcp"]
     }
   }
 }
