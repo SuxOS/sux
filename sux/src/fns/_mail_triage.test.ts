@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, DRAFT_REPLY_CONFIDENCE_THRESHOLD, classifyMessage, detectReplyDraft, hasMailTriage, hasMailTriageAct, isAutoActAllowed, resolveOp, runTriage, type TriageDeps, type TriageMsg, type TriageOp } from "./_mail_triage";
+import { ACTION_FOR, ARCHIVE_CONFIDENCE_THRESHOLD, AUTO_ACT_OPS, CONFIDENCE_THRESHOLD, DRAFT_REPLY_CONFIDENCE_THRESHOLD, classifyMessage, detectReplyDraft, hasMailTriage, hasMailTriageAct, isAutoActAllowed, isSensitiveSender, resolveOp, runTriage, type TriageDeps, type TriageLabel, type TriageMsg, type TriageOp } from "./_mail_triage";
 import { appendTriageEntries, bulkUndo, readTriageEntries } from "./_mail_triage_log";
 
 // A single OAUTH_KV stub, TTL-aware only enough for the ledger (opts ignored). Mirrors the
@@ -32,9 +32,12 @@ describe("gates — fail-closed, two-stage", () => {
 describe("classifier — rules stub", () => {
 	const cases: Array<[string, TriageMsg, string]> = [
 		["junk", { id: "1", from: "prize@sketchy.tld", subject: "You WON the lottery! Claim your prize now" }, "junk"],
-		["receipt", { id: "2", from: "receipts@amazon.com", subject: "Your receipt from Amazon" }, "receipt"],
-		["newsletter", { id: "3", from: "newsletter@substack.com", subject: "Weekly Digest", preview: "unsubscribe" }, "newsletter"],
+		["receipt", { id: "2", from: "receipts@shopco.example", subject: "Your receipt from ShopCo" }, "receipt"],
+		["transaction", { id: "t1", from: "alerts@chase.com", subject: "Your statement is ready" }, "transaction"],
+		["amazon_return", { id: "a1", from: "return@amazon.com", subject: "Your refund and return label" }, "amazon_return"],
+		["mailing_list", { id: "3", from: "newsletter@substack.com", subject: "Weekly Digest", preview: "unsubscribe" }, "mailing_list"],
 		["notification", { id: "4", from: "noreply@github.com", subject: "New sign-in to your account" }, "notification"],
+		["important", { id: "i1", from: "friend@gmail.com", subject: "Please reply — need your answer by tomorrow" }, "important"],
 		["personal", { id: "5", from: "friend@gmail.com", subject: "lunch tomorrow?" }, "personal"],
 		["unknown", { id: "6", from: "someone@randomcorp.example", subject: "Quick question" }, "unknown"],
 	];
@@ -43,19 +46,37 @@ describe("classifier — rules stub", () => {
 			expect(classifyMessage(msg).label).toBe(label);
 		});
 	}
-	it("does NOT call a personal-domain sender a newsletter on a preview cue alone (no auto-archive of real mail)", () => {
+	it("keeps transaction distinct from receipt (bank account event vs purchase confirmation)", () => {
+		// A purchase confirmation with an order # is a RECEIPT, not a transaction…
+		expect(classifyMessage({ id: "d1", from: "orders@shopco.example", subject: "Order confirmation #12345" }).label).toBe("receipt");
+		// …while a card/brokerage account event (or a bank sender) is a TRANSACTION.
+		expect(classifyMessage({ id: "d2", from: "no-reply@wellsfargo.com", subject: "Payment received" }).label).toBe("transaction");
+		expect(classifyMessage({ id: "d3", from: "info@somebank.example", subject: "Direct deposit posted to your account", preview: "available balance" }).label).toBe("transaction");
+	});
+	it("amazon return/refund beats the generic receipt rule and emits the amazon-return tag", () => {
+		const c = classifyMessage({ id: "a2", from: "auto-confirm@amazon.com", subject: "Your return label is ready", preview: "drop off at any location" });
+		expect(c.label).toBe("amazon_return");
+		expect(ACTION_FOR[c.label]).toEqual({ kind: "label", label: "amazon-return", add: true });
+	});
+	it("does NOT call a personal-domain sender a mailing list on a preview cue alone (no mislabel of real mail)", () => {
 		// "weekly"/"unsubscribe" in a preview must not, by itself, override the sender check —
-		// a gmail.com human whose message merely contains those words stays PERSONAL, not newsletter.
+		// a gmail.com human whose message merely contains those words stays PERSONAL, not a mailing list.
 		for (const preview of ["let's meet weekly going forward", "unsubscribe me from the group calendar?"]) {
 			const c = classifyMessage({ id: "n", from: "friend@gmail.com", subject: "lunch tomorrow?", preview });
-			expect(c.label).not.toBe("newsletter");
+			expect(c.label).not.toBe("mailing_list");
 			expect(c.label).toBe("personal");
 		}
 	});
-	it("still labels a real bulk sender a newsletter (cue + newsletter-sender signal)", () => {
-		expect(classifyMessage({ id: "n2", from: "newsletter@substack.com", subject: "Weekly Digest", preview: "unsubscribe" }).label).toBe("newsletter");
-		// A non-personal domain may qualify on a preview cue even without a newsletter-y address.
-		expect(classifyMessage({ id: "n3", from: "hi@somebrand.example", subject: "hello", preview: "you can unsubscribe any time" }).label).toBe("newsletter");
+	it("still labels a real bulk sender a mailing list (cue + bulk-sender signal)", () => {
+		expect(classifyMessage({ id: "n2", from: "newsletter@substack.com", subject: "Weekly Digest", preview: "unsubscribe" }).label).toBe("mailing_list");
+		// A non-personal domain may qualify on a preview cue even without a bulk-sender address.
+		expect(classifyMessage({ id: "n3", from: "hi@somebrand.example", subject: "hello", preview: "you can unsubscribe any time" }).label).toBe("mailing_list");
+	});
+	it("important AUTO-elevates (add-only label): personal human + urgency cue → reversible label:add", () => {
+		const c = classifyMessage({ id: "im", from: "friend@gmail.com", subject: "Action required: please respond ASAP" });
+		expect(c.label).toBe("important");
+		expect(c.confidence).toBeGreaterThanOrEqual(CONFIDENCE_THRESHOLD);
+		expect(ACTION_FOR.important).toEqual({ kind: "label", label: "important", add: true });
 	});
 	it("labels GitHub notifications by TYPE with a reversible label op (never archived)", () => {
 		const cases: Array<[TriageMsg, string]> = [
@@ -87,7 +108,7 @@ describe("classifier — rules stub", () => {
 		expect(classifyMessage({ id: "x", from: "a@randomcorp.example", subject: "hey" }).confidence).toBeLessThan(CONFIDENCE_THRESHOLD);
 	});
 	it("actionable labels clear the confidence threshold", () => {
-		for (const l of ["junk", "receipt", "newsletter", "notification"]) {
+		for (const l of ["junk", "transaction", "receipt", "amazon_return", "mailing_list", "notification"]) {
 			const c = cases.find((k) => k[2] === l)![1];
 			expect(classifyMessage(c).confidence).toBeGreaterThanOrEqual(CONFIDENCE_THRESHOLD);
 		}
@@ -101,9 +122,9 @@ const mkDeps = (msgs: TriageMsg[]): TriageDeps & { actSpy: ReturnType<typeof vi.
 };
 
 const SAMPLE: TriageMsg[] = [
-	{ id: "j1", from: "x@sketchy.tld", subject: "You WON the lottery! Claim your prize now" }, // junk → LABEL (attention-increasing), not a junk-move
-	{ id: "r1", from: "receipts@amazon.com", subject: "Your receipt from Amazon" }, // receipt → archive ideal, but 0.85 < archive bar → LABEL in place
-	{ id: "p1", from: "friend@gmail.com", subject: "lunch tomorrow?" }, // personal → suggest-only
+	{ id: "j1", from: "x@sketchy.tld", subject: "You WON the lottery! Claim your prize now" }, // junk → LABEL (reversible), not a junk-move
+	{ id: "r1", from: "receipts@shopco.example", subject: "Your receipt from ShopCo" }, // receipt → LABEL (reversible tag), not archive
+	{ id: "p1", from: "friend@gmail.com", subject: "lunch tomorrow?" }, // personal → LABEL (reversible tag)
 	{ id: "u1", from: "someone@randomcorp.example", subject: "Quick question" }, // unknown → suggest-only
 ];
 
@@ -118,17 +139,40 @@ describe("auto-act allow-list — attention-increasing ops + high-confidence arc
 	it("a label-REMOVE (attention-reducing) is rejected by the guard even though it's representable", () => {
 		expect(isAutoActAllowed({ kind: "label", label: "junk", add: false })).toBe(false);
 	});
-	it("declutter labels map to archive (junk labels in place); personal/unknown never auto-act", () => {
-		expect(ACTION_FOR.junk).toEqual({ kind: "label", label: "junk", add: true });
-		for (const l of ["receipt", "newsletter", "notification"] as const) expect(ACTION_FOR[l]).toEqual({ kind: "archive" });
-		expect(ACTION_FOR.personal).toBeNull();
+	it("every obvious category TAGS (label:add) — never archive; a label op is not a hiding move", () => {
+		const tags: Array<[TriageLabel, string]> = [
+			["transaction", "transaction"],
+			["receipt", "receipt"],
+			["amazon_return", "amazon-return"],
+			["mailing_list", "mailing-list"],
+			["notification", "notification"],
+			["personal", "personal"],
+		];
+		for (const [label, keyword] of tags) {
+			const op = ACTION_FOR[label]!;
+			expect(op).toEqual({ kind: "label", label: keyword, add: true });
+			expect(op.kind).toBe("label"); // never "archive"
+			expect(isAutoActAllowed(op)).toBe(true);
+		}
+	});
+	it("archive is still a representable/allow-listed op but no longer any category's default", () => {
+		expect([...AUTO_ACT_OPS]).toContain("archive");
+		for (const op of Object.values(ACTION_FOR)) if (op) expect(op.kind).not.toBe("archive");
+	});
+	it("important AUTO-adds (attention-increasing = safe) but only the ADD side — no remove rule", () => {
+		expect(ACTION_FOR.important).toEqual({ kind: "label", label: "important", add: true });
+		// The whole ACTION_FOR table only ever ADDs labels — no category maps to a label REMOVE (an
+		// attention-reducing move); un-labeling stays human-only.
+		for (const op of Object.values(ACTION_FOR)) if (op && op.kind === "label") expect(op.add).toBe(true);
+	});
+	it("unknown is GATED (op null) — classified/suggested, never auto-acted", () => {
 		expect(ACTION_FOR.unknown).toBeNull();
 	});
 	it("resolveOp gates archive on the HIGHER bar: below it de-escalates to a label in place, above it archives", () => {
 		expect(ARCHIVE_CONFIDENCE_THRESHOLD).toBeGreaterThan(CONFIDENCE_THRESHOLD);
 		// Below the archive bar → label the message where it is (kept visible), never hide it.
 		expect(resolveOp({ kind: "archive" }, "receipt", ARCHIVE_CONFIDENCE_THRESHOLD - 0.01)).toEqual({ kind: "label", label: "receipt", add: true });
-		expect(resolveOp({ kind: "archive" }, "newsletter", 0.85)).toEqual({ kind: "label", label: "newsletter", add: true });
+		expect(resolveOp({ kind: "archive" }, "mailing_list", 0.85)).toEqual({ kind: "label", label: "mailing_list", add: true });
 		// At/above the bar → archive survives.
 		expect(resolveOp({ kind: "archive" }, "receipt", ARCHIVE_CONFIDENCE_THRESHOLD)).toEqual({ kind: "archive" });
 		expect(resolveOp({ kind: "archive" }, "notification", 0.95)).toEqual({ kind: "archive" });
@@ -170,41 +214,42 @@ describe("runTriage — gating + idempotency", () => {
 		expect(deps.actSpy).not.toHaveBeenCalled();
 	});
 
-	it("ENABLED + ACT → LABELS junk + receipt in place (attention-increasing), suggests personal/unknown; NEVER archives or junk-moves", async () => {
+	it("ENABLED + ACT → TAGS junk + receipt (reversible label:add, never archive); suggests personal/unknown", async () => {
 		const deps = mkDeps(SAMPLE);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
 		const report = await runTriage(env, { cycle_id: "c3" }, deps);
 		expect(deps.actSpy).toHaveBeenCalledTimes(2);
 		expect(deps.actSpy).toHaveBeenCalledWith(env, ["j1"], { kind: "label", label: "junk", add: true });
 		expect(deps.actSpy).toHaveBeenCalledWith(env, ["r1"], { kind: "label", label: "receipt", add: true });
-		// No call ever hides a message: every auto-act is a label-add, never archive/junk-move.
+		// Every auto-act is a non-hiding label op — archive is never called, nothing leaves the inbox.
 		for (const call of deps.actSpy.mock.calls) expect((call[2] as TriageOp).kind).toBe("label");
 		expect(report.acted).toEqual([
 			{ id: "j1", label: "junk", confidence: 0.9, op: "label", to: "+label:junk" },
 			{ id: "r1", label: "receipt", confidence: 0.85, op: "label", to: "+label:receipt" },
 		]);
-		// personal (0.70, no action) + unknown (0.20, low confidence) → suggestions only, never acted.
+		// personal (0.70, below threshold) + unknown (0.20, low confidence) → suggestions only, never acted.
 		expect(report.suggested!.map((s) => s.id).sort()).toEqual(["p1", "u1"]);
 	});
 
-	it("ENABLED + ACT → a HIGH-confidence declutter classification (≥ archive bar) actually archives", async () => {
-		// Drive the loop through the injected classify seam (the learning-classifier hook) with a
-		// receipt scored ABOVE the archive bar — the one path that reaches a real archive move.
+	it("ENABLED + ACT → an explicit archive override (e.g. a future learning classifier) ABOVE the archive bar actually archives", async () => {
+		// ACTION_FOR no longer defaults any category to archive (this PR's whole point), so the
+		// only path that reaches a real archive move is a per-message `op` override — drive it
+		// through the injected classify seam (the learning-classifier hook) scored above the bar.
 		const msgs: TriageMsg[] = [{ id: "hi", from: "receipts@shop.example", subject: "Your receipt" }];
 		const deps = mkDeps(msgs);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
-		const report = await runTriage(env, { cycle_id: "arch" }, { ...deps, classify: () => ({ label: "receipt", confidence: 0.95, reason: "high-confidence receipt" }) });
+		const report = await runTriage(env, { cycle_id: "arch" }, { ...deps, classify: () => ({ label: "receipt", confidence: 0.95, reason: "high-confidence receipt", op: { kind: "archive" } }) });
 		expect(deps.actSpy).toHaveBeenCalledTimes(1);
 		expect(deps.actSpy).toHaveBeenCalledWith(env, ["hi"], { kind: "archive" });
 		expect(report.acted).toEqual([{ id: "hi", label: "receipt", confidence: 0.95, op: "archive", to: "archive" }]);
 	});
 
-	it("ENABLED + ACT → the SAME receipt just BELOW the archive bar de-escalates to a label in place, never archived", async () => {
+	it("ENABLED + ACT → the SAME archive override just BELOW the archive bar de-escalates to a label in place, never archived", async () => {
 		const msgs: TriageMsg[] = [{ id: "lo", from: "receipts@shop.example", subject: "Your receipt" }];
 		const deps = mkDeps(msgs);
 		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
 		const below = ARCHIVE_CONFIDENCE_THRESHOLD - 0.05;
-		const report = await runTriage(env, { cycle_id: "lab" }, { ...deps, classify: () => ({ label: "receipt", confidence: below, reason: "receipt below archive bar" }) });
+		const report = await runTriage(env, { cycle_id: "lab" }, { ...deps, classify: () => ({ label: "receipt", confidence: below, reason: "receipt below archive bar", op: { kind: "archive" } }) });
 		expect(deps.actSpy).toHaveBeenCalledWith(env, ["lo"], { kind: "label", label: "receipt", add: true });
 		for (const call of deps.actSpy.mock.calls) expect((call[2] as TriageOp).kind).toBe("label");
 		expect(report.acted).toEqual([{ id: "lo", label: "receipt", confidence: below, op: "label", to: "+label:receipt" }]);
@@ -359,6 +404,65 @@ describe("draft-reply — the send-proof staging lane", () => {
 		expect(res.undone).toBe(1);
 		expect(res.ids).toEqual(["m1"]);
 		expect(move).toHaveBeenCalledWith(env, ["m1"], "inbox");
+	});
+});
+
+describe("sensitive-sender guard — health/finance/insurance/gov forced suggest-only", () => {
+	it("flags bank/health/insurance/gov/brokerage senders as sensitive", () => {
+		for (const from of ["alerts@chase.com", "no-reply@wellsfargo.com", "billing@myclinic-health.com", "eob@aetna-insurance.com", "noreply@irs.gov", "statements@fidelity.com"]) {
+			expect(isSensitiveSender(from)).toBe(true);
+		}
+		for (const from of ["friend@gmail.com", "newsletter@substack.com", "orders@shopco.example"]) {
+			expect(isSensitiveSender(from)).toBe(false);
+		}
+	});
+
+	it("forces suggest-only for a sensitive sender even at confidence >= threshold with ACT enabled", async () => {
+		// A bank transaction alert classifies at 0.85 (>= threshold) and maps to a label:add — but the
+		// sensitive guard must keep the bot's hands off it: never acted, only suggested with a reason.
+		const bank: TriageMsg[] = [{ id: "b1", from: "alerts@chase.com", subject: "Your statement is ready" }];
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const deps = mkDeps(bank);
+		const report = await runTriage(env, { cycle_id: "sens" }, deps);
+		expect(classifyMessage(bank[0]).confidence).toBeGreaterThanOrEqual(CONFIDENCE_THRESHOLD);
+		expect(deps.actSpy).not.toHaveBeenCalled(); // no keyword auto-applied
+		expect(report.acted).toHaveLength(0);
+		expect(report.suggested).toEqual([expect.objectContaining({ id: "b1", label: "transaction" })]);
+		expect(report.suggested![0].reason).toMatch(/sensitive sender: suggest-only/);
+	});
+
+	it("a clinic sender is suggest-only too (health mail never auto-tagged without a human)", async () => {
+		const clinic: TriageMsg[] = [{ id: "h1", from: "no-reply@patient-portal.hospital.example", subject: "Your lab results are ready" }];
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const deps = mkDeps(clinic);
+		const report = await runTriage(env, { cycle_id: "clinic" }, deps);
+		expect(deps.actSpy).not.toHaveBeenCalled();
+		expect(report.suggested![0].reason).toMatch(/sensitive sender: suggest-only/);
+	});
+});
+
+describe("runTriage — important AUTO-elevates (add-only, sensitive-exempt)", () => {
+	it("classifies important and AUTO-adds the reversible important label", async () => {
+		const imp: TriageMsg[] = [{ id: "im1", from: "friend@gmail.com", subject: "Action required: please respond ASAP" }];
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const deps = mkDeps(imp);
+		const report = await runTriage(env, { cycle_id: "imp" }, deps);
+		expect(classifyMessage(imp[0]).label).toBe("important");
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["im1"], { kind: "label", label: "important", add: true });
+		expect(report.acted).toEqual([{ id: "im1", label: "important", confidence: 0.8, op: "label", to: "+label:important" }]);
+	});
+
+	it("important elevation is EXEMPT from the sensitive-sender guard (you always want to SEE it)", async () => {
+		// A "patient@"-style address is both sensitive-matching AND a personal-provider human; an
+		// important cue still auto-elevates it — attention-increasing on sensitive mail is the point.
+		const s: TriageMsg[] = [{ id: "sp1", from: "patient@gmail.com", subject: "Urgent: please reply, deadline tomorrow" }];
+		expect(isSensitiveSender("patient@gmail.com")).toBe(true);
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1", MAIL_TRIAGE_ACT: "1" });
+		const deps = mkDeps(s);
+		const report = await runTriage(env, { cycle_id: "sp" }, deps);
+		expect(classifyMessage(s[0]).label).toBe("important");
+		expect(deps.actSpy).toHaveBeenCalledWith(env, ["sp1"], { kind: "label", label: "important", add: true });
+		expect(report.acted).toHaveLength(1);
 	});
 });
 

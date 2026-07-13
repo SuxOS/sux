@@ -52,7 +52,7 @@ export const hasMailTriage = (env: RtEnv): boolean => flagOn(env.MAIL_TRIAGE_ENA
 export const hasMailTriageAct = (env: RtEnv): boolean => hasMailTriage(env) && flagOn(env.MAIL_TRIAGE_ACT);
 
 // ── Classifier (rules stub) ───────────────────────────────────────────────────
-export type TriageLabel = "junk" | "receipt" | "newsletter" | "notification" | "personal" | "unknown";
+export type TriageLabel = "junk" | "transaction" | "receipt" | "amazon_return" | "mailing_list" | "notification" | "important" | "personal" | "unknown";
 /** `op` is an optional PER-MESSAGE reversible override of the label's default `ACTION_FOR` op —
  *  used by service-notification classification to attach a type-specific label keyword (e.g.
  *  `gh:ci-fail`) instead of the label's blanket action. It is still funnelled through the same
@@ -105,16 +105,27 @@ const opToken = (op: TriageOp): string => (op.kind === "label" ? (op.add ? "labe
  *  non-allow-listed action) past the confidence gate. */
 export const isAutoActAllowed = (op: TriageOp): boolean => (AUTO_ACT_OPS as readonly string[]).includes(opToken(op));
 
-/** Classifier label → the ideal op to take, or null = never auto-act (personal/unknown stay in the
- *  inbox untouched). Declutter labels (receipt/newsletter/notification) map to `archive`, but the
- *  loop runs every op through `resolveOp` first: an archive only survives above the high archive bar,
- *  otherwise it de-escalates to labeling in place. A junk guess LABELS (never files into Junk). */
+/** Classifier label → the reversible op to take, or null = never auto-act. Every "obvious"
+ *  category TAGS (a non-hiding `label:add`) rather than archiving — a mislabel is a one-call
+ *  un-label away and no message is ever hidden from the inbox. Archive stays a representable op
+ *  (in AUTO_ACT_OPS) and the loop still runs every op through `resolveOp` (an archive only
+ *  survives above the high archive bar, otherwise it de-escalates to labeling in place), but no
+ *  category here defaults to it — hiding is a separate gated decision we are NOT enabling.
+ *
+ *  Direction principle: auto-actions may only move in the attention-INCREASING / reversible-safe
+ *  direction (add/elevate a label). Attention-REDUCING moves (remove a label, archive, hide) stay
+ *  human-gated. So `important` AUTO-ADDs (elevating is always safe) but the bot may only ADD it —
+ *  there is no `important` remove rule and the loop never emits one; un-important is human-only.
+ *  `unknown` stays untouched. Table-driven: a new specific label is one row + its rule. */
 export const ACTION_FOR: Record<TriageLabel, TriageOp | null> = {
 	junk: { kind: "label", label: "junk", add: true },
-	receipt: { kind: "archive" },
-	newsletter: { kind: "archive" },
-	notification: { kind: "archive" },
-	personal: null,
+	transaction: { kind: "label", label: "transaction", add: true },
+	receipt: { kind: "label", label: "receipt", add: true },
+	amazon_return: { kind: "label", label: "amazon-return", add: true },
+	mailing_list: { kind: "label", label: "mailing-list", add: true },
+	notification: { kind: "label", label: "notification", add: true },
+	personal: { kind: "label", label: "personal", add: true },
+	important: { kind: "label", label: "important", add: true },
 	unknown: null,
 };
 
@@ -142,10 +153,40 @@ function opRecord(op: TriageOp, fromMailbox: string): { to: string; log: Partial
 
 const JUNK_SUBJECT = /\b(lottery|you won|winner|claim your prize|viagra|nigerian prince|wire transfer|risk-free|act now|100% free|congratulations you|crypto giveaway)\b/i;
 const RECEIPT = /\b(receipt|invoice|order confirmation|your order|order #|order placed|payment (received|confirmation))\b/i;
-const NEWSLETTER_CUE = /\b(newsletter|digest|weekly|unsubscribe|this email was sent to)\b/i;
-const NEWSLETTER_FROM = /(newsletter|no-?reply|news@|updates?@|hello@|team@|marketing@)/i;
+// A transaction is a bank/card/brokerage account event (statement/payment/balance), distinct from a
+// purchase RECEIPT: a strong subject/body cue, OR any of the known money-institution sender domains.
+const TRANSACTION_CUE = /\b(statement (is )?ready|payment (received|posted|due)|autopay|direct deposit|available balance|account balance|transaction alert|card ending|wire (transfer|sent|received)|deposit posted|withdrawal)\b/i;
+const BANK_DOMAINS = /(chase|bankofamerica|bofa|wellsfargo|citi(bank)?|capitalone|amex|americanexpress|discover|usbank|pnc|ally|fidelity|schwab|vanguard|etrade|paypal|venmo|robinhood|coinbase)\./i;
+// Amazon returns/refunds: an amazon.com sender AND a return/refund cue — kept as its own reversible
+// tag so a specific "amazon-return" label can hang off it (checked before the generic RECEIPT rule).
+const AMAZON_FROM = /@(.*\.)?amazon\.com\b/i;
+const AMAZON_RETURN_CUE = /\b(return|refund|return label|item returned|drop off|dropoff)\b/i;
+// Mailing list (the old "newsletter" concept): a bulk sender address, or an unsubscribe/list cue on
+// a NON-personal domain — never a body cue alone from a real person's mailbox.
+const MAILING_LIST_CUE = /\b(newsletter|digest|weekly|unsubscribe|this email was sent to|view (this|in) (email )?(in )?(your )?browser|manage (your )?preferences)\b/i;
+const MAILING_LIST_FROM = /(newsletter|no-?reply|news@|updates?@|hello@|team@|marketing@|list@|announce@)/i;
+// Important AUTO-elevates (attention-increasing = safe, add-only): a human on a personal-provider
+// domain asking for a reply / flagging urgency or a deadline. Kept conservative — false positives
+// here would over-flag — but a hit is a safe reversible `label:add "important"` (never a remove).
+const IMPORTANT_CUE = /\b(please (reply|respond)|reply requested|response (needed|required)|action required|time-sensitive|urgent|as soon as possible|asap|by (end of day|eod|tomorrow|monday|tuesday|wednesday|thursday|friday)|deadline|awaiting your)\b/i;
 const NOTIFY_FROM = /(no-?reply|do-?not-?reply|notif|alert|updates?@|automated|@notifications?\.)/i;
 const PERSONAL_DOMAINS = new Set(["gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "me.com", "proton.me", "protonmail.com", "aol.com"]);
+
+// ── Sensitive-sender guard ─────────────────────────────────────────────────────
+// Health/financial/insurance/government/legal senders are the one class where a wrong auto-tag is
+// costly and a human should always be in the loop. When the FROM matches, the loop forces the
+// message to suggest-only (wouldAct=false) regardless of confidence or MAIL_TRIAGE_ACT — the digest
+// still surfaces the suggestion, but no keyword is auto-applied. Matched on the sender only (local
+// part + domain), so classification stays a pure function of the message.
+const SENSITIVE_SENDER =
+	/(\bbank\b|creditunion|credit-union|insurance|healthcare|\bhealth\b|clinic|hospital|medical|patient|pharmacy|\brx\b|\beob\b|explanation of benefits|\bclaim\b|\birs\b|\.gov\b|\bssa\b|brokerage|investment)/i;
+
+/** Is this a sensitive sender (health/finance/insurance/gov/legal)? Combines a keyword/domain match
+ *  with the known money-institution domain set. Used as a suggest-only override in the loop. */
+export function isSensitiveSender(from: string): boolean {
+	const f = String(from ?? "").toLowerCase();
+	return SENSITIVE_SENDER.test(f) || BANK_DOMAINS.test(f);
+}
 
 // ── Service-notification rule ──────────────────────────────────────────────────
 // Dev/CI service notifications (GitHub, GitLab, Vercel, CircleCI) are worth KEEPING visible and
@@ -192,18 +233,26 @@ export function classifyMessage(msg: TriageMsg): Classification {
 	const domain = (from.match(/@([^\s>,;]+)/)?.[1] ?? "").replace(/[>).]+$/, "");
 	const isPersonal = PERSONAL_DOMAINS.has(domain);
 	if (JUNK_SUBJECT.test(hay)) return { label: "junk", confidence: 0.9, reason: "spam-signal subject/body" };
+	// Money/brand-specific senders come BEFORE the generic personal/notify branches (mirroring the
+	// service-notification ordering) so a bank or amazon.com sender is caught by its precise rule.
+	if (AMAZON_FROM.test(from) && AMAZON_RETURN_CUE.test(hay)) return { label: "amazon_return", confidence: 0.9, reason: "amazon return/refund" };
+	if (BANK_DOMAINS.test(from) || TRANSACTION_CUE.test(hay)) return { label: "transaction", confidence: 0.85, reason: "bank/card account transaction" };
 	if (RECEIPT.test(subject)) return { label: "receipt", confidence: 0.85, reason: "receipt/invoice subject" };
-	// Dev/CI service notifications: label by type + KEEP visible. Checked before the newsletter/
+	// Dev/CI service notifications: label by type + KEEP visible. Checked before the mailing-list/
 	// notify branches, both of which a GitHub sender would otherwise match (notifications@github.com
-	// hits NOTIFY_FROM's `notif`, and a "digest" subject hits the newsletter cue) — and be archived.
+	// hits NOTIFY_FROM's `notif`, and a "digest" subject hits the mailing-list cue).
 	const svc = detectServiceNotification(from, subject, preview);
 	if (svc) return svc;
-	// Newsletter needs a SENDER signal, never a body/preview cue alone: a bulk-sender address
-	// (NEWSLETTER_FROM), or — only for a NON-personal domain — a preview cue. Gating the
+	// Mailing list needs a SENDER signal, never a body/preview cue alone: a bulk-sender address
+	// (MAILING_LIST_FROM), or — only for a NON-personal domain — a preview cue. Gating the
 	// preview-only path behind !isPersonal stops a real person's mail that merely says
-	// "weekly"/"unsubscribe" from being mislabeled a newsletter and auto-archived.
-	if (NEWSLETTER_CUE.test(hay) && (NEWSLETTER_FROM.test(from) || (!isPersonal && NEWSLETTER_CUE.test(preview)))) return { label: "newsletter", confidence: 0.8, reason: "newsletter cue + bulk sender" };
+	// "weekly"/"unsubscribe" from being mislabeled a mailing list.
+	if (MAILING_LIST_CUE.test(hay) && (MAILING_LIST_FROM.test(from) || (!isPersonal && MAILING_LIST_CUE.test(preview)))) return { label: "mailing_list", confidence: 0.8, reason: "mailing-list cue + bulk sender" };
 	if (NOTIFY_FROM.test(from)) return { label: "notification", confidence: 0.75, reason: "automated notification sender" };
+	// Important AUTO-elevates (add-only `label:add`, attention-increasing = the safe direction) but on a
+	// deliberately narrow signal: a real person on a personal-provider domain explicitly asking for a
+	// reply / flagging urgency or a deadline. Over-flagging here is a safe, one-call-reversible tag.
+	if (isPersonal && IMPORTANT_CUE.test(hay)) return { label: "important", confidence: 0.8, reason: "personal sender + reply/urgent cue" };
 	if (isPersonal) return { label: "personal", confidence: 0.7, reason: "personal-provider sender" };
 	return { label: "unknown", confidence: 0.2, reason: "no rule matched" };
 }
@@ -349,8 +398,13 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 		const op = base ? resolveOp(base, c.label, c.confidence) : null;
 		// draft-reply clears a higher bar than the reversible ops (a draft is more intrusive than a label).
 		const bar = op?.kind === "draft-reply" ? DRAFT_REPLY_CONFIDENCE_THRESHOLD : CONFIDENCE_THRESHOLD;
+		// Sensitive-sender guard: health/finance/insurance/gov/legal mail is FORCED to suggest-only
+		// for CATEGORY tags (transaction/mailing-list/etc.), regardless of confidence or MAIL_TRIAGE_ACT
+		// — a human must apply those on sensitive mail. `important` is EXEMPT: elevating attention is the
+		// safe direction, and you always want to SEE important bank/health mail, so it may still auto-add.
+		const sensitive = isSensitiveSender(String(m.from ?? "")) && c.label !== "important";
 		// Allow-list guard sits BEFORE the confidence gate: an op not on AUTO_ACT_OPS can never act.
-		const wouldAct = !!op && isAutoActAllowed(op) && c.confidence >= bar;
+		const wouldAct = !sensitive && !!op && isAutoActAllowed(op) && c.confidence >= bar;
 		const rec = op ? opRecord(op, mailbox) : null;
 		let markSeen = false;
 		// This message's log entry, persisted BEFORE led.mark below (see the ordering note).
@@ -400,7 +454,7 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 				// act FAILED → leave unseen so the next cycle retries.
 			}
 		} else {
-			const why = !op ? `${c.label}: no auto-action` : c.confidence < bar ? `low confidence ${c.confidence.toFixed(2)} < ${bar}` : "act path disabled (suggest-only)";
+			const why = sensitive ? "sensitive sender: suggest-only" : !op ? `${c.label}: no auto-action` : c.confidence < bar ? `low confidence ${c.confidence.toFixed(2)} < ${bar}` : "act path disabled (suggest-only)";
 			const reason = `${c.reason} — ${why}${rec ? `; suggest ${rec.to}` : ""}`;
 			suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
 			entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, ...(rec ? rec.log : {}), at: Date.now() };
