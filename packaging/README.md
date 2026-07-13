@@ -1,7 +1,7 @@
 # dist/ — distributable packagings of sux
 
 sux is a remote, OAuth-gated MCP server (Cloudflare Worker) at
-`https://sux.colinxs.workers.dev/mcp` exposing ~80 edge functions. This directory holds
+`https://suxos.net/mcp` exposing ~80 edge functions. This directory holds
 three ready-to-ship packagings. Each is self-contained with its own README.
 
 | Artifact | Directory | What it is |
@@ -28,4 +28,4 @@ All JSON manifests in this tree parse cleanly (`node -e JSON.parse`).
 
 `apiRoute: /mcp` · `authorize: /authorize` · `register: /register` (dynamic client
 registration) · `token: /token`. GitHub is the identity provider. Public, unauthenticated
-health check: <https://sux.colinxs.workers.dev/health>.
+health check: <https://suxos.net/health>.
