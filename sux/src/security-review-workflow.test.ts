@@ -30,7 +30,7 @@ describe("security-review workflow is a real, requireable gate", () => {
 		// crit/high branch and pass vacuously (that earlier slice-to-EOF bug is the whole
 		// point of this test). Both the fail-closed and advisory paths must live in HERE.
 		const start = sec.indexOf('if [ -z "$verdict" ]');
-		const end = sec.indexOf("crit=$(jq", start);
+		const end = sec.indexOf("crit=$(printf", start);
 		expect(start).toBeGreaterThan(-1);
 		expect(end).toBeGreaterThan(start);
 		const missing = sec.slice(start, end);
