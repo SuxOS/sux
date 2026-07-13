@@ -67,11 +67,15 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
             Your REQUIRED, PRIMARY deliverable is a verdict file. Before you finish — no matter
-            what else you do or don't do — you MUST write `.sec-verdict.json` in the repository
-            root (your current working directory; use a RELATIVE path, not $GITHUB_WORKSPACE),
-            containing exactly: {"critical":N,"high":N,"note":"..."} — the counts of CONFIRMED
-            high/critical security issues. If the diff is clean, write zeros. The gate treats a
-            missing file as "review did not finish", so writing this file is not optional.
+            what else you do or don't do — you MUST create it by running EXACTLY this via the
+            Bash tool (do NOT use the Write/Edit tools; only a Bash command reliably resolves
+            $GITHUB_WORKSPACE to the repo checkout the gate reads):
+
+              printf '{"critical":%s,"high":%s,"note":"%s"}' "$CRIT" "$HIGH" "$NOTE" > "$GITHUB_WORKSPACE/.sec-verdict.json"
+
+            where CRIT/HIGH are the counts of CONFIRMED critical/high security issues (0 if the
+            diff is clean) and NOTE is a one-line summary. The gate treats a missing file as
+            "review did not finish" and fails closed, so writing this file is not optional.
 
             The review itself: assess this PR's diff vs the base branch. This repo is a PUBLIC
             Cloudflare Worker + a live autonomous CI/CD pipeline, so weigh: secret handling/
@@ -92,7 +96,10 @@ jobs:
           # Locate the verdict robustly: the reviewer writes `.sec-verdict.json` at the repo
           # root, but tolerate it landing a level or two deep (cwd surprises) rather than
           # mis-reporting a real verdict as "missing" and stalling the PR.
-          verdict=$(find "$GITHUB_WORKSPACE" -maxdepth 3 -name .sec-verdict.json -print -quit 2>/dev/null || true)
+          verdict=$(find "$GITHUB_WORKSPACE" -name .sec-verdict.json -print -quit 2>/dev/null || true)
+          # Belt-and-suspenders: if the reviewer's cwd wasn't the workspace, scan the runner's
+          # work tree too so a written verdict is never mis-read as "missing".
+          [ -z "$verdict" ] && verdict=$(find /home/runner/work -name .sec-verdict.json -print -quit 2>/dev/null || true)
           # This step only runs when the preflight armed the review (go=true), so the Claude
           # step definitely ran. Three outcomes:
           #   1. A PRODUCED crit/high verdict → HARD-BLOCK: apply `hold` + exit 1 (unchanged).
