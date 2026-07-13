@@ -21,7 +21,7 @@ export const DOMAINS: DomainSpec[] = [
 	{
 		key: "extract",
 		blurb: "Parse HTML/text into structure — links, tables, metadata, readability, feeds, sitemaps, contacts, entities, CSS-select, grep, subtitles.",
-		leaves: ["extract", "readability", "tables", "metadata", "feed", "sitemap", "contacts", "entities", "select", "grep", "subtitles"],
+		leaves: ["extract", "readability", "tables", "metadata", "feed", "sitemap", "extract_contacts", "entities", "select", "grep", "subtitles"],
 	},
 	{
 		key: "research",
@@ -58,7 +58,7 @@ export const DOMAINS: DomainSpec[] = [
 		blurb: "Memory: capture into the vault (ingest / the `vault` namespace verb), then recall/oracle synthesize a cited answer across your stores.",
 		leaves: ["obsidian", "vault", "ingest", "recall", "oracle"],
 	},
-	{ key: "tasks", blurb: "Todoist tasks & projects, plus calendar + tasks via the `cal` namespace verb (Fastmail CalDAV).", leaves: ["todoist", "cal"] },
+	{ key: "tasks", blurb: "Todoist tasks & projects, plus calendar + tasks via the `calendar` namespace verb (Fastmail CalDAV).", leaves: ["todoist", "calendar"] },
 	{ key: "money", blurb: "Personal finance — Monarch Money accounts, balances, transactions, budgets, cashflow (read-only).", leaves: ["monarch"] },
 	{ key: "mail", blurb: "Fastmail over the raw JMAP conduit (byte-exact methodCalls + auth + gates), plus the `mail` + `contact` namespace verbs on the one /mcp connector.", leaves: ["jmap", "mail", "contact"] },
 	{ key: "compose", blurb: "Server-side combinators — map+reduce (batch), parallel fetch (batch_fetch), and {{prev}}-piping (pipe).", leaves: ["batch", "batch_fetch", "pipe"] },
@@ -104,7 +104,7 @@ export function renderOverview(fns: Fn[]): string {
 	out.push("# sux — capability map");
 	out.push("");
 	out.push(
-		`${fns.length} tools + 3 namespace connectors. tools/list shows only ~13 front verbs; every other tool is a leaf — reach it with \`fn({name, args})\`, e.g. \`fn({name:"arxiv", args:{query}})\`. Front verbs you can call directly: \`search\`, \`scrape\`, \`shop\`, \`ingest\`, \`recall\`, \`oracle\`, \`pipe\`, \`batch\`, \`store\`. Pass \`sux({domain})\` to expand any group below.`,
+		`${fns.length} tools + 3 namespace connectors. tools/list shows only the front verbs; every other tool is a leaf — reach it with \`fn({name, args})\`, e.g. \`fn({name:"arxiv", args:{query}})\`. Front verbs you can call directly: \`search\`, \`scrape\`, \`shop\`, \`ingest\`, \`recall\`, \`oracle\`, \`pipe\`, \`batch\`, \`store\`. Pass \`sux({domain})\` to expand any group below.`,
 	);
 	out.push("");
 	out.push("## Domains");

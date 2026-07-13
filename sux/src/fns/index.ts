@@ -24,7 +24,7 @@ import { encode } from "./encode";
 import { hash } from "./hash";
 import { feed } from "./feed";
 import { sitemap } from "./sitemap";
-import { contacts } from "./contacts";
+import { extract_contacts } from "./extract_contacts";
 import { entities } from "./entities";
 import { redact } from "./redact";
 import { translate } from "./translate";
@@ -53,7 +53,7 @@ import { arxiv } from "./arxiv";
 import { autonomy_status } from "./autonomy_status";
 import { bestbuy } from "./bestbuy";
 import { briefing } from "./briefing";
-import { cal } from "./cal";
+import { calendar } from "./calendar";
 import { citation } from "./citation";
 import { coingecko } from "./coingecko";
 import { contact } from "./contact";
@@ -135,7 +135,7 @@ export const FUNCTIONS: Fn[] = [
 	hash,
 	feed,
 	sitemap,
-	contacts,
+	extract_contacts,
 	entities,
 	redact,
 	translate,
@@ -164,7 +164,7 @@ export const FUNCTIONS: Fn[] = [
 	autonomy_status,
 	bestbuy,
 	briefing,
-	cal,
+	calendar,
 	citation,
 	coingecko,
 	contact,

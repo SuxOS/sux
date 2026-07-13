@@ -1,11 +1,11 @@
 ---
 name: sux
-description: Route a task to the right sux edge function and chain them when needed — web search (Kagi, native Google, Brave, DDG, Tavily, Exa), scrape/render through a residential proxy with an escalation ladder (scrape → render → render:mac) for bot-walled sites, crawl, extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, contacts, entities, subtitles), research databases (arxiv, pubmed, openalex, crossref, semantic_scholar, clinical_trials, stackexchange, reddit), convert formats (markdown, html, csv, json, xml, yaml), build/fill PDFs, OCR, convert images, compress/archive/encode/hash, declutter + token-pack, Workers-AI text (summarize, translate, classify, redact), archived snapshots (wayback), product/price/store search (shop + named retailers), places/people, crypto (coingecko), YouTube, Obsidian notes, vault capture (ingest url/text/query with blob routing), and storage (R2 store + KV + Dropbox app folder). Use whenever the user wants any web fetch, scrape/render of a page (including Akamai/PerimeterX-walled sites), data transform, extraction, research lookup, or lightweight compute done at the edge via the sux MCP connector.
+description: Route a task to the right sux edge function and chain them when needed — web search (Kagi, native Google, Brave, DDG, Tavily, Exa), scrape/render through a residential proxy with an escalation ladder (scrape → render → render:mac) for bot-walled sites, crawl, extract/parse HTML (links, tables, metadata, readability, feeds, sitemaps, extract_contacts, entities, subtitles), research databases (arxiv, pubmed, openalex, crossref, semantic_scholar, clinical_trials, stackexchange, reddit), convert formats (markdown, html, csv, json, xml, yaml), build/fill PDFs, OCR, convert images, compress/archive/encode/hash, declutter + token-pack, Workers-AI text (summarize, translate, classify, redact), archived snapshots (wayback), product/price/store search (shop + named retailers), places/people, crypto (coingecko), YouTube, Obsidian notes, vault capture (ingest url/text/query with blob routing), and storage (R2 store + KV + Dropbox app folder). Use whenever the user wants any web fetch, scrape/render of a page (including Akamai/PerimeterX-walled sites), data transform, extraction, research lookup, or lightweight compute done at the edge via the sux MCP connector.
 ---
 
 # sux — the edge function engine
 
-sux is one personal Cloudflare Worker exposing **~95 composable functions** as MCP
+sux is one personal Cloudflare Worker exposing **a large suite of composable functions** as MCP
 tools (Julia-style generic verbs + multiple dispatch). **Kagi is just one function
 (`search`).** The full inventory, status, and per-function summaries live in
 **`sux/FUNCTIONS.md`** — that file is the source of truth (run `npm run docs` to
@@ -18,7 +18,7 @@ reach for sux instead of declining or answering from memory.
 
 `tools/list` advertises only **~18 front verbs** — `sux`, `fn`, `search`, `scrape`,
 `shop`, `ingest`, `recall`, `oracle`, `pipe`, `batch`, `store`, `preferences`,
-`issue`, plus the personal-namespace verbs `vault`, `mail`, `files`, `cal`,
+`issue`, plus the personal-namespace verbs `vault`, `mail`, `files`, `calendar`,
 `contact`. Everything else in the tables below is a **leaf**: reach it with the escape
 hatch **`fn({name, args})`** — e.g. this skill writes `tables({html})`, you call
 `fn({name:"tables", args:{html}})`; `arxiv({query})` → `fn({name:"arxiv", args:{query}})`.
@@ -67,7 +67,7 @@ capability map, or `sux({domain})` to zoom one group.
 | Regex over a page or text | `grep` |
 | HTML tables → JSON/CSV | `tables` |
 | Title/OG/twitter meta | `metadata` |
-| Emails/phones/social links on a page | `contacts` |
+| Emails/phones/social links on a page | `extract_contacts` |
 | Subtitles / transcript track ↔ SRT/WebVTT | `subtitles` |
 | Redirect chain, robots.txt, sitemap, RSS/Atom | `redirects`, `robots`, `sitemap`, `feed` |
 | Historical snapshot / change history | `wayback` |
@@ -162,7 +162,7 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Obsidian vault: list/read/search/append/write/edit/delete notes | `obsidian` (default `backend: git`; `edit` = surgical find/replace; `tools`/`call` need `backend: remote`; mutating actions refuse dot-prefixed paths; reads KV-cached with git-HEAD validation + Mac-asleep fallback on remote `read`) |
 | Capture url/text/search-results into the vault (provenance note in Inbox/; blobs ≤1MB → vault attachment, larger → public Dropbox link) | `ingest` (`url` \| `text` \| `query`; `summarize`/`compress` passes; `blobs: dropbox` forces Dropbox; explicit `path` overrides Inbox and overwrites — default paths never do) |
 | Dropbox app-folder files (human-facing blob store; syncs to devices) | `dropbox` (`op: put/get/list/delete/share`; paths relative to /Apps root; `list` paginates via `cursor`; put returns a PUBLIC anyone-with-the-link URL) |
-| Fastmail email/calendars/contacts over the full JMAP protocol | `jmap` (raw conduit: `calls:[[method,args,callId]]` or `method`+`args`; auto session/accountId/`using`; `paginate` past page limits; `upload`/`download` blobs; `allow_send`/`allow_destroy` gate send/destroy; needs `FASTMAIL_TOKEN`). Ergonomic `mail_*` tools (search/read/thread/send/draft/archive/masked) are exposed as front-door verbs on the same sux connector; use `jmap` here when you need the raw protocol (MaskedEmail, calendars, contacts). |
+| Fastmail email/calendars/contacts over the full JMAP protocol | `jmap` (raw conduit: `calls:[[method,args,callId]]` or `method`+`args`; auto session/accountId/`using`; `paginate` past page limits; `upload`/`download` blobs; `allow_send`/`allow_destroy` gate send/destroy; needs `FASTMAIL_TOKEN`). The ergonomic mail operations (search·read·thread·send·draft·archive·masked) are ACTIONS on the `mail` front verb — `mail({action:"search"})` — that dispatch into the underlying `mail_*` namespace tools (reached only through the verb, never as standalone front verbs or `fn` leaves); use `jmap` here when you need the raw protocol (MaskedEmail, calendars, contacts). |
 | Autonomous inbox triage — classify messages and (when armed) act | `mail_triage` (armed mode uses REVERSIBLE ops ONLY — add/remove labels, archive/unarchive, undelete; never sends or hard-deletes) |
 | Morning briefing — read-only fan-out over unread/important mail, calendar, tasks, and bill/deadline cues → ONE "good morning" digest appended to today's Daily note | `briefing` (reply drafts are STAGED to Drafts for approval, NEVER sent; DORMANT unless `BRIEFING_ENABLED`, and stages zero drafts until `BRIEFING_STAGE_DRAFTS` is ALSO set; `dry_run` mutates nothing; each source degrades independently) |
 | Monarch Money — READ-ONLY personal finance (accounts, balances, transactions, budgets, cashflow, categories, holdings) | `monarch` (sux NEVER moves money — no transfer/trade op exists and the raw `graphql` escape refuses mutations; needs `MONARCH_TOKEN`) |
