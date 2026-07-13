@@ -1,6 +1,6 @@
 name: Claude
 
-# Two hands-off assists (both inert until ANTHROPIC_API_KEY is set):
+# Two hands-off assists (both inert until CLAUDE_CODE_OAUTH_TOKEN is set (subscription, via claude setup-token)):
 #   1. @claude — mention the bot in any PR/issue comment or review and it responds
 #      (fix this, rebase, explain, address the review, etc.).
 #   2. Review on open — a `/code-review` pass on every non-draft PR, so assumptions
@@ -48,8 +48,8 @@ jobs:
       - name: Preflight — need the key
         id: pre
         run: |
-          if [ "${{ secrets.ANTHROPIC_API_KEY != '' }}" != "true" ]; then
-            echo "ANTHROPIC_API_KEY not set → inert"; echo "go=false" >> "$GITHUB_OUTPUT"
+          if [ "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}" != "true" ]; then
+            echo "CLAUDE_CODE_OAUTH_TOKEN not set → inert"; echo "go=false" >> "$GITHUB_OUTPUT"
           else echo "go=true" >> "$GITHUB_OUTPUT"; fi
       # The mention bot can push (when asked to "fix"/"rebase"). Push with the SUX_BOT App
       # identity, not GITHUB_TOKEN — GitHub suppresses workflow runs for GITHUB_TOKEN pushes,
@@ -73,7 +73,7 @@ jobs:
         env:
           ENABLE_PROMPT_CACHING_1H: "1" # 1h cache TTL — keeps the stable prefix warm across a back-and-forth @claude thread
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app-token.outputs.token }}
           trigger_phrase: "@claude"
           claude_args: "--max-turns 12 --model sonnet"
@@ -92,8 +92,8 @@ jobs:
       - name: Preflight — need the key
         id: pre
         run: |
-          if [ "${{ secrets.ANTHROPIC_API_KEY != '' }}" != "true" ]; then
-            echo "ANTHROPIC_API_KEY not set → inert"; echo "go=false" >> "$GITHUB_OUTPUT"
+          if [ "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}" != "true" ]; then
+            echo "CLAUDE_CODE_OAUTH_TOKEN not set → inert"; echo "go=false" >> "$GITHUB_OUTPUT"
           else echo "go=true" >> "$GITHUB_OUTPUT"; fi
       - name: Checkout
         if: steps.pre.outputs.go == 'true'
@@ -105,7 +105,7 @@ jobs:
         env:
           ENABLE_PROMPT_CACHING_1H: "1" # 1h cache TTL — the review runs minutes after CI; keeps the stable prefix cached
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Review this PR for correctness bugs and reuse/simplification/efficiency
             issues (the repo has a /code-review skill — use it). Post concise, concrete

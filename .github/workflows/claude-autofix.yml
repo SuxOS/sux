@@ -6,7 +6,7 @@ name: Claude autofix CI
 #   - only bug/security/chore-safe/fix-type PRs (features are a human's job)
 #   - a hard cap of MAX_ATTEMPTS bot commits per branch, then it tags `needs-human`
 #   - --max-turns per run + concurrency cancel-in-progress + a cheaper model
-# Inert until ANTHROPIC_API_KEY is set (the preflight skips cleanly if absent).
+# Inert until CLAUDE_CODE_OAUTH_TOKEN is set (subscription, via claude setup-token) (the preflight skips cleanly if absent).
 
 on:
   workflow_run:
@@ -43,15 +43,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
-          HAVE_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAVE_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
           if [ "$HAVE_KEY" != "true" ]; then
-            echo "ANTHROPIC_API_KEY not set → autofix inert. Add the secret to arm it."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+            echo "CLAUDE_CODE_OAUTH_TOKEN not set → autofix inert. Add the secret to arm it."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
 
           # Resolve the PR exactly. `--head <name>` can match multiple PRs on a branch-name
           # collision (e.g. a fork with the same branch name), and blindly taking `.[0]`
-          # could pick the wrong one — with a write token + ANTHROPIC_API_KEY, that means
+          # could pick the wrong one — with a write token + the Claude OAuth token, that means
           # running the wrong PR's code. Require an EXACT headRefName + base match, and bail
           # if more than one PR qualifies rather than guessing.
           prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$HEAD_BRANCH" --base "$BASE_BRANCH" --state open \
@@ -70,7 +70,7 @@ jobs:
           echo "PR #$num  title=$title  labels=$labels  draft=$draft  author=$assoc  fork=$fork"
 
           # PUBLIC-REPO RCE GUARD: this job checks out and RUNS the PR's code with a
-          # write token + ANTHROPIC_API_KEY. Only ever do that for a trusted author's
+          # write token + the Claude OAuth token. Only ever do that for a trusted author's
           # same-repo branch — never a fork or external contributor's untrusted code.
           case "$assoc" in OWNER|MEMBER|COLLABORATOR) ;; *) echo "untrusted author ($assoc) → refuse to run PR code"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0;; esac
           if [ "$fork" = "true" ]; then echo "cross-repo/fork PR → refuse to run PR code"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
@@ -145,7 +145,7 @@ jobs:
           CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
           ENABLE_PROMPT_CACHING_1H: "1" # 1h cache TTL — the CI→fix→CI loop spans >5 min, so the stable prefix cache-hits instead of expiring
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app-token.outputs.token }}
           prompt: |
             CI failed on this PR (branch $CI_HEAD_BRANCH,
