@@ -57,7 +57,7 @@ export type TriageLabel = "junk" | "transaction" | "receipt" | "amazon_return" |
  *  used by service-notification classification to attach a type-specific label keyword (e.g.
  *  `gh:ci-fail`) instead of the label's blanket action. It is still funnelled through the same
  *  auto-act allow-list + confidence gate, so an override can never smuggle a non-reversible op. */
-export type Classification = { label: TriageLabel; confidence: number; reason: string; op?: TriageOp };
+type Classification = { label: TriageLabel; confidence: number; reason: string; op?: TriageOp };
 export type TriageMsg = { id: string; from?: string; subject?: string; preview?: string };
 
 /** Confidence at/above which an attention-INCREASING op (label:add / unarchive / undelete) may
@@ -85,7 +85,7 @@ export const DRAFT_REPLY_CONFIDENCE_THRESHOLD = 0.8;
  *  list. Enforced by `isAutoActAllowed` at the executor boundary; delete/junk-move/send are also
  *  structurally unrepresentable by `TriageOp`. */
 export const AUTO_ACT_OPS = ["label:add", "archive", "unarchive", "undelete", "draft-reply"] as const;
-export type AutoActOp = (typeof AUTO_ACT_OPS)[number];
+type AutoActOp = (typeof AUTO_ACT_OPS)[number];
 
 /** A triage action. archive/unarchive/undelete are mailbox moves (unarchive/undelete restore to the
  *  inbox — the attention-increasing side of archive/delete; archive is the lone hiding move, gated
@@ -211,7 +211,7 @@ const SERVICE_SUBTYPES: Array<{ re: RegExp; type: string }> = [
 /** Classify a dev/CI service notification into a reversible type-label op, or null if the sender
  *  isn't a known service. Sender match gives the `<prefix>`; subject+preview cues give the subtype
  *  (GitHub only — others get `<prefix>:notification`). Always a `label:add`, never a hiding move. */
-export function detectServiceNotification(from: string, subject: string, preview: string): Classification | null {
+function detectServiceNotification(from: string, subject: string, preview: string): Classification | null {
 	const svc = SERVICE_SENDERS.find((s) => s.re.test(from));
 	if (!svc) return null;
 	const hay = `${subject}\n${preview}`;
@@ -300,9 +300,9 @@ export type TriageDeps = {
 	draftReply?: (env: RtEnv, args: { reply_to: string; text: string }) => Promise<{ id: string }>;
 };
 
-export type TriageOpts = { mailbox?: string; max?: number; dry_run?: boolean; cycle_id?: string; budget_ms?: number; unread?: boolean };
+type TriageOpts = { mailbox?: string; max?: number; dry_run?: boolean; cycle_id?: string; budget_ms?: number; unread?: boolean };
 
-export type TriageReport = {
+type TriageReport = {
 	cycle: string;
 	dormant?: boolean;
 	mailbox?: string;

@@ -42,7 +42,7 @@ export async function putExample(env: RtEnv, ex: Example): Promise<void> {
 	await env.OAUTH_KV?.put(keyOf(ex.id), JSON.stringify(ex));
 }
 
-export async function getExample(env: RtEnv, id: string): Promise<Example | null> {
+async function getExample(env: RtEnv, id: string): Promise<Example | null> {
 	const raw = await env.OAUTH_KV?.get(keyOf(id));
 	if (!raw) return null;
 	try {
@@ -74,7 +74,7 @@ export async function listExamples(env: RtEnv): Promise<Example[]> {
 	return out;
 }
 
-export async function deleteExample(env: RtEnv, id: string): Promise<void> {
+async function deleteExample(env: RtEnv, id: string): Promise<void> {
 	await env.OAUTH_KV?.delete(keyOf(id));
 }
 
@@ -99,8 +99,8 @@ export async function clearExamples(env: RtEnv): Promise<number> {
 	return all.length;
 }
 
-export type Neighbor = { id: string; label: string; input: string; score: number };
-export type Verdict = { label: string | null; confidence: number; neighbors: Neighbor[] };
+type Neighbor = { id: string; label: string; input: string; score: number };
+type Verdict = { label: string | null; confidence: number; neighbors: Neighbor[] };
 
 /** Brute-force kNN over the labeled set: cosine-rank against `queryVec`, take the top-k, and
  *  vote the label by summed similarity. confidence = the nearest neighbor's cosine. Empty set
