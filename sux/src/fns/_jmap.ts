@@ -510,7 +510,7 @@ export async function runPaginate(
 				reason = "anchor_lost";
 				break;
 			}
-			throw new JmapError("upstream_error", `JMAP query error: ${(mr[1] as { type?: string })?.type ?? "unknown"}`);
+			throw new JmapError("upstream_error", `JMAP query error: ${(mr[1] as { type?: string })?.type ?? "unknown"}${(mr[1] as { description?: string })?.description ? " — " + (mr[1] as { description?: string }).description : ""}`);
 		}
 		const page = mr[1] as { ids?: string[]; queryState?: string };
 		if (queryState && page.queryState && page.queryState !== queryState) {

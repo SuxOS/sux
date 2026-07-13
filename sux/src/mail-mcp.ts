@@ -35,7 +35,7 @@ async function jmapCall(env: RtEnv, args: Record<string, unknown>): Promise<{ me
 function resultFor(resp: { methodResponses: any[] }, method: string, callId?: string): any {
 	for (const mr of resp.methodResponses ?? []) {
 		if (mr[0] === method && (callId === undefined || mr[2] === callId)) return mr[1];
-		if (mr[0] === "error" && (callId === undefined || mr[2] === callId)) throw new Error(`JMAP ${method} error: ${mr[1]?.type ?? "unknown"}`);
+		if (mr[0] === "error" && (callId === undefined || mr[2] === callId)) throw new Error(`JMAP ${method} error: ${mr[1]?.type ?? "unknown"}${mr[1]?.description ? " — " + mr[1].description : ""}`);
 	}
 	return null;
 }
@@ -633,12 +633,6 @@ const TOOLS: MailTool[] = [
 		run: async (env, a) => draftOrSend(env, a, true),
 	},
 	{
-		name: "mail_schedule",
-		description: "Schedule an email for future delivery (SMTP FUTURERELEASE). Like mail_send but `sendAt` (ISO-8601) is required — the message is held until then, cancelable with mail_unschedule. Stages a preview by default; re-call with the commit_token to schedule, or pass force:true to schedule in one shot.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["to", "subject", "text", "sendAt"], properties: { to: { type: "array", items: { type: "string" } }, cc: { type: "array", items: { type: "string" } }, bcc: { type: "array", items: { type: "string" } }, subject: { type: "string" }, text: { type: "string" }, from: { type: "string", description: "Exact identity or any address at an owned *@domain." }, sendAt: { type: "string", description: "ISO-8601 date-time to release the message." }, attachments: ATTACHMENTS_SCHEMA, stage: { type: "boolean" }, commit_token: { type: "string" }, force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." } } },
-		run: async (env, a) => draftOrSend(env, { ...a, send_at: a?.sendAt }, true),
-	},
-	{
 		name: "mail_scheduled",
 		description: "List your pending scheduled (FUTURERELEASE-held) sends — each { id (submissionId), emailId, sendAt }. Cancel one with mail_unschedule.",
 		inputSchema: { type: "object", additionalProperties: false, properties: {} },
@@ -655,7 +649,7 @@ const TOOLS: MailTool[] = [
 	{
 		name: "mail_unschedule",
 		description: "Cancel a pending scheduled send by its submission id (undoStatus → canceled) before it releases. Idempotent: a submission that's already canceled or released reports success rather than erroring.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: "The submissionId from mail_send/mail_schedule or a mail_scheduled list." } } },
+		inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: "The submissionId from mail_send or a mail_scheduled list." } } },
 		run: async (env, a) => {
 			if (!a?.id) return failWith("bad_input", "mail_unschedule requires the submission `id`.");
 			try {
@@ -1242,7 +1236,7 @@ async function draftOrSend(env: RtEnv, a: any, send: boolean): Promise<ToolResul
 			if (holdFor > 0) {
 				subCreate.envelope = {
 					mailFrom: { email: identity.email, parameters: { HOLDFOR: String(holdFor) } },
-					rcptTo: [...to, ...(Array.isArray(a?.cc) ? a.cc : []), ...(Array.isArray(a?.bcc) ? a.bcc : [])].map((e) => ({ email: String(e) })),
+					rcptTo: [...to, ...cc, ...bcc].map((e) => ({ email: String(e) })),
 				};
 			}
 			const resp = await jmapCall(env, { allow_send: true, calls: [["Email/set", { create: { draft: sendDraft } }, "c"], ["EmailSubmission/set", { create: { sub: subCreate }, onSuccessUpdateEmail: { "#sub": onSuccess } }, "s"]] });
