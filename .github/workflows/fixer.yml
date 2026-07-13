@@ -12,5 +12,11 @@ on:
 
 jobs:
   fixer:
+    # Default GITHUB_TOKEN perms are read-only; a reusable requesting more than the caller
+    # grants fails at startup. Grant exactly what fixer.yml needs.
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
     uses: SuxOS/.github/.github/workflows/fixer.yml@main
     secrets: inherit

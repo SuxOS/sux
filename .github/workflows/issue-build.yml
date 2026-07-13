@@ -15,6 +15,13 @@ on:
 jobs:
   issue-build:
     if: github.event_name != 'issues' || github.event.label.name == 'queued-for-build'
+    # Grant exactly what issue-build.yml needs (default token is read-only → reusable would startup-fail).
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
     uses: SuxOS/.github/.github/workflows/issue-build.yml@main
     with:
       gates-summary: |
