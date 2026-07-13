@@ -1,18 +1,26 @@
 name: Issue build
 
-# Fires when a human labels an issue queued-for-build. Clusters related
-# queued-for-build issues (n issues -> m PRs, never n->1) and fans out one build
-# session + one PR per cluster. PRs are labeled with the same eligibility rule
-# automerge.yml already uses, so they flow into the existing automerge pipeline.
+# Event-triggered: fires when a human labels an issue queued-for-build. Also runs
+# daily (+ on demand) as a DRAIN — the cluster job lists every open queued-for-build
+# issue regardless of trigger, so the drain catches anything the label event missed
+# (e.g. it fired while budget-guard had this workflow paused) or that a human
+# labeled queued-for-build on an issue they filed themselves, not just ones
+# fixer.yml opened — the query is by label only, never by author. Clusters related
+# issues (n issues -> m PRs, never n->1) and fans out one build session + one PR
+# per cluster. PRs are labeled with the same eligibility rule automerge.yml
+# already uses, so they flow into the existing automerge pipeline.
 # Reusable workflow: SuxOS/.github/.github/workflows/issue-build.yml
 
 on:
   issues:
     types: [labeled]
+  schedule:
+    - cron: "44 7 * * *" # daily drain, offset minute to dodge the top-of-hour rush
+  workflow_dispatch:
 
 jobs:
   issue-build:
-    if: github.event.label.name == 'queued-for-build'
+    if: github.event_name != 'issues' || github.event.label.name == 'queued-for-build'
     uses: SuxOS/.github/.github/workflows/issue-build.yml@main
     with:
       gates-summary: |
