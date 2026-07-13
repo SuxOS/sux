@@ -67,6 +67,13 @@ export type RtEnv = Env &
 		// mirror. Empty → no deny-list (the always-on guards — dry-run default, confirm on
 		// delete, rev-conditioning, recoverable trash — still apply). See _dropbox-full.ts.
 		DROPBOX_FULL_PROTECT_PREFIXES?: string;
+		// Mode B WRITE arm — a SEPARATE truthy toggle gating the whole-account MUTATION verbs
+		// (write/upload/delete/move/operate/transform full:true), DISTINCT from the read
+		// credential above. READ/search light up on DROPBOX_FULL_* alone; WRITE stays dormant
+		// until this is explicitly set (unset/"0"/"false"/"off" ⇒ off), so enabling recall's
+		// files source can't also arm the injection-reachable whole-account write/delete. An
+		// env flag is not injection-settable (unlike the in-request force:true). See _dropbox-full.ts.
+		DROPBOX_FULL_WRITE_ENABLED?: string;
 
 		// Self-improvement loop (fns/_self_improve.ts, rides the daily cron). ALL
 		// fail-closed, defaults OFF, set via `wrangler secret` (NOT declared in
@@ -176,6 +183,9 @@ export type RtEnv = Env &
 		// cycle stages zero drafts by construction. It never sends, never deletes.
 		BRIEFING_ENABLED?: string;
 		BRIEFING_STAGE_DRAFTS?: string;
+		// Cap on reply drafts staged per briefing run (bounded autonomy). Parsed as an integer,
+		// clamped to [1, 20]; unset/invalid ⇒ default 5. Set via `wrangler secret`.
+		BRIEFING_MAX_DRAFTS?: string;
 
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
@@ -194,6 +204,11 @@ export type RtEnv = Env &
 		IMAGES?: ImagesBinding;
 
 		BROWSER?: BrowserWorker;
+
+		// Override the stealth UA's Chrome major (cf-render). Bump as Chrome's stable
+		// channel advances so the UA stays coherent with the real current major without
+		// a redeploy; unset → cf-render's tracked default.
+		STEALTH_CHROME_MAJOR?: string;
 
 		MAC_RENDER_URL?: string;
 		MAC_RENDER_SECRET?: string;
@@ -370,8 +385,9 @@ export function toolList(fns: Fn[]): Array<{ name: string; description: string; 
 //   store — blob storage        · preferences/issue — tell sux what you want / what broke
 //   vault/mail/files/cal/contact — the personal-data namespaces, dispatched into the
 //     existing VAULT_TOOLS/MAIL_TOOLS/FILES_TOOLS handlers so the whole digital-life
-//     spine is reachable on the ONE /mcp connector (every surface, incl. mobile),
-//     not only via the separate /<ns>/mcp connectors.
+//     spine is reachable on the ONE /mcp connector (every surface, incl. mobile). The
+//     old per-namespace /<ns>/mcp connectors are retired: front verbs are how you reach
+//     them now (their routes stay dormant for back-compat).
 export const FRONT_VERBS = new Set<string>([
 	"sux", "fn",
 	"search", "scrape", "shop",
