@@ -51,7 +51,7 @@
 import type { RtEnv } from "../registry";
 import { TOOL_ANNOTATIONS } from "../registry";
 import { type FeedbackEntry, type FeedbackKind, readFeedback } from "./_feedback";
-import { maybeCompressString, maybeDecompressString } from "./_gzip";
+import { cappedKvLog } from "./_capped_kv_log";
 import { githubAuthHeaders } from "../github-auth";
 
 // ── Gate predicates (pure env, fail-closed) ──────────────────────────────────
@@ -378,26 +378,15 @@ function claudeFixComment(f: Finding): string {
 }
 
 // ── Review-only findings log (internal KV record; never an outward action) ────
-function safeParse(s: string | null): Finding[] {
-	if (!s) return [];
-	try {
-		const v = JSON.parse(s);
-		return Array.isArray(v) ? v : [];
-	} catch {
-		return [];
-	}
-}
+const findingsLog = (env: RtEnv) => cappedKvLog<Finding>(env, FINDINGS_KEY, FINDINGS_CAP);
 
 async function recordFinding(env: RtEnv, finding: Finding): Promise<void> {
-	const items = safeParse(await maybeDecompressString((await env.OAUTH_KV.get(FINDINGS_KEY)) ?? ""));
-	items.unshift(finding);
-	if (items.length > FINDINGS_CAP) items.length = FINDINGS_CAP;
-	await env.OAUTH_KV.put(FINDINGS_KEY, await maybeCompressString(JSON.stringify(items)));
+	await findingsLog(env).push(finding);
 }
 
 /** Read the internal review-only findings log (newest first). Not an outward action. */
 export async function readFindings(env: RtEnv, limit = 50): Promise<Finding[]> {
-	return safeParse(await maybeDecompressString((await env.OAUTH_KV.get(FINDINGS_KEY)) ?? "")).slice(0, Math.max(0, limit));
+	return (await findingsLog(env).load()).slice(0, Math.max(0, limit));
 }
 
 // ── Rate cap: read the const, write only the KV day-counter ───────────────────
