@@ -7,6 +7,8 @@ name: CI
 # merge_group run already covers that ref, and letting push also fire there would share
 # the ref-keyed, cancel-in-progress concurrency group and cancel the merge_group run —
 # a cancelled required check stalls the queue.
+# Reusable workflow: SuxOS/.github/.github/workflows/ci.yml (concurrency group lives there).
+
 on:
   push:
     branches-ignore:
@@ -14,52 +16,17 @@ on:
   pull_request:
   merge_group:
 
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   check:
-    name: Type-check & build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Type-check
-        run: npm run type-check
-
-      - name: Test
-        run: npm test
-
-      # The installer (root@192.168.1.1) embeds node/server.mjs as a base64 blob;
-      # this fails if it has drifted from server.mjs (fix: npm run build:node).
-      # Guards against shipping a stale residential node — how the binary-egress
-      # bug hid: the blob and its source had silently diverged.
-      - name: Node deploy blob in sync
-        run: npm run check:node
-
-      # The generated fn manifest (index.ts) must include every fns/*.ts
-      # (fix: npm run gen:index) — a new fn that isn't registered ships silently.
-      - name: Function index in sync
-        run: npm run gen:index && git diff --exit-code sux/src/fns/index.ts
-
-      # Namespace dispatcher (vault/mail/files/calendar/contact) description strings carry
-      # worked example calls like verb({action:'x', param}) — these have drifted from the
-      # real target tool's inputSchema before (#202, #205, #206) and silently misled callers.
-      - name: Dispatcher doc-example params match real schemas
-        run: npm run lint:dispatcher-docs
-
-      # Validates the Worker bundles & config are deployable without deploying.
-      - name: Build (dry-run deploy)
-        run: npx wrangler deploy --dry-run --config sux/wrangler.jsonc
+    permissions:
+      contents: read
+    uses: SuxOS/.github/.github/workflows/ci.yml@main
+    with:
+      # check:node — the installer (root@192.168.1.1) embeds node/server.mjs as a base64
+      # blob; fails if it's drifted from server.mjs (fix: npm run build:node). Guards
+      # against shipping a stale residential node.
+      # lint:dispatcher-docs — namespace dispatcher (vault/mail/files/calendar/contact)
+      # description strings carry worked example calls that have drifted from the real
+      # target tool's inputSchema before (#202, #205, #206) and silently misled callers.
+      extra-checks-scripts: "check:node lint:dispatcher-docs"
+    secrets: inherit
