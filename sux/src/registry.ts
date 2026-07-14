@@ -281,6 +281,16 @@ export type RtEnv = Env &
 export const FAIL_CODES = ["not_configured", "blocked", "timeout", "rate_limited", "not_found", "upstream_error", "bad_input", "layout_change"] as const;
 export type FailCode = (typeof FAIL_CODES)[number];
 
+// NOTE on MCP Apps (SEP-1865) content: the base ToolResult.content type stays
+// `{ type:"text"; text:string }` — the shape every existing call site already
+// narrows on without a `.type` check (`content[0].text`). Widening it to a
+// discriminated union here would force a `.type === "text"` guard onto every
+// one of those call sites across the repo, which is exactly the large,
+// speculative blast radius this pilot is meant to avoid. Instead the one
+// UI-resource content part (`{ type:"resource", resource:{...} }`, the MCP
+// base-spec embedded-resource shape) is appended by `fns/_ui.ts`'s
+// `withUiResource`, which owns the (locally contained) cast — see that file
+// for the wire format and rationale.
 export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean; noCache?: boolean; errorCode?: FailCode };
 export const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 export const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
@@ -340,6 +350,13 @@ export type Fn = {
 	// better at the fn's own site.
 	annotations?: ToolAnnotations;
 
+	// Tool-definition `_meta`, advertised verbatim on the tools/list entry (MCP
+	// base spec: an implementation-specific bag on any tool/resource/prompt).
+	// The one live consumer is the MCP Apps extension's `_meta.ui.resourceUri`
+	// (see `fns/_ui.ts`'s `uiMeta`), naming which `ui://` template this fn's
+	// result renders into — but the field is generic, not apps-specific.
+	meta?: Record<string, unknown>;
+
 	run: (env: RtEnv, args: any) => Promise<ToolResult>;
 };
 
@@ -381,12 +398,19 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 	...Object.fromEntries(["store", "ingest", "dropbox", "kv_put", "kv_delete"].map((n) => [n, WRITE_DESTRUCTIVE])),
 };
 
-export function toolList(fns: Fn[]): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations }> {
+export function toolList(
+	fns: Fn[],
+): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations; _meta?: Record<string, unknown> }> {
 	return fns.map((f) => {
 		const annotations = f.annotations ?? TOOL_ANNOTATIONS[f.name];
-		return annotations
-			? { name: f.name, description: f.description, inputSchema: f.inputSchema, annotations }
-			: { name: f.name, description: f.description, inputSchema: f.inputSchema };
+		const base: { name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations; _meta?: Record<string, unknown> } = {
+			name: f.name,
+			description: f.description,
+			inputSchema: f.inputSchema,
+		};
+		if (annotations) base.annotations = annotations;
+		if (f.meta) base._meta = f.meta;
+		return base;
 	});
 }
 
@@ -426,7 +450,9 @@ export function isFrontVerb(f: Fn): boolean {
  * (the `sux` map), so nothing is lost — the surface is just legible. Preserves the
  * importance ordering of the input.
  */
-export function frontToolList(fns: Fn[]): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations }> {
+export function frontToolList(
+	fns: Fn[],
+): Array<{ name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations; _meta?: Record<string, unknown> }> {
 	return toolList(fns.filter(isFrontVerb));
 }
 

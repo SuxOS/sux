@@ -3,6 +3,7 @@ import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
 import { findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall } from "./registry";
+import { MCP_UI_MIME } from "./fns/_ui";
 import { buildManifest, CONNECTOR_PATHS } from "./connectors";
 import { singleFlight } from "./single-flight";
 import { weightedRateLimit } from "./rate-limit";
@@ -168,6 +169,19 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 					// per-tool via tools/list's execution.taskSupport), and supports
 					// tasks/list + tasks/cancel for any task it created. See src/tasks.ts.
 					tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } },
+					// MCP Apps (SEP-1865, ratified 2026-01-26) support signal. Per the
+					// ratified spec this `extensions` capability is primarily how a
+					// CLIENT/host announces it can render `ui://` resources; sux mirrors
+					// the same shape server-side as an explicit "I can emit these"
+					// signal, since a server has no other standard place to advertise it.
+					// sux does not yet read the CLIENT's own declared `extensions`
+					// capability before attaching a UI resource (see `fns/_ui.ts` and the
+					// product_search pilot) — every caller gets the extra content block
+					// regardless of whether their host understands it. Harmless (an
+					// unrecognized content part is ignored) but real capability
+					// negotiation is left for a follow-up once more than one fn adopts
+					// this. See https://modelcontextprotocol.io/extensions/apps/overview.
+					extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [MCP_UI_MIME] } },
 				},
 				serverInfo: { name: "research-tools", version: "0.1.0" },
 			},
