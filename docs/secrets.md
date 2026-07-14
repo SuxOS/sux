@@ -55,6 +55,42 @@ Rule of thumb: **secret it if leaking it is bad; `[vars]` it if you'd want it in
 - `MAIL_TRIAGE_ENABLED` → classify + suggest + digest; `MAIL_TRIAGE_ACT` → also do reversible moves (never delete/send).
 - `SELF_IMPROVE_ENABLE` → loop runs; `SELF_IMPROVE_PR` → may open PRs (needs `GITHUB_TOKEN`); `SELF_IMPROVE_REPO` → target; `SELF_IMPROVE_ARM` → its own auto-merge (**leave OFF** — the GitHub `automerge.yml` pipeline does merging); `SELF_IMPROVE_KILL` → hard stop.
 
+## Headless reads — service accounts (Teams)
+
+Every `op read` in these scripts has two auth modes, auto-detected by
+`scripts/op-auth.sh` (both `secret-sync.sh` and `set-secrets.sh` source it):
+
+| Mode | Trigger | Prompts? | Use |
+|---|---|---|---|
+| **service-account** | `OP_SERVICE_ACCOUNT_TOKEN` is exported | **none** | CI, cron, agents, hook-spawned shells |
+| **desktop** | no token | Touch ID **per process** | a human at an unlocked terminal |
+
+The token is a **Teams/Business feature** — it does not exist on Individual/Families.
+On Families the only mode is *desktop*, which re-prompts on every fresh `op`
+process; batch a run under one `op run` session to authorize once.
+
+**Set it up** (one time, as a Teams admin):
+
+```bash
+op vault create Secrets --account <team-shorthand>     # keep secrets vault separate from personal vaults
+OP_ACCOUNT=<team-shorthand> scripts/op-service-account-setup.sh   # mints a READ-ONLY, Secrets-scoped SA, prints token once
+```
+
+Then put the printed token where headless consumers read it:
+- **local + hooks:** `export OP_SERVICE_ACCOUNT_TOKEN=ops_…` in **`~/.zshenv`**
+  (not `~/.zshrc` — non-interactive shells skip `.zshrc`).
+- **GitHub Actions:** `gh secret set OP_SERVICE_ACCOUNT_TOKEN`.
+
+Scope it **read-only to the `Secrets` vault only** — it's a master key to whatever
+it can reach, so keep it off personal/human vaults (`Private`, `Mom`, …). It
+**expires** (90d here); re-run the setup script to rotate.
+
+**Residual caveats** (unchanged by service accounts):
+- `CLOUDFLARE_API_TOKEN` / other CI creds that *write* to a store can't live only
+  in a write-only store — GitHub Secrets still hold them. The SA token bootstraps
+  op reads, not the whole chain.
+- GitHub/Worker stores stay **write-only**; op remains the only readable copy.
+
 ## Sync a secret (op → store)
 
 ```bash
