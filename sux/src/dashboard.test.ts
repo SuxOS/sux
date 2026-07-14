@@ -8,10 +8,22 @@ vi.mock("./fns/obsidian", () => ({
 	obsidian: { name: "obsidian", run: (env: any, args: any) => obsidianState.run!(env, args) },
 }));
 
+// verifyAccessJwt has its own dedicated test coverage in access-jwt.test.ts (real
+// crypto, real fail-closed cases). Here it's mocked so these tests exercise the
+// route's business logic, not JWT plumbing — defaulted to "verified" so existing
+// assertions read as the authenticated-request path; the gating tests below flip it.
+const accessJwtState = vi.hoisted(() => ({ verified: true }));
+vi.mock("./access-jwt", () => ({
+	verifyAccessJwt: async () => accessJwtState.verified,
+}));
+
 import { applyEvent, emptyMetrics } from "./metrics";
 import { handleDashboardRoutes } from "./dashboard";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	vi.restoreAllMocks();
+	accessJwtState.verified = true;
+});
 
 function fakeEnv() {
 	const store = new Map<string, string>();
@@ -100,5 +112,13 @@ describe("dashboard", () => {
 		expect((await get(env, "/dashboard/api/metrics"))!.status).toBe(429);
 		expect((await get(env, "/dashboard/api/notes"))!.status).toBe(429);
 		expect((await get(env, "/dashboard"))!.status).toBe(200);
+	});
+
+	it("401s every /dashboard* route, including the HTML shell, when Access verification fails", async () => {
+		const env = fakeEnv();
+		accessJwtState.verified = false;
+		expect((await get(env, "/dashboard"))!.status).toBe(401);
+		expect((await get(env, "/dashboard/api/metrics"))!.status).toBe(401);
+		expect((await get(env, "/dashboard/api/notes"))!.status).toBe(401);
 	});
 });

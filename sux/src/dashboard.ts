@@ -27,6 +27,7 @@
 // here, since a vault notes read fans out into GitHub API calls that are worth
 // rate-limiting regardless of who's asking.
 
+import { verifyAccessJwt } from "./access-jwt";
 import { obsidian } from "./fns/obsidian";
 import { deriveMetrics, readMetrics, sloReport } from "./metrics";
 import { obsRateLimited } from "./observability";
@@ -217,6 +218,14 @@ async function dashboardRateLimited(request: Request, env: RtEnv): Promise<boole
 export async function handleDashboardRoutes(url: URL, request: Request, env: RtEnv): Promise<Response | null> {
 	if (request.method !== "GET") return null;
 	if (url.pathname !== "/dashboard" && url.pathname !== "/dashboard/api/metrics" && url.pathname !== "/dashboard/api/notes") return null;
+
+	// Access is the primary gate, but this route serves private vault notes, so it
+	// must also fail closed in code: reject unless a valid Access JWT is present,
+	// rather than trusting that the Access application in front of it is (still)
+	// correctly configured. See access-jwt.ts.
+	if (!(await verifyAccessJwt(request, env))) {
+		return json({ error: "unauthorized" }, 401);
+	}
 
 	if (url.pathname !== "/dashboard" && (await dashboardRateLimited(request, env))) {
 		return json({ error: "rate_limited" }, 429);

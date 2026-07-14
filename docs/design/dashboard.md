@@ -35,16 +35,25 @@ WAN, gated by Cloudflare Access — not a custom auth system.
 - Wired into `sux/src/index.ts`'s `fetch()` right after `handleObservability`,
   same position/contract (returns `null` for paths it doesn't own, falls through
   to OAuth otherwise).
-- Defense in depth only: the API routes (not the HTML shell) reuse the existing
+- Defense in depth: the API routes (not the HTML shell) reuse the existing
   `OBS_RATE_LIMITER` per-IP backpressure (`obsRateLimited`, now exported from
   `observability.ts`) — Access is the real gate, this just bounds a slow burst
   from driving KV/GitHub spend.
+- **Fail-closed Access verification, in code** (`sux/src/access-jwt.ts`): every
+  `/dashboard*` request now must carry a valid `Cf-Access-Jwt-Assertion` header —
+  verified server-side (RS256 signature against the team's published JWKS, plus
+  `aud`/`exp`/`nbf` checks) before any response is built. Added after a security
+  review correctly flagged the original version as failing **open**: it relied
+  entirely on the Access application existing and being correctly bound to the
+  live route, with nothing in the code itself blocking a request that reached the
+  Worker some other way (direct `workers.dev` origin, a misconfigured/removed
+  Access app, etc.). This closes that gap — the route now blocks by default and
+  only opens for a request Access has actually vouched for.
 
-## Auth model: Cloudflare Access, not app code
+## Auth model: Cloudflare Access (edge) + JWT verification (app, defense in depth)
 
-Per the issue's explicit direction, this route carries **no app-level
-authentication of its own** — no bearer token, no session cookie, nothing in
-`dashboard.ts` checks who's asking. The GitHub-OAuth gate in
+Per the issue's direction, this route still carries no session/bearer-token auth
+of its own — no login form, no app-managed credentials. The GitHub-OAuth gate in
 `sux/src/github-handler.ts`/`index.ts`'s `rtServer` is scoped to MCP JSON-RPC
 (`CONNECTOR_PATHS`) and is the wrong shape for a browser page anyway, so
 `/dashboard*` is served pre-gate, exactly like `/metrics`/`/logs`/`/health`.
@@ -85,12 +94,27 @@ or via the Access API:
    matches).
 3. Verify: an unauthenticated request to `https://suxos.net/dashboard` gets
    Access's login page, not the dashboard HTML; after login it loads normally.
-4. Nothing else in the Worker needs to change for this — the route already
-   assumes Access is the only gate.
+4. **Set the two secrets `access-jwt.ts` needs to verify anything at all** —
+   without these, every `/dashboard*` request 401s regardless of Access:
+   ```
+   wrangler secret put CF_ACCESS_TEAM_DOMAIN --config sux/wrangler.jsonc
+   # value: https://<your-team-name>.cloudflareaccess.com (Zero Trust → Settings → Custom Pages, or the URL your team's login page runs on)
+   wrangler secret put CF_ACCESS_AUD --config sux/wrangler.jsonc
+   # value: the "Audience (AUD) Tag" shown on the Access application's Overview tab, created in step 1
+   ```
+   Neither value is secret in the confidentiality sense (both are visible to
+   anyone who inspects the JWT/Access redirect), but they're deploy-environment
+   config, not something to hardcode — `wrangler secret put` was chosen over a
+   `wrangler.jsonc` var so a wrong/placeholder value in source control can never
+   silently become the production audience check.
+5. Redeploy after setting the secrets (or they won't take effect for the currently
+   running Worker instance).
 
 This step was **not** performed by this change — it requires Cloudflare
 dashboard/API access this session doesn't have, and the issue explicitly asked
-that it not be attempted here.
+that Access-policy creation not be attempted here. The JWT-verification *code*
+(step 4's consumer) is shipped; only the two config values and the Access
+application itself are the human's part.
 
 ## Non-goals (per the issue)
 
