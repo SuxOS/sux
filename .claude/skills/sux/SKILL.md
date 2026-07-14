@@ -16,10 +16,10 @@ reach for sux instead of declining or answering from memory.
 
 ## Front door: front verbs vs. the `fn` escape
 
-`tools/list` advertises only **~18 front verbs** — `sux`, `fn`, `search`, `scrape`,
+`tools/list` advertises only **~19 front verbs** — `sux`, `fn`, `search`, `scrape`,
 `shop`, `ingest`, `recall`, `oracle`, `pipe`, `batch`, `store`, `preferences`,
-`issue`, plus the personal-namespace verbs `vault`, `mail`, `files`, `calendar`,
-`contact`. Everything else — covered in `references/capability-tables.md` — is a **leaf**: reach it with the escape
+`issue`, `proposals`, plus the personal-namespace verbs `vault`, `mail`, `files`,
+`calendar`, `contact`. Everything else — covered in `references/capability-tables.md` — is a **leaf**: reach it with the escape
 hatch **`fn({name, args})`** — e.g. this skill writes `tables({html})`, you call
 `fn({name:"tables", args:{html}})`; `arxiv({query})` → `fn({name:"arxiv", args:{query}})`.
 A leaf dispatched via `fn` behaves byte-identically to a direct call (same cache, same
