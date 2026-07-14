@@ -49,6 +49,7 @@ EBAY_CLIENT_SECRET           op://Private/eBay sux keyset/cert_id
 FACEBOOK_TOKEN               op://Private/Facebook sux token/token
 EPIC_FHIR_CLIENT_ID          op://Private/Epic FHIR sux/client_id
 APPLE_HEALTH_TOKEN           op://Private/Apple Health sux/token
+MONARCH_TOKEN                op://Private/Monarch sux/token
 EOF
 
 . "$(dirname "$0")/op-auth.sh"
