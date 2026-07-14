@@ -99,7 +99,8 @@ export const render: Fn = {
 		"residential (default true) routes the browser's requests through the Tailscale residential proxy so they egress from a home IP instead of the Cloudflare datacenter — the point of this fn, since datacenter IPs are blocked by bot managers like Akamai. Trade-off: slower, because every subresource is proxied one by one; set residential:false to fetch directly from the datacenter (faster, but blockable). With residential and block_resources both on, heavy assets are still aborted and everything else is residential-routed; with residential on and block_resources off, images are proxied too (fully residential, heavier). " +
 		"stealth (default true) applies a realistic desktop UA/viewport/accept-language and masks navigator.webdriver to reduce headless-browser fingerprinting so bot managers are less likely to flag the render; pairs with residential routing (which fixes the IP signal). Best-effort — CF Browser Run limits deeper stealth, and each step degrades silently if unsupported. Set false to keep the default headless signals. " +
 		"backend (cf|mac, default cf) selects the render engine: cf = Cloudflare Browser Run (fast, default); mac = a residential patched-browser (patchright) service that egresses from a home IP and SOLVES active JS bot challenges (Akamai sensor) cf can't — slower, use it only for sites that block cf (e.g. Home Depot, Walmart). The mac backend takes url/as/wait_until/wait_ms/block_resources/full_page/timeout_ms; residential/stealth are inherent to it (no separate CF interception), and screenshot/pdf are delivered via the same /s/<uuid> vs base64 `delivery` path. " +
-		"debug_recording (backend:cf only, default false) opts the session into Browser Run's session-recording feature — replayable in the Cloudflare dashboard (Browser Run > Runs) after the session closes — for diagnosing a render that came back blocked or wrong. Off by default (recording adds overhead); no-op for backend:mac.",
+		"debug_recording (backend:cf only, default false) opts the session into Browser Run's session-recording feature — replayable in the Cloudflare dashboard (Browser Run > Runs) after the session closes — for diagnosing a render that came back blocked or wrong. Off by default (recording adds overhead); no-op for backend:mac. " +
+		"webmcp_tool (backend:cf, as:html|text only) — EXPERIMENTAL (added 2026-07, Chrome 149 WebMCP origin trial only; adoption is still ~nil). If given, checks the rendered page for navigator.modelContext/document.modelContext and — if the page declares that tool — calls it directly with webmcp_args instead of scraping the DOM, returning its structured result as JSON. Genuinely optional fast path: falls straight back to normal html/text extraction if the page doesn't support WebMCP, doesn't have that tool, or the call fails. Omit to get today's unchanged behavior.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -147,6 +148,12 @@ export const render: Fn = {
 				description:
 					"backend:cf only. Opt this session into a Browser Run session recording, replayable in the Cloudflare dashboard (Browser Run > Runs), for diagnosing a blocked/wrong render. Default false (adds overhead); no-op for backend:mac.",
 			},
+			webmcp_tool: {
+				type: "string",
+				description:
+					"EXPERIMENTAL, backend:cf + as:html|text only (Chrome 149 WebMCP origin trial, negligible adoption as of 2026). Name of a navigator.modelContext-declared tool to call instead of scraping the DOM. No-op fallback to normal extraction if the page doesn't support WebMCP or the call fails.",
+			},
+			webmcp_args: { type: "object", description: "Arguments to pass to webmcp_tool, if given.", additionalProperties: true },
 		},
 	},
 	cacheable: true,
@@ -187,6 +194,9 @@ export const render: Fn = {
 			);
 		}
 
+		const webmcpTool = typeof args?.webmcp_tool === "string" && args.webmcp_tool.trim() ? args.webmcp_tool.trim() : undefined;
+		const webmcpArgs = webmcpTool && args?.webmcp_args && typeof args.webmcp_args === "object" ? (args.webmcp_args as Record<string, unknown>) : undefined;
+
 		const result = await cfRender(env, {
 			url,
 			as,
@@ -201,6 +211,8 @@ export const render: Fn = {
 			landscape,
 			print_background: printBackground,
 			debug_recording: args?.debug_recording === true,
+			webmcpTool,
+			webmcpArgs,
 		});
 		if (!result.ok) return failWith("upstream_error", result.error);
 		// Screenshot/pdf come back as raw bytes to deliver; html/text as a string.
