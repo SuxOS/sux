@@ -16,7 +16,7 @@ const webmcp = vi.hoisted(() => ({
 const stubs = vi.hoisted(() => ({
 	goto: vi.fn(async (_url: string, _opts: any) => {}),
 	content: vi.fn(async () => "<html>rendered</html>"),
-	evaluate: vi.fn(async (fn: any, ...args: any[]) => {
+	evaluate: vi.fn(async (fn: any, ...args: any[]): Promise<string | typeof webmcp.detection | typeof webmcp.call> => {
 		const src = fn.toString();
 		if (src.includes("modelContext")) return args.length > 0 ? webmcp.call : webmcp.detection;
 		return "rendered text";
