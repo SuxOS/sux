@@ -316,12 +316,14 @@ export async function gatherRecall(
 	const status: Record<string, string> = {};
 	if (!chosen.length) return { materials, citations, status, chosen };
 
+	const materialSources: string[] = [];
 	const results = await Promise.allSettled(chosen.map((s: string) => SOURCES[s](env, question)));
 	chosen.forEach((s: string, i: number) => {
 		const r = results[i];
 		if (r.status === "fulfilled") {
 			if (r.value.material) {
 				materials.push(r.value.material);
+				materialSources.push(s);
 				citations.push(...r.value.refs);
 				status[s] = `${r.value.refs.length} hit(s)`;
 			} else {
@@ -334,8 +336,12 @@ export async function gatherRecall(
 	// Whitelisted KBs (learned via `study` — material the user owns) outrank web + the model's own
 	// knowledge, so lead the synthesis input with them: they survive the input truncation and are
 	// read first. recallSystem states the precedence; this makes the retrieval side honor it too.
-	const lead = materials.filter((m) => m.includes("[whitelisted:"));
-	const rest = materials.filter((m) => !m.includes("[whitelisted:"));
+	// SECURITY: the "lead" test must be structural (source === "oracle"), never a substring match
+	// against material content — mail/web/vault text is attacker-influenced, and a literal
+	// "[whitelisted:...]" string planted in an email/page must never be promoted to top authority.
+	// Only fromOracle ever emits that tag, and only for KBs it verified carry the `whitelist` marker.
+	const lead = materials.filter((_, i) => materialSources[i] === "oracle" && materials[i].includes("[whitelisted:"));
+	const rest = materials.filter((_, i) => !(materialSources[i] === "oracle" && materials[i].includes("[whitelisted:")));
 	return { materials: [...lead, ...rest], citations, status, chosen };
 }
 
