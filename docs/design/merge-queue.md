@@ -52,11 +52,13 @@ by the merge_group run with no context-string drift.
 | Required check (context) | Workflow | Job | `merge_group` handling |
 | --- | --- | --- | --- |
 | **Type-check & build** | `ci.yml` | `check` | Runs fully on merge_group (no author gate). |
-| **gitleaks** | `secret-scan.yml` | `gitleaks` | Runs fully on merge_group. |
 | **npm audit & SBOM** | `audit.yml` | `audit` | Runs fully on merge_group. |
 | **security-review** | `security-review.yml` | `security-review` | **Passthrough** — see below. |
 
-All four now carry `on: merge_group`. Each byte-identical context name was preserved.
+All three now carry `on: merge_group`. Each byte-identical context name was preserved.
+(`gitleaks`/`secret-scan.yml` was a 4th required check at the time this doc was written;
+it has since been removed — GitHub's native secret scanning + push protection cover this
+now. Not re-added below.)
 
 **`push` excludes the queue branches.** `ci.yml`, `secret-scan.yml`, and `audit.yml` also
 trigger on bare `push` with `concurrency: cancel-in-progress: true` keyed on `github.ref`.
@@ -78,7 +80,7 @@ the job short-circuits to a green no-op step (the required `security-review` con
 
 ## Workflow changes in this PR
 
-- **`ci.yml`, `secret-scan.yml`, `audit.yml`** — added `on: merge_group`; `push` now ignores
+- **`ci.yml`, `audit.yml`** (and `secret-scan.yml`, since removed) — added `on: merge_group`; `push` now ignores
   `gh-readonly-queue/**` (collision fix above).
 - **`security-review.yml`** — added `on: merge_group` + a `merge_group` passthrough step;
   the real review is gated to `pull_request`. Concurrency group falls back to the merge
@@ -139,7 +141,6 @@ gh api --method POST /repos/SuxOS/sux/rulesets --input - <<'JSON'
         "required_status_checks": [
           { "context": "Type-check & build" },
           { "context": "security-review" },
-          { "context": "gitleaks" },
           { "context": "npm audit & SBOM" }
         ]
       }
@@ -174,7 +175,7 @@ Batching is the entire payoff (N PRs → 1 deploy). Recommended starting point:
   (ALLGREEN re-runs the group without the offender). Given this repo's PR volume, 3–5 is the
   sweet spot; raise it only if the queue is regularly full.
 - **`max_entries_to_build: 5`** — bounded speculative parallelism (also bounds Actions
-  minutes, which `budget-guard.yml` watches).
+  minutes spent on speculative builds).
 
 ### Option B — classic branch protection UI
 

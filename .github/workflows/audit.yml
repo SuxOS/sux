@@ -16,6 +16,10 @@ on:
   schedule:
     - cron: "0 7 * * 1"
 
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   audit:
     permissions:
