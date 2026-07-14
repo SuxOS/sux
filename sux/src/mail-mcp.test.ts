@@ -339,10 +339,34 @@ describe("mail_* ergonomic tools", () => {
 		expect(r.content[0].text).toMatch(/future/);
 	});
 
-	it("mail_schedule schedules via FUTURERELEASE (sendAt → send_at)", async () => {
-		installFetch();
-		const out = parse(await tool("mail_schedule").run(env(), { to: ["x@y.com"], subject: "s", text: "t", sendAt: "2999-01-01T00:00:00Z", force: true }));
+	it("scheduled reply-all keeps the derived Cc in the FUTURERELEASE envelope (rcptTo matches the header set)", async () => {
+		// Regression: the explicit rcptTo must be built from the resolved cc/bcc (which reply-all
+		// augments in place), not the raw request args — else every derived Cc silently never delivers.
+		let sub: any = null;
+		global.fetch = vi.fn(async (input: any, init?: any) => {
+			const url = String(input?.url ?? input);
+			if (url.includes("/jmap/session")) return json(SESSION);
+			if (url.includes("/jmap/api")) {
+				const body = init?.body ? JSON.parse(init.body) : {};
+				const methodResponses = (body.methodCalls ?? []).map((c: any) => {
+					const [m, args] = c;
+					if (m === "Email/get") return [m, { list: [SRC] }, c[2]];
+					if (m === "Mailbox/get") return [m, { list: MAILBOXES }, c[2]];
+					if (m === "Identity/get") return [m, { list: [{ id: "id1", name: "Me", email: "me@fastmail.com" }] }, c[2]];
+					if (m === "Email/set") return [m, { created: { draft: { id: "new-1" } } }, c[2]];
+					if (m === "EmailSubmission/set") {
+						sub = args?.create?.sub ?? null;
+						return [m, { created: { sub: { id: "sub-1" } } }, c[2]];
+					}
+					return [m, {}, c[2]];
+				});
+				return json({ methodResponses, sessionState: "s1" });
+			}
+			return json({}, 404);
+		}) as any;
+		const out = parse(await tool("mail_send").run(env(), { mode: "reply-all", reply_to: "e1", text: "hi all", send_at: "2999-01-01T00:00:00Z", force: true }));
 		expect(out).toMatchObject({ scheduled: true, send_at: "2999-01-01T00:00:00Z" });
+		expect(sub.envelope.rcptTo).toEqual([{ email: "boss@corp.com" }, { email: "team@corp.com" }]);
 	});
 
 	it("mail_scheduled lists pending sends; mail_unschedule cancels one (idempotent)", async () => {

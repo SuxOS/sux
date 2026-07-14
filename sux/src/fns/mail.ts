@@ -17,7 +17,6 @@ export const MAIL_ACTIONS: Record<string, Dispatch> = {
 	identities: "mail_identities",
 	draft: "mail_draft",
 	send: "mail_send",
-	schedule: "mail_schedule",
 	scheduled: "mail_scheduled",
 	unschedule: "mail_unschedule",
 	upload: "mail_upload",
@@ -39,7 +38,7 @@ export const MAIL_ACTIONS: Record<string, Dispatch> = {
 export const mail: Fn = namespaceFn({
 	name: "mail",
 	description:
-		"Fastmail email through the one /mcp connector. {action, ...args}: search·read·thread·mailboxes·mailbox_create·mailbox_rename·mailbox_delete·identities·draft·send·schedule·scheduled·unschedule·upload·archive·move·quota·vacation_get·vacation_set·masked_list·masked_create·masked_disable·masked_enable·masked_delete·push_subscribe·push_unsubscribe·push_status. Each action's remaining args are that mail_* tool's own — e.g. mail({action:'send', to, subject, text}), mail({action:'move', ids:['msg1'], mailbox:'junk'}) — the target arg is `mailbox` (role like inbox/archive/junk/trash, a display name, or a raw id), not `mailboxId`/`to`; mail({action:'mailbox_create', name:'Follow-up'}), mail({action:'mailbox_delete', mailbox:'Follow-up', force:true}); mail({action:'push_subscribe'}) — arms near-real-time triage (Fastmail pushes on new mail instead of the ~5min cron wait); check readiness with mail({action:'push_status'}). send/mailbox_delete STAGE a preview by default (re-call with commit_token, or force:true to apply in one shot). Calendars/tasks are the 'calendar' verb; contacts the 'contact' verb.",
+		"Fastmail email through the one /mcp connector. {action, ...args}: search·read·thread·mailboxes·mailbox_create·mailbox_rename·mailbox_delete·identities·draft·send·scheduled·unschedule·upload·archive·move·quota·vacation_get·vacation_set·masked_list·masked_create·masked_disable·masked_enable·masked_delete·push_subscribe·push_unsubscribe·push_status. Each action's remaining args are that mail_* tool's own — e.g. mail({action:'send', to, subject, text}), mail({action:'move', ids:['msg1'], mailbox:'junk'}) — the target arg is `mailbox` (role like inbox/archive/junk/trash, a display name, or a raw id), not `mailboxId`/`to`; mail({action:'mailbox_create', name:'Follow-up'}), mail({action:'mailbox_delete', mailbox:'Follow-up', force:true}); mail({action:'push_subscribe'}) — arms near-real-time triage (Fastmail pushes on new mail instead of the ~5min cron wait); check readiness with mail({action:'push_status'}). send/mailbox_delete STAGE a preview by default (re-call with commit_token, or force:true to apply in one shot). Calendars/tasks are the 'calendar' verb; contacts the 'contact' verb.",
 	tools: () => MAIL_TOOLS,
 	actions: MAIL_ACTIONS,
 });
