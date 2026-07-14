@@ -24,7 +24,7 @@ const CAP_MASKEDEMAIL = "https://www.fastmail.com/dev/maskedemail";
 const CAP_FM_CONTACTS = "https://www.fastmail.com/dev/contacts";
 const CAP_QUOTA = "urn:ietf:params:jmap:quota";
 
-export const SESSION_KEY = "sux:fastmail:session";
+const SESSION_KEY = "sux:fastmail:session";
 const SESSION_TTL = 3600;
 const DEFAULT_SESSION_URL = "https://api.fastmail.com/jmap/session";
 
@@ -77,7 +77,7 @@ const num = (v: unknown, fallback: number): number => (Number.isFinite(Number(v)
 // ---------------------------------------------------------------------------
 
 /** GET the Session, validate it, cache the token-free body in KV (tight TTL). Throws JmapError. */
-export async function discoverSession(env: RtEnv): Promise<JmapSession> {
+async function discoverSession(env: RtEnv): Promise<JmapSession> {
 	const url = env.FASTMAIL_SESSION_URL || DEFAULT_SESSION_URL;
 	let resp: Response;
 	try {
@@ -100,7 +100,7 @@ export async function discoverSession(env: RtEnv): Promise<JmapSession> {
 }
 
 /** Session from KV if present (and valid), else discover. `forceRefresh` bypasses the cache (§4, session_refresh). */
-export async function getSession(env: RtEnv, forceRefresh = false): Promise<JmapSession> {
+async function getSession(env: RtEnv, forceRefresh = false): Promise<JmapSession> {
 	if (!forceRefresh) {
 		const cached = await env.OAUTH_KV.get(SESSION_KEY);
 		if (cached) {
@@ -210,7 +210,7 @@ export function accountIdFor(session: JmapSession, method: string, envOverride?:
 }
 
 /** Fill accountId into any Invocation args lacking it (never overwrite a caller's explicit id). */
-export function injectAccountIds(calls: Invocation[], session: JmapSession, envOverride?: string): Invocation[] {
+function injectAccountIds(calls: Invocation[], session: JmapSession, envOverride?: string): Invocation[] {
 	return calls.map(([method, args, id]) => {
 		if (args && typeof args === "object" && args.accountId === undefined) {
 			const acct = accountIdFor(session, method, envOverride);
@@ -224,7 +224,7 @@ export function injectAccountIds(calls: Invocation[], session: JmapSession, envO
 // Batch validation, gates (§10), limits (§6.0)
 // ---------------------------------------------------------------------------
 
-export function coreLimits(session: JmapSession): { maxCallsInRequest: number; maxObjectsInGet: number; maxObjectsInSet: number; maxSizeRequest: number; maxSizeUpload: number } {
+function coreLimits(session: JmapSession): { maxCallsInRequest: number; maxObjectsInGet: number; maxObjectsInSet: number; maxSizeRequest: number; maxSizeUpload: number } {
 	const core = session.capabilities?.[CAP_CORE] ?? {};
 	return {
 		maxCallsInRequest: num(core.maxCallsInRequest, 16),
@@ -412,7 +412,7 @@ function maybeInvalidateOnStateDrift(env: RtEnv, session: JmapSession, response:
 // Query pagination — anchor-based, dedup, queryState-validated (§6.3)
 // ---------------------------------------------------------------------------
 
-export type Cursor = { anchor: string | null; anchorOffset: number; queryState?: string; method: string; filterHash: string; ids?: string[] };
+type Cursor = { anchor: string | null; anchorOffset: number; queryState?: string; method: string; filterHash: string; ids?: string[] };
 
 async function filterHash(filter: unknown): Promise<string> {
 	const bytes = new TextEncoder().encode(JSON.stringify(filter ?? null));

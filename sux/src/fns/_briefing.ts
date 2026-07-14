@@ -297,7 +297,7 @@ function templateDigest(date: string, g: Gathered): string {
 
 /** The compose half: one llm() synthesis over the fenced material, falling back to a
  *  deterministic template on any synthesis failure. */
-export async function composeBriefing(env: RtEnv, date: string, g: Gathered, deps: BriefingDeps): Promise<string> {
+async function composeBriefing(env: RtEnv, date: string, g: Gathered, deps: BriefingDeps): Promise<string> {
 	const sections: string[] = [];
 	if (g.mailSummary) sections.push(`[mail]\n${g.mailSummary}`);
 	else if (g.mail.length) sections.push(`[mail]\n${g.mail.length} unread messages, ${g.flagged.length} flagged as possibly needing a reply.`);
