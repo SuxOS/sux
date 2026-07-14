@@ -211,6 +211,19 @@ describe("apple-health ingest", () => {
 		const resp = await handleAppleHealth(new URL("https://suxos.net/apple-health"), new Request("https://suxos.net/apple-health", { method: "GET" }), env);
 		expect(resp?.status).toBe(405);
 	});
+
+	it("rejects a multi-byte body whose UTF-16 code-unit length is under MAX_BYTES but whose UTF-8 byte length exceeds it", async () => {
+		const env = baseEnv({ HEALTH_INGEST_TOKEN: "secret" });
+		// U+66F8 encodes as 3 UTF-8 bytes but 1 UTF-16 code unit, so 3,000,000 of them is
+		// well under the 8 MiB cap by body.length (3,000,000) but well over it by actual
+		// byte size (9,000,000) — exactly the gap body.length undercounts.
+		const oversized = "書".repeat(3_000_000);
+		expect(oversized.length).toBeLessThan(8 * 1024 * 1024);
+		expect(new TextEncoder().encode(oversized).length).toBeGreaterThan(8 * 1024 * 1024);
+		const resp = await post(env, { authorization: "Bearer secret" }, oversized);
+		expect(resp?.status).toBe(413);
+		expect(env.R2.map.size).toBe(0);
+	});
 });
 
 describe("PHI gate: /s/ handler refuses phi/ keys", () => {

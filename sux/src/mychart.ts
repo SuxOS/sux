@@ -506,14 +506,19 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
 	const body = await request.text();
 	if (!body) return new Response(JSON.stringify({ error: "empty body" }), { status: 400, headers: { "content-type": "application/json" } });
 	// Fallback post-read check (chunked / absent Content-Length can't be trusted above).
-	if (body.length > MAX_BYTES) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
+	// Measure actual UTF-8 bytes, not body.length (UTF-16 code units) — multi-byte
+	// characters (non-ASCII names/notes in the export) make code-unit count undercount
+	// true byte size by up to ~3x, letting an oversized payload slip under MAX_BYTES.
+	// Encode once and reuse the bytes below for the hash and the R2 write.
+	const bytes = new TextEncoder().encode(body);
+	if (bytes.length > MAX_BYTES) return new Response(JSON.stringify({ error: "payload too large" }), { status: 413, headers: { "content-type": "application/json" } });
 	// Idempotent key: an automation-id + period header identifies a batch across the
 	// jittery Background-App-Refresh retries HAE makes; fall back to a content hash so
 	// identical bodies still collapse to one object. Header-driven so a retry lands on
 	// the SAME key and R2's put overwrites in place (never assume completeness — §2c).
 	const automationId = request.headers.get("x-automation-id") || request.headers.get("automation-id") || "";
 	const period = request.headers.get("x-period") || request.headers.get("period") || "";
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+	const digest = await crypto.subtle.digest("SHA-256", bytes);
 	const hash = Array.from(new Uint8Array(digest)).slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
 	// The date directory MUST be derived from the PAYLOAD, never the server clock: a
 	// Background-App-Refresh retry that crosses UTC midnight would otherwise land under a
@@ -525,8 +530,8 @@ export async function handleAppleHealth(url: URL, request: Request, env: RtEnv):
 	const idPart = [automationId, period].filter(Boolean).map((s) => s.replace(/[^A-Za-z0-9_-]/g, "_")).join("-") || hash;
 	const key = `apple-health/${datePart}/${idPart}.json`;
 	try {
-		const stored = await putPhi(env, key, body, "application/json");
-		return new Response(JSON.stringify({ ok: true, key: stored, bytes: body.length }), { status: 200, headers: { "content-type": "application/json" } });
+		const stored = await putPhi(env, key, bytes, "application/json");
+		return new Response(JSON.stringify({ ok: true, key: stored, bytes: bytes.length }), { status: 200, headers: { "content-type": "application/json" } });
 	} catch (e) {
 		return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });
 	}
