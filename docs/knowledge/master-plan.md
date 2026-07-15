@@ -30,6 +30,20 @@ The top-level prioritized roadmap. Detailed execution lives in `org-structure-an
 5. Move the router repo → `SuxOS/suxrouter` — DONE.
 6. Per-repo sessions; sweep branches/worktrees.
 
+**"DONE" is the org-migration mechanics only — it does not retire any `docs/proposals/*`
+design doc.** Each proposal's own `status:` frontmatter (source of truth: the generated
+[Status Dashboard](../wiki/MOCs/Status-Dashboard.md)) says whether it's still a live goal:
+- **Still active (`status: designed`, on the build path)** — [`domains.md`](../proposals/domains.md),
+  [`knowledge-core.md`](../proposals/knowledge-core.md), [`vault-backends.md`](../proposals/vault-backends.md),
+  [`enterprise-ops.md`](../proposals/enterprise-ops.md), [`vpc-hosting.md`](../proposals/vpc-hosting.md)
+  — none of these were superseded by the migration; they're Track B/C work not yet built.
+- **Parked (`status: parked`, explicitly off the build path, superseded by the SUX pivot)** —
+  `algebra.md`, `platform-upgrades.md`, `search.md`, `shop.md`, `style-edit.md`, `teach-ask.md`,
+  `travel.md`, `ITERATION-LOG.md`.
+- **Already shipped and archived** (`docs/proposals/archive/*`) — `architecture.md`, `files.md`,
+  `jmap.md`, `mail.md`, `three-mcps.md`, `sux-verbs.md`, `mychart.md` — realized in code, read as
+  history only.
+
 ### B · Product (the assistant gets more useful)
 - Arm the mail-automation features (labels, sensitive-guard, draft-reply) — gated-dormant, deliberate switch.
 - Recall: free Kagi (`kagi_session`, needs `KAGI_SESSION`) + web-default-when-free; the fn→fn cache + `listExamples` cheap wins from the spend audit.
