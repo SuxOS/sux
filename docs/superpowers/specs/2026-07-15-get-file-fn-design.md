@@ -1,16 +1,8 @@
 # `get` — universal "get me a file" fn
 
-Status: design (approved via brainstorming) — **blocked on one open item**
+Status: design (approved via brainstorming) — unblocked, ready for `writing-plans`
 Date: 2026-07-15
 Branch: `feat/get-file-fn`
-
-## Open item (blocks lens-strategy implementation only)
-
-Real numeric `lens_id` for Kagi's built-in **PDFs** and **Usenet/Archive**
-lenses — user is retrieving them from `kagi.com/settings/lenses`. See
-"Hard constraint" note under Query mode for the full story (an earlier
-slug-based "confirmation" turned out to be a false positive). Everything
-else in this spec is unblocked and independent of this value.
 
 ## Purpose
 
@@ -59,29 +51,30 @@ Kagi auth paths (see below):
     derived from `kind` or each `file(kind, …)` clause. Works identically as
     plain query text on the session-scrape path.
   - `site:archive.org` — inline `site:` operator, belt-and-braces domain scope.
-- **Lens strategies (metered, `KAGI_API_KEY`)** — `lens_id` for the **PDFs**
-  and **Usenet/Archive** built-in lenses. No operator equivalent exists for
-  Usenet content specifically — Usenet posts aren't single-domain web content,
-  so `site:` can't replicate it. This is the one piece of coverage that
-  requires the metered path.
+- **Lens strategies (metered, `KAGI_API_KEY`)** — `lens_id: "3"` (PDFs) and
+  `lens_id: "5648"` (Usenet/Archive), read from the account's own
+  `kagi.com/settings/lenses` on 2026-07-15 (edit-link hrefs,
+  `/settings/update_lens?id=<N>`) and cross-validated: the same page lists
+  Academic, Forums, Programming, News 360, Small Web, and Recipes at
+  positions/IDs 2, 1, 15, 29, 107, 120 respectively, exactly matching the
+  values already hardcoded in `search.ts` — so the two new IDs sit on
+  confirmed-accurate ground truth, not a guess. No operator equivalent exists
+  for Usenet content specifically — Usenet posts aren't single-domain web
+  content, so `site:` can't replicate it. This is the one piece of coverage
+  that requires the metered path.
 
-  > ⚠️ **`lens_id` is numeric, not a slug — this was a correction, not an
-  > initial finding.** An earlier pass live-tested `lens_id: "pdfs"` and
-  > `lens_id: "usenet/archive"` and saw plausible-looking (PDF/archive-skewed)
-  > result sets, and concluded the slugs worked. That was a **false positive**:
-  > a follow-up test with `lens_id: "this-is-not-a-real-lens-xyz"` produced the
-  > *same* unfiltered profile (Amazon, unrelated GitHub repos, YouTube) as the
-  > no-lens baseline — proving Kagi **silently ignores an invalid `lens_id`**
-  > rather than erroring, and the earlier "confirmation" was just the query's
-  > organic PDF/archive.org-heavy phrasing, not real lens filtering. The
-  > official [`kagimcp` server source](https://github.com/kagisearch/kagimcp/blob/main/src/kagimcp/server.py)
-  > documents `lens_id` as accepting only the known numeric built-in IDs
-  > (Academic=2, Forums=1, Programming=15, News360=29, Recipes=120, Small
-  > Web=107 — matching `search.ts`) or a custom numeric ID/shareable URL from
-  > `kagi.com/settings/lenses`. **The real numeric IDs for PDFs and
-  > Usenet/Archive are not in any doc found so far** — pending: the user
-  > retrieving them from their own `kagi.com/settings/lenses`. Until filled
-  > in, do not hardcode a guessed ID.
+  > ⚠️ **These are account-scoped lens IDs, not global Kagi constants.**
+  > `search.ts`'s existing 6 IDs and these 2 new ones happen to line up
+  > because they're all Kagi's own built-in lenses (present on every
+  > account with default IDs), but this is empirical, not a documented
+  > guarantee — if Kagi ever changes built-in lens ID assignment, these
+  > would need re-verifying the same way. (Earlier in this design process a
+  > *slug*-based guess — `lens_id: "pdfs"` — was live-tested and looked
+  > plausible, but turned out to be a false positive: Kagi silently ignores
+  > an invalid `lens_id` rather than erroring, so the "confirmation" was just
+  > the query's organic PDF-heavy phrasing. The numeric IDs above come from
+  > directly reading the account's lens settings page, not from testing
+  > search-result plausibility — a stronger form of evidence.)
 
 Cost note: exactly 2 metered calls per `get` (the two lenses), regardless of
 how wide the operator fan-out is — bounded, not scaling with `strategies`/`limit`.
