@@ -82,7 +82,7 @@ export function proxyEnabled(env: TailscaleEnv): boolean {
 // (the reason the residential exit exists) still proxy.
 // Note: RDAP (rdap.org) and CT logs (crt.sh) are intentionally NOT here — they
 // often 403/blocks datacenter IPs, so they benefit from the residential exit.
-const DIRECT_HOST_RE = /(^|\.)(?:kagi\.com|cloudflare-dns\.com|dns\.google|ipwho\.is|ip-api\.com)$/i;
+const DIRECT_HOST_RE = /(^|\.)(?:mcp\.kagi\.com|cloudflare-dns\.com|dns\.google|ipwho\.is|ip-api\.com)$/i;
 
 export function isDirectHost(url: string): boolean {
 	try {

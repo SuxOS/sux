@@ -170,6 +170,27 @@ describe("vault MCP server (/vault/mcp)", () => {
 		expect(capped.truncated).toBe(true);
 	});
 
+	it("scanVault doesn't double-prefix list→read when OBSIDIAN_VAULT_DIR is set (would 404 every note)", async () => {
+		const store = new Map<string, string>();
+		const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
+		const env = { OBSIDIAN_VAULT_REPO: "me/vault", OBSIDIAN_VAULT_DIR: "Vault", OAUTH_KV: kv } as any;
+		// GitHub's tree listing is repo-relative — every note comes back dir-prefixed.
+		const notes: Record<string, string> = { "Vault/Projects/sux.md": "#project" };
+		routes.handler = (url) => {
+			if (url.includes("/git/ref/heads/")) return new Response(JSON.stringify({ object: { sha: "h" } }), { status: 200 });
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "h" }), { status: 200 });
+		};
+		const call = async (name: string, args: any) => JSON.parse((await parse(await handleVaultRpc(env, CTX, rpc("tools/call", { name, arguments: args })))).result.content[0].text);
+
+		const t = await call("vault_tags", {});
+		expect(t.tags.map((x: any) => x.tag)).toEqual(["project"]);
+		expect(t.scanned).toBe(1); // not silently dropped to 0 by a double-prefixed read 404
+	});
+
 	it("flags truncated when a per-note read fails during index build — even folder-scoped", async () => {
 		// A note listed in the tree but failing to read (GitHub secondary-rate-limit 403
 		// / 5xx on the read burst) is silently dropped from the index. That incompleteness

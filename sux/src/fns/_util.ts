@@ -27,9 +27,11 @@ export function vaultToday(tz?: string): string {
 	return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 }
 
-/** Truncate a string, appending a byte-count marker when it was cut. */
-export function clamp(s: string, maxBytes = 100_000): string {
-	return s.length > maxBytes ? `${s.slice(0, maxBytes)}\n… [truncated at ${maxBytes} bytes]` : s;
+/** Truncate a string, appending a length marker when it was cut. `maxChars` counts
+ * UTF-16 code units (s.length/s.slice()), not bytes — multi-byte-heavy text can run
+ * up to ~3x this figure in actual byte size. */
+export function clamp(s: string, maxChars = 100_000): string {
+	return s.length > maxChars ? `${s.slice(0, maxChars)}\n… [truncated at ${maxChars} chars]` : s;
 }
 
 /**

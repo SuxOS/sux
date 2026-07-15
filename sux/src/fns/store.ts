@@ -101,7 +101,11 @@ export const store: Fn = {
 				const obj = await env.R2.get(r2key);
 				if (!obj) return fail(`No object at key '${r2key}'.`);
 				const type = ct ?? obj.httpMetadata?.contentType ?? "application/octet-stream";
-				if (obj.size > MAX_INLINE_BYTES) {
+				// Inline-vs-URL is decided on the DECOMPRESSED size (what the caller actually
+				// gets back), not the maybe-gzip'd R2-stored size — a payload can compress
+				// under MAX_INLINE_BYTES but decompress well past it.
+				const bytes = await maybeDecompress(new Uint8Array(await obj.arrayBuffer()));
+				if (bytes.length > MAX_INLINE_BYTES) {
 					// Too large to inline (texty or binary) — hand back the streaming URL
 					// ref instead (same shape as put's as:"url" response). If we came in
 					// via a raw key there's no handle yet, so mint one.
@@ -110,13 +114,8 @@ export const store: Fn = {
 						sha = obj.customMetadata?.sha256;
 						await env.OAUTH_KV.put(`${STORE_KV_PREFIX}${uuid}`, JSON.stringify({ key: r2key, content_type: type, size: obj.size, sha256: sha }));
 					}
-					return ok(oj({ url: `${storeBase(env)}/s/${uuid}`, key: r2key, sha256: sha, size: obj.size, content_type: type, note: `object is ${obj.size} bytes (> ${MAX_INLINE_BYTES} inline limit); stream it from the url instead.` }));
+					return ok(oj({ url: `${storeBase(env)}/s/${uuid}`, key: r2key, sha256: sha, size: obj.size, content_type: type, note: `object is ${bytes.length} bytes decompressed (> ${MAX_INLINE_BYTES} inline limit); stream it from the url instead.` }));
 				}
-				// Inflate a transparent-gzip frame back to the original bytes before
-				// decoding/encoding (raw/legacy objects pass through untouched). Read as
-				// bytes uniformly so the marker can be detected — obj.text() would decode
-				// the compressed frame as garbage. Output stays compact via oj().
-				const bytes = await maybeDecompress(new Uint8Array(await obj.arrayBuffer()));
 				if (isTexty(type)) return ok(oj({ key: r2key, size: bytes.length, content_type: type, text: new TextDecoder().decode(bytes) }));
 				return ok(oj({ key: r2key, size: bytes.length, content_type: type, base64: toB64(bytes) }));
 			}

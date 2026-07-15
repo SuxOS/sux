@@ -3,6 +3,7 @@ import type { Fn, RtEnv } from "./registry";
 import { cacheKey, extractRpcFromText, type JsonRpc } from "./mcp-util";
 import { FUNCTIONS } from "./fns";
 import { handleRpc, oauthErrorResponse, rtServer } from "./index";
+import { readMetrics } from "./metrics";
 
 // End-to-end coverage of the REAL tools/call dispatch chain in index.ts
 // (parseJsonRpc → findFn → normalizeArgs/raw bypass → run → normalizeText →
@@ -668,6 +669,38 @@ describe("MCP Tasks primitive", () => {
 		expect(result.result.isError).toBeFalsy();
 		expect(typeof result.result.content[0].text).toBe("string");
 		expect(result.result._meta).toEqual({ "io.modelcontextprotocol/related-task": { taskId } });
+	});
+
+	it("records the REAL terminal outcome in metrics once, not a fake ms:0 success at task creation", async () => {
+		const { kv } = makeKv();
+		const { ctx, deferred } = makeCtx();
+		const env = makeEnv(kv);
+		const create = await callRpc(env, ctx, {
+			jsonrpc: "2.0",
+			id: 12,
+			method: "tools/call",
+			params: { name: "pipe", arguments: { steps: [{ tool: "hash", args: { text: "metrics-me" } }] }, task: { ttl: 60_000 } },
+		});
+		expect(create.result.task.status).toBe("working");
+
+		// Nothing recorded yet at creation time — recordCall/shipToLoki must not fire
+		// until fn.run actually settles (the bug: a fake {ms:0, error:false} landed here).
+		const beforeSettle = await readMetrics(env);
+		expect(beforeSettle.total).toBe(0);
+		expect(beforeSettle.tools.pipe).toBeUndefined();
+
+		// Let the background run (and finishTask's recordCall/shipToLoki) settle.
+		await Promise.all(deferred.splice(0));
+		await Promise.all(deferred.splice(0));
+		await Promise.all(deferred.splice(0));
+
+		const after = await readMetrics(env);
+		expect(after.total).toBe(1); // recorded exactly once, at settle time
+		expect(after.tools.pipe).toBeDefined();
+		expect(after.tools.pipe.calls).toBe(1);
+		expect(after.tools.pipe.errors).toBe(0);
+		expect(after.recent[0].tool).toBe("pipe");
+		expect(after.recent[0].error).toBe(false);
 	});
 
 	it("tasks/get on an unknown taskId is a -32602 error", async () => {

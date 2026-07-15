@@ -84,6 +84,7 @@ retailer is interchangeable.
 | Text out of an image | `ocr` |
 | Convert/resize an image (png/jpeg/webp/avif) | `image_convert` (Images binding) |
 | Summarize a page, long doc, or YouTube video | `summarize` (pass `url` — Kagi handles YouTube natively; `text` for raw input) |
+| Epic clinical records (labs, vitals, meds, conditions, notes) + Apple Health | `mychart` (READ-ONLY SMART-on-FHIR; `status`/`connect`/`pull`/`get`; never returns token material) |
 
 ## Text & data transforms
 
@@ -119,12 +120,13 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Todoist tasks | `todoist` (`action: list/add/update/complete/reopen/delete/projects`; needs `TODOIST_TOKEN`; delete is confirm-gated; NOTE: `due_string` via update on a recurring task replaces its recurrence — reschedule a single occurrence in the app) |
 | Reference management — BibTeX/CSL + a vault References/ library | `citation` (`action: format` entries→BibTeX+CSL, `capture` a type:citation note, `export` References/*.md→a combined .bib; handle-first PDFs) |
 | Obsidian vault: list/read/search/append/write/edit/delete notes | `obsidian` (default `backend: git`; `edit` = surgical find/replace; `tools`/`call` need `backend: remote`; mutating actions refuse dot-prefixed paths; reads KV-cached with git-HEAD validation + Mac-asleep fallback on remote `read`) |
-| Capture url/text/search-results into the vault (provenance note in Inbox/; blobs ≤1MB → vault attachment, larger → public Dropbox link) | `ingest` (`url` \| `text` \| `query`; `summarize`/`compress` passes; `blobs: dropbox` forces Dropbox; explicit `path` overrides Inbox and overwrites — default paths never do) |
+| Capture url/text/search-results into the vault (provenance note in Inbox/; blobs ≤1MB → vault attachment, larger → public Dropbox link) | `ingest` (`url` \| `text` \| `query`; `summarize`/`compress` passes; `blobs: dropbox` forces Dropbox; explicit `path` overrides Inbox and overwrites — default paths never do; a PDF/book URL is stored as an opaque blob here, not extracted — use `study` to extract + distill its content) |
 | Dropbox app-folder files (human-facing blob store; syncs to devices) | `dropbox` (`op: put/get/list/delete/share`; paths relative to /Apps root; `list` paginates via `cursor`; put returns a PUBLIC anyone-with-the-link URL) |
 | Fastmail email/calendars/contacts over the full JMAP protocol | `jmap` (raw conduit: `calls:[[method,args,callId]]` or `method`+`args`; auto session/accountId/`using`; `paginate` past page limits; `upload`/`download` blobs; `allow_send`/`allow_destroy` gate send/destroy; needs `FASTMAIL_TOKEN`). The ergonomic mail operations (search·read·thread·send·draft·archive·masked) are ACTIONS on the `mail` front verb — `mail({action:"search"})` — that dispatch into the underlying `mail_*` namespace tools (reached only through the verb, never as standalone front verbs or `fn` leaves); use `jmap` here when you need the raw protocol (MaskedEmail, calendars, contacts). |
 | Autonomous inbox triage — classify messages and (when armed) act | `mail_triage` (armed mode uses REVERSIBLE ops ONLY — add/remove labels, archive/unarchive, undelete; never sends or hard-deletes) |
 | Morning briefing — read-only fan-out over unread/important mail, calendar, tasks, and bill/deadline cues → ONE "good morning" digest appended to today's Daily note | `briefing` (reply drafts are STAGED to Drafts for approval, NEVER sent; DORMANT unless `BRIEFING_ENABLED`, and stages zero drafts until `BRIEFING_STAGE_DRAFTS` is ALSO set; `dry_run` mutates nothing; each source degrades independently) |
 | Monarch Money — READ-ONLY personal finance (accounts, balances, transactions, budgets, cashflow, categories, holdings) | `monarch` (sux NEVER moves money — no transfer/trade op exists and the raw `graphql` escape refuses mutations; needs `MONARCH_TOKEN`) |
+| Sweep the vault for stale/duplicate notes (detection only, no auto-merge/delete) | `consolidate` (flags notes missing/older-than-threshold `last_verified` frontmatter + likely-duplicate titles; appends a digest to Consolidation/<ISO-week>.md; dormant unless `CONSOLIDATE_ENABLED`, once/week unless `force:true`) |
 
 ## Infrastructure & meta
 

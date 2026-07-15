@@ -171,9 +171,19 @@ export function zonedStamp(iso: string, tz: string): string {
 	return `${get("year")}${get("month")}${get("day")}T${get("hour")}${get("minute")}${get("second")}`;
 }
 
-/** ISO-8601 → iCal UTC stamp (20260711T090000Z). A date-only value stays a VALUE=DATE. */
+/** ISO-8601 → iCal stamp. A date-only value stays a VALUE=DATE. A `…Z`/offset instant becomes a
+ *  UTC stamp (20260711T090000Z). A ZONELESS (floating) date-time — no `Z`, no offset — keeps its
+ *  wall-clock digits AS WRITTEN rather than being silently reinterpreted as UTC: `new Date(iso)`
+ *  would parse it per the runtime's local zone (UTC on Workers), so appending `Z` after that would
+ *  quietly turn "6pm, whatever zone the caller meant" into "6pm UTC" — wrong for any non-UTC caller.
+ *  Mirrors icalDateToIso's read-side rule ("never silently coerced to UTC"). */
 export function icalStamp(iso: string): { value: string; dateOnly: boolean } {
 	if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return { value: iso.replace(/-/g, ""), dateOnly: true };
+	const floating = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(iso);
+	if (floating) {
+		const [, y, mo, d, hh, mm, ss] = floating;
+		return { value: `${y}${mo}${d}T${hh}${mm}${ss ?? "00"}`, dateOnly: false };
+	}
 	const d = new Date(iso);
 	if (Number.isNaN(d.getTime())) throw new Error(`invalid date-time '${iso}' (want ISO-8601).`);
 	const p = (n: number, w = 2) => String(n).padStart(w, "0");

@@ -81,6 +81,7 @@ export function withDeadline(name: string, ms: number, run: Promise<ToolResult>)
 	const timeout = new Promise<ToolResult>((resolve) => {
 		timer = setTimeout(() => resolve({ content: [{ type: "text", text: `Tool '${name}' timed out after ${ms}ms` }], isError: true }), ms);
 	});
+	run.catch(() => {});
 	return Promise.race([run, timeout]).finally(() => clearTimeout(timer));
 }
 
@@ -113,9 +114,9 @@ export function clampResult(result: ToolResult, max: number): ToolResult {
 	return { ...result, content };
 }
 
-// Bounded depth probe: returns the greater of the object's nesting depth and
-// (limit + 1) if it's deeper than `limit`. Recursion is capped at `limit`, so a
-// pathologically deep (or cyclic) blob can't blow the stack while we measure it.
+// Bounded depth probe: returns whether the object's nesting depth exceeds
+// `limit`. Recursion is capped at `limit`, so a pathologically deep (or
+// cyclic) blob can't blow the stack while we measure it.
 function exceedsDepth(v: unknown, limit: number): boolean {
 	let deep = false;
 	const walk = (node: unknown, d: number): void => {
@@ -302,9 +303,11 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 				}
 				return fn.raw ? ran : clampResult(ran, MAX_OUTPUT_CHARS);
 			});
-			const taskEvent = { tool: name, ms: 0, error: false };
-			recordCall(env, ctx, taskEvent);
-			shipToLoki(env, ctx, taskEvent);
+			// No recordCall/shipToLoki here: this response only reports that a task was
+			// CREATED, not an outcome (fn.run hasn't executed yet). The real call-outcome
+			// event — actual ms/error — is recorded once by finishTask (tasks.ts) when the
+			// background run settles, so it lands in the same aggregates sloReport draws
+			// error_rate/latency from exactly once, not twice.
 			return sseResponse({ jsonrpc: "2.0", id, result: { task: toPublicTask(rec) } });
 		}
 

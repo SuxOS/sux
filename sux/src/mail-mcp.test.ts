@@ -829,6 +829,37 @@ describe("mail_* ergonomic tools", () => {
 		expect((nf as any).errorCode).toBe("not_found");
 	});
 
+	it("cal_update surfaces a 412 If-Match rejection as a distinct `conflict` code, not a generic failure (#376)", async () => {
+		const e = calEnv();
+		installCalPatch(STORED_EVENT);
+		const st = parse(await tool("cal_update").run(e, { href: "/dav/cal/evt-keep.ics", summary: "New Title", stage: true }));
+		global.fetch = vi.fn(async (_input: any, init: any) => {
+			const method = init?.method ?? "GET";
+			if (method === "GET") return new Response(STORED_EVENT, { status: 200, headers: { etag: '"cur"' } });
+			if (method === "PUT") return new Response("etag mismatch", { status: 412 });
+			return new Response("", { status: 200 });
+		}) as any;
+		const out = await tool("cal_update").run(e, { href: "/dav/cal/evt-keep.ics", summary: "New Title", commit_token: st.commit_token });
+		expect(out.isError).toBe(true);
+		expect((out as any).errorCode).toBe("conflict");
+		expect(out.content[0].text).toMatch(/etag mismatch.*refetch and retry/i);
+	});
+
+	it("cal_delete surfaces a 412 If-Match rejection as a distinct `conflict` code (#376)", async () => {
+		const e = calEnv();
+		global.fetch = vi.fn(async (_input: any, init: any) => {
+			const method = init?.method ?? "GET";
+			if (method === "DELETE") return new Response("etag mismatch", { status: 412 });
+			return new Response("", { status: 200 });
+		}) as any;
+		const st = parse(await tool("cal_delete").run(e, { href: "/dav/cal/evt-keep.ics", etag: '"stale"', stage: true }));
+		expect(st).toMatchObject({ staged: true, kind: "cal_delete" });
+		const out = await tool("cal_delete").run(e, { href: "/dav/cal/evt-keep.ics", etag: '"stale"', commit_token: st.commit_token });
+		expect(out.isError).toBe(true);
+		expect((out as any).errorCode).toBe("conflict");
+		expect(out.content[0].text).toMatch(/etag mismatch.*refetch and retry/i);
+	});
+
 	it("routes gate/missing-id/missing-required errors through typed failWith codes (§5)", async () => {
 		installFetch();
 		expect((await tool("mail_read").run(env(), {}) as any).errorCode).toBe("bad_input"); // missing required id

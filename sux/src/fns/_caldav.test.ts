@@ -14,6 +14,11 @@ describe("_caldav iCal build/parse", () => {
 		expect(() => icalStamp("not-a-date")).toThrow(/invalid/);
 	});
 
+	it("icalStamp keeps a zoneless (floating) date-time's wall-clock digits, not silently coerced to UTC", () => {
+		expect(icalStamp("2026-12-25T18:00:00")).toEqual({ value: "20261225T180000", dateOnly: false });
+		expect(icalStamp("2026-12-25T18:00")).toEqual({ value: "20261225T180000", dateOnly: false });
+	});
+
 	it("zonedStamp renders an absolute instant as wall-clock digits in tz, DST-aware", () => {
 		expect(zonedStamp("2026-07-11T13:00:00Z", "America/New_York")).toBe("20260711T090000"); // EDT (UTC-4)
 		expect(zonedStamp("2026-01-11T13:00:00Z", "America/New_York")).toBe("20260111T080000"); // EST (UTC-5)
