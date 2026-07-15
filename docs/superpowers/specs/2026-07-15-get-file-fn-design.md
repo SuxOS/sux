@@ -77,6 +77,16 @@ is one metered call, so a `kind` maps to **≤2 lenses** to keep spend bounded:
 > unique to this account). If the account's lenses are rebuilt, re-read the
 > mapping the same way. The IDs live in one `const LENSES` table in the `get`
 > implementation — never scattered — so a re-verify touches one place.
+>
+> **Custom lenses must have "Share Lens Link" enabled or Kagi silently ignores
+> them** (per the official `kagimcp` server docs: "only shareable lenses
+> work"). This was verified the hard way — a live test against unshared
+> Document Hosts (31362) and Code Search (31363) returned completely
+> unfiltered results with no error, indistinguishable from an invalid
+> `lens_id`. All 5 custom lenses now have sharing enabled via
+> `kagi.com/settings/update_lens?id=<N>` → Advanced Options → Share Lens Link.
+> If new custom lenses are added later, sharing must be turned on the same way
+> or `get` will silently get unfiltered results for that strategy.
 
 ## Query mode — the exhaustive search
 
