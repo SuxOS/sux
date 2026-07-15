@@ -10,17 +10,19 @@ updated: 2026-07-09
 
 # Architecture & dataflow — the knowledge core in pictures
 
-The visual companion to [domains.md](domains.md) (the nine-domain mapping) and [knowledge-core.md](knowledge-core.md) (the locked spec). Four diagrams, each in two forms:
+> **⚠️ Superseded — point-in-time design record.** These diagrams predate the single-`/mcp`-front-door consolidation and describe an earlier "hub & spoke, 95 fns" shape. For the current, actively-maintained architecture reference, see [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) (canonical prose) and [`docs/design/architecture.md`](../../design/architecture.md) (live topology diagram). Read the diagrams below as history.
+
+The visual companion to [domains.md](../domains.md) (the nine-domain mapping) and [knowledge-core.md](../knowledge-core.md) (the locked spec). Four diagrams, each in two forms:
 
 - **Mermaid**, inline below — renders on GitHub and inside Obsidian, so it lives next to the prose it explains.
-- **Excalidraw**, in [`diagrams/`](diagrams/) — hand-drawn style, editable. Drop a `.excalidraw` file onto [excalidraw.com](https://excalidraw.com) or open it with the Obsidian Excalidraw plugin.
+- **Excalidraw**, in [`diagrams/`](../diagrams/) — hand-drawn style, editable. Drop a `.excalidraw` file onto [excalidraw.com](https://excalidraw.com) or open it with the Obsidian Excalidraw plugin.
 
 | # | Diagram | Excalidraw |
 |---|---|---|
-| 1 | System topology — hub & spoke | [`architecture-1-topology.excalidraw`](diagrams/architecture-1-topology.excalidraw) |
-| 2 | Storage read path — git = truth, KV = cache | [`architecture-2-storage-read.excalidraw`](diagrams/architecture-2-storage-read.excalidraw) |
-| 3 | `ingest` dataflow | [`architecture-3-ingest.excalidraw`](diagrams/architecture-3-ingest.excalidraw) |
-| 4 | Two-transport routing & degrade | [`architecture-4-transport.excalidraw`](diagrams/architecture-4-transport.excalidraw) |
+| 1 | System topology — hub & spoke | [`architecture-1-topology.excalidraw`](../diagrams/architecture-1-topology.excalidraw) |
+| 2 | Storage read path — git = truth, KV = cache | [`architecture-2-storage-read.excalidraw`](../diagrams/architecture-2-storage-read.excalidraw) |
+| 3 | `ingest` dataflow | [`architecture-3-ingest.excalidraw`](../diagrams/architecture-3-ingest.excalidraw) |
+| 4 | Two-transport routing & degrade | [`architecture-4-transport.excalidraw`](../diagrams/architecture-4-transport.excalidraw) |
 
 ---
 
@@ -159,7 +161,7 @@ flowchart LR
 
 ---
 
-*Diagrams regenerate from [`diagrams/gen_excalidraw.py`](diagrams/gen_excalidraw.py) (Excalidraw) and the fenced Mermaid blocks above (single source for the inline form). Keep both in sync when the design moves.*
+*Diagrams regenerate from [`diagrams/gen_excalidraw.py`](../diagrams/gen_excalidraw.py) (Excalidraw) and the fenced Mermaid blocks above (single source for the inline form). Keep both in sync when the design moves.*
 
 ## Related
 

@@ -13,7 +13,7 @@ related: ["[[Infrastructure-MOC]]", "[[architecture]]", "[[fn-registry]]", "[[oa
 
 > **What this is.** The canonical "how sux works" reference: one Cloudflare Worker that serves a universal MCP tool surface plus three personal-data connectors, all behind one single-user OAuth gate. This document is durable repo knowledge — written for humans reading the codebase *and* for the oracle/recall store.
 >
-> **Scope & provenance.** Synthesized from direct reads of the source under `/Users/colinxs/Code/sux-mcp` (paths below are repo-relative). Function counts and constants drift; regenerate the census with `npm run docs` and trust `sux/FUNCTIONS.md` / `src/fns/*.ts` over any prose here. Companion docs: `sux/docs/architecture.md` (shorter deep-dive, consistent with this) and `CLAUDE.md` (how-we-work, not what-we-build).
+> **Scope & provenance.** Synthesized from direct reads of the source under `/Users/colinxs/Code/sux-mcp` (paths below are repo-relative). Function counts and constants drift; regenerate the census with `npm run docs` and trust `sux/FUNCTIONS.md` / `src/fns/*.ts` over any prose here. **This file is the canonical how-sux-works reference** — where another doc disagrees with this one, this one wins. Companion docs: [`docs/design/architecture.md`](design/architecture.md) (a live topology *diagram*, status-coded live/dormant/blocked/planned — visual companion, not competing prose) and `CLAUDE.md` (how-we-work, not what-we-build). [`docs/proposals/archive/architecture.md`](proposals/archive/architecture.md) is an earlier, now-superseded pre-build design doc — read as history only.
 
 ---
 

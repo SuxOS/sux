@@ -5,7 +5,7 @@ cluster: meta
 type: backlog
 summary: "The single ranked top-10 highest-value improvements synthesized from the session's audit backlog, de-duplicated and with in-flight work excluded; each tagged SAFE (auto-deployable) vs UNSAFE (needs review), rough effort, and any in-flight dependency."
 tags: [sux, meta, backlog]
-updated: 2026-07-13 (2nd pass — #2, #8 confirmed already-done)
+updated: 2026-07-15 (3rd pass — #5 confirmed already-done)
 related: ["[[session-audit-summary]]", "[[design-review-2026-07]]", "[[autonomous-pipeline]]"]
 ---
 
@@ -30,7 +30,7 @@ an in-flight workstream owns; it can't start until that lands.
 | 2 | ~~Pre-commit hook runs `gen:index`~~ — DONE (`scripts/hooks/pre-commit` stages only `index.ts`) | best-practices (A1) | SAFE | S | none |
 | 3 | ~~Remove `winco`~~ — DONE (already removed) | debloat (S1) | SAFE | S | none |
 | 4 | Fold `packCsv` into `_convert.toCsv` (fixes CSV formula-injection) | debloat (2A) | **SAFE** | S–M | after converter wave (`csv.ts`) |
-| 5 | Stage irreversible JMAP send/destroy behind the email-conscience + tone gate | intent (C1/C4/C5) | **UNSAFE** | M | after mail-cal (`_jmap`/`mail-mcp`) |
+| 5 | ~~Stage irreversible JMAP send/destroy behind the email-conscience + tone gate~~ — DONE (`stage.ts` STAGE_KINDS + `conscience()`, landed with mail-cal) | intent (C1/C4/C5) | SAFE | M | none |
 | 6 | Unify the 3 destructive-confirm DSLs into one path | best-practices (D1) | **UNSAFE** | M | after mail-cal + vault land |
 | 7 | ~~Remove `geo_fetch`~~ — DONE (folded into proxy `x-exit-geo`) | debloat (S2) | SAFE | S–M | none |
 | 8 | ~~Document `GITHUB_TOKEN` scope~~ — DONE (secrets.md ⇄ keys.md reconciled) | best-practices (C1) | SAFE | S | none |
@@ -50,12 +50,23 @@ an in-flight workstream owns; it can't start until that lands.
 4. **`packCsv` → `_convert.toCsv`** — dedup that *also* fixes CSV formula-injection
    (a `=`/`+`/`-`/`@`-prefixed cell executing in a spreadsheet). Security-positive;
    blocked only because `csv.ts` is mid-wave.
-5. **Email-conscience staging** — the single highest-value *safety* item: the gate
-   is advisory until send/destroy sit behind it. Ranked below the SAFE quick-wins
-   only because it's UNSAFE and blocked on mail-cal, not because it matters less.
+5. **Email-conscience staging** — ~~the single highest-value *safety* item: the gate
+   is advisory until send/destroy sit behind it~~. **Re-verified 2026-07-15: DONE.**
+   `stage.ts`'s `STAGE_KINDS.mail_send = { irreversible: true }` (landed in df303aa,
+   2026-07-11, same day as the audit that flagged this) means `mail_send` auto-stages
+   by default — a preview + `commit_token`/`force:true` is required before anything
+   sends, and `staged()` attaches `conscience()`'s tone/recipient/attachment/phishing
+   advisory notes to that same mandatory preview (`stage.ts:161`). The gate itself
+   (staging) is load-bearing/code-enforced, not advisory; `conscience()` remains an
+   advisory *lint* by design (it surfaces notes, it doesn't independently veto), but
+   it can no longer be bypassed — it rides inside the enforced stage/commit step on
+   every guarded mail verb (`mail_send`, `mail_mailbox_delete`, `mail_vacation`,
+   `contact_delete`, …). Separately, `_jmap.ts`'s `enforceGates` hard-throws on the
+   raw `jmap` conduit unless `allow_send`/`allow_destroy` is explicit — defense in
+   depth for anyone bypassing the ergonomic verbs. No remaining gap.
 6. **Unify destructive-confirm DSLs** — three parallel confirm dialects are the root
-   cause that makes #5 possible; one path makes the conscience enforceable. Waits on
-   mail-cal + vault since it edits their confirm code.
+   cause that made #5 fragile; one path would still reduce duplication even though
+   #5 itself is done. Waits on mail-cal + vault since it edits their confirm code.
 7. **Remove `geo_fetch`** — 119 LOC; its only unique value (a streaming byte-cap)
    moves into `proxy`, so nothing is lost. SAFE subtraction.
 8. **`GITHUB_TOKEN` scope doc** — secrets.md and keys.md currently disagree about

@@ -10,6 +10,8 @@ updated: 2026-07-11
 
 # Architecture
 
+> **Canonical prose reference is [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)** — this doc is a visual companion, a single status-coded topology diagram, not a competing description. Where this diagram and that doc disagree (e.g. exact verb counts), trust `docs/ARCHITECTURE.md` and `sux/FUNCTIONS.md`.
+
 The shipped topology of the sux Worker — every namespace, binding, and external
 dependency, colour-coded by deployment status (🟢 live · 🟡 dormant · 🔴 blocked ·
 ⚪ planned). The legend that decodes the status glyphs is at the bottom of the diagram.
