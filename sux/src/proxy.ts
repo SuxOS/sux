@@ -272,7 +272,7 @@ export async function withRetry(fn: () => Promise<Response>): Promise<Response> 
 //   direct          — never tried the proxy (disabled, direct host, or forced)
 //   proxy_fallback  — proxy errored, refetched direct
 //   binary_refetch  — legacy proxy mangled a binary body, refetched direct
-export type FetchRoute = "proxied" | "direct" | "proxy_fallback" | "binary_refetch";
+export type FetchRoute = "proxied" | "direct" | "proxy_fallback" | "binary_refetch" | "redirect_fallback" | "empty_fallback";
 
 let routeTally: Partial<Record<FetchRoute, number>> = {};
 
@@ -393,14 +393,34 @@ export async function smartFetch(
 			const callerHeaders = init.headers instanceof Headers ? Object.fromEntries(init.headers) : (init.headers ?? {});
 			const headers = { ...ghAuth, ...callerHeaders };
 			const p = await fetchViaTailscale(env, url, { method: init.method, headers, body: init.body, redirect: init.redirect });
-			if (p.bodyEncoding === "base64" || isTextualContentType(new Headers(p.headers).get("content-type"))) {
+			// Two proxied answers aren't usable and must fall through to a direct
+			// fetch (which follows redirects natively and actually returns bytes):
+			//   • a redirect the caller means to follow — the node pins curl with
+			//     --no-location (an SSRF guard) so it never chases the hop itself;
+			//   • a body-expected status returned with an empty body — a broken
+			//     curl-impersonate on the node reports the status but writes nothing.
+			// redirect:"manual"/"error" callers (the `redirects` tracer) still get the
+			// raw hop; genuinely body-less statuses (204/205/304) are left alone.
+			const isRedirect = p.status >= 300 && p.status < 400;
+			const wantFollow = init.redirect !== "manual" && init.redirect !== "error";
+			const emptyBody = !p.body && ![204, 205, 304].includes(p.status);
+			const unusable = (isRedirect && wantFollow) || (!isRedirect && emptyBody);
+			if (!unusable && (p.bodyEncoding === "base64" || isTextualContentType(new Headers(p.headers).get("content-type")))) {
 				tallyRoute("proxied");
 				auditEgress(env, url, "proxied", true, p.status);
 				return proxiedToResponse(p);
 			}
-			// Corrupt bytes are worse than a datacenter-IP fetch: fall through.
-			directRoute = "binary_refetch";
-			console.warn(`smartFetch: proxy returned a stringly binary body for ${url} — refetching direct for byte fidelity`);
+			if (isRedirect && wantFollow) {
+				directRoute = "redirect_fallback";
+				console.warn(`smartFetch: proxy returned a ${p.status} redirect for ${url} (node can't follow) — refetching direct`);
+			} else if (emptyBody) {
+				directRoute = "empty_fallback";
+				console.warn(`smartFetch: proxy returned an empty ${p.status} body for ${url} — refetching direct`);
+			} else {
+				// Corrupt bytes are worse than a datacenter-IP fetch: fall through.
+				directRoute = "binary_refetch";
+				console.warn(`smartFetch: proxy returned a stringly binary body for ${url} — refetching direct for byte fidelity`);
+			}
 		} catch (e) {
 			directRoute = "proxy_fallback";
 			console.warn(`smartFetch: proxy failed, falling back to direct — ${String((e as Error).message ?? e)}`);

@@ -258,6 +258,56 @@ describe("binary safety through the proxied path", () => {
 	});
 });
 
+describe("proxy empty-body and redirect fallbacks", () => {
+	const toProxy = (u: string | URL) => String(u).startsWith("https://x.ts.net/");
+
+	it("refetches direct when the proxy returns a body-expected status with an empty body", async () => {
+		// A broken curl-impersonate on the node reports a 200 but writes no body.
+		const fetchMock = vi.fn(async (u: string | URL) =>
+			toProxy(u)
+				? proxyEnvelope({ status: 200, headers: { "content-type": "text/html" }, bytes: 0, body: "", bodyEncoding: "base64" })
+				: new Response("<h1>real</h1>", { status: 200, headers: { "content-type": "text/html" } }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch(ON, "https://example.com/doc");
+		expect(await resp.text()).toBe("<h1>real</h1>");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(String(fetchMock.mock.calls[1][0])).toBe("https://example.com/doc");
+	});
+
+	it("refetches direct on a proxied redirect (the node's --no-location can't follow; a direct fetch does)", async () => {
+		const fetchMock = vi.fn(async (u: string | URL) =>
+			toProxy(u)
+				? proxyEnvelope({ status: 302, headers: { "content-type": "text/html", location: "https://cdn.example.com/final.pdf" }, bytes: 0, body: "", bodyEncoding: "base64" })
+				: new Response("PDFDATA", { status: 200, headers: { "content-type": "application/pdf" } }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch(ON, "https://archive.org/download/x.pdf");
+		expect(await resp.text()).toBe("PDFDATA");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(String(fetchMock.mock.calls[1][0])).toBe("https://archive.org/download/x.pdf");
+	});
+
+	it("returns a proxied redirect as-is when the caller observes hops (redirect:manual) — the `redirects` tracer's contract", async () => {
+		const fetchMock = vi.fn(async () =>
+			proxyEnvelope({ status: 302, headers: { "content-type": "text/html", location: "https://example.com/next" }, bytes: 0, body: "", bodyEncoding: "base64" }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch(ON, "https://example.com/", { redirect: "manual" });
+		expect(resp.status).toBe(302);
+		expect(resp.headers.get("location")).toBe("https://example.com/next");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not treat a genuinely body-less 204 as a proxy failure", async () => {
+		const fetchMock = vi.fn(async () => proxyEnvelope({ status: 204, headers: {}, bytes: 0, body: "", bodyEncoding: "base64" }));
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch(ON, "https://example.com/ping");
+		expect(resp.status).toBe(204);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("smartFetch direct-path timeout", () => {
 	it("passes an AbortSignal to the direct/fallback fetch (30s bound)", async () => {
 		const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => new Response("ok", { status: 200 }));
