@@ -8,7 +8,7 @@ import { decodeEntities as decodeMarkupEntities } from "./_markup";
 /** One normalized retail product, common across every retailer fn. */
 export type RetailProduct = {
 	id: string;
-	title: string;
+	title?: string;
 	brand?: string;
 	price?: number;
 	promo_price?: number;

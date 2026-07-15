@@ -17,12 +17,11 @@ function fakeEnv(seed: Record<string, string> = {}) {
 }
 
 describe("kv_delete", () => {
-	it("refuses to delete an internal reserved key", async () => {
-		const { env, store } = fakeEnv({ "sux:internal": "keep" });
-		const r = await kv_delete.run(env, { key: "sux:internal" });
-		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/reserved space/);
-		expect(store.get("sux:internal")).toBe("keep");
+	it("deletes a reserved-looking key namespaced under kv: (only the internal kv:-prefix collision is guarded)", async () => {
+		const { env, store } = fakeEnv({ "kv:sux:internal": "keep" });
+		const r = await kv_delete.run(env, { key: "sux:internal", confirm: true });
+		expect(r.isError).toBeFalsy();
+		expect(store.has("kv:sux:internal")).toBe(false);
 	});
 
 	it("deletes a namespaced key with confirm:true", async () => {

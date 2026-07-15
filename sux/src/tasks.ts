@@ -1,3 +1,5 @@
+import { recordCall } from "./metrics";
+import { shipToLoki } from "./grafana";
 import type { RtEnv, ToolResult } from "./registry";
 
 // MCP "Tasks" primitive (spec 2025-11-25, still experimental as of the
@@ -116,6 +118,7 @@ export function toTaskResult(rec: TaskRecord): ToolResult & { _meta: Record<stri
  */
 export function createTask(env: RtEnv, ctx: ExecutionContext, tool: string, ttlRequested: unknown, run: () => Promise<ToolResult>): TaskRecord {
 	const now = nowIso();
+	const startedAt = Date.now();
 	const rec: TaskRecord = {
 		taskId: crypto.randomUUID(),
 		tool,
@@ -140,8 +143,12 @@ export function createTask(env: RtEnv, ctx: ExecutionContext, tool: string, ttlR
 		initialWrite
 			.then(() =>
 				run().then(
-					(result) => finishTask(env, rec.taskId, result),
-					(e) => finishTask(env, rec.taskId, { content: [{ type: "text", text: `Tool execution threw: ${String((e as Error)?.message ?? e)}` }], isError: true }),
+					(result) => finishTask(env, ctx, rec.taskId, tool, startedAt, result),
+					(e) =>
+						finishTask(env, ctx, rec.taskId, tool, startedAt, {
+							content: [{ type: "text", text: `Tool execution threw: ${String((e as Error)?.message ?? e)}` }],
+							isError: true,
+						}),
 				),
 			)
 			.catch((e) => console.warn(`sux task ${rec.taskId} (${tool}) failed to persist its finish: ${String((e as Error)?.message ?? e)}`)),
@@ -151,13 +158,27 @@ export function createTask(env: RtEnv, ctx: ExecutionContext, tool: string, ttlR
 
 /** Write the terminal result for a task — unless it was already moved to a
  * terminal status (cancelled) by a concurrent tasks/cancel, in which case the
- * late result is dropped: "once cancelled, a task MUST remain cancelled". */
-async function finishTask(env: RtEnv, taskId: string, result: ToolResult): Promise<void> {
+ * late result is dropped: "once cancelled, a task MUST remain cancelled".
+ *
+ * This is also the ONLY place a task-augmented call's outcome is fed into
+ * recordCall/shipToLoki — with the REAL elapsed ms (from task creation to
+ * this terminal settle) and the REAL error flag, once fn.run has actually
+ * finished. The task-creation response fires no call-outcome event of its
+ * own (see index.ts's tools/call handler) — recording one there, before
+ * fn.run even executes, would double-count a fake instant-success into the
+ * same aggregates sloReport's error_rate/latency draw from. A cancelled task
+ * (dropped above) never reaches here, so it's never recorded either — same
+ * as an ordinary call that never completes. */
+async function finishTask(env: RtEnv, ctx: { waitUntil(p: Promise<unknown>): void }, taskId: string, tool: string, startedAt: number, result: ToolResult): Promise<void> {
 	const current = await getTask(env, taskId);
 	if (!current || isTerminal(current.status)) return;
 	const status: TaskStatus = result.isError ? "failed" : "completed";
 	const statusMessage = result.isError ? (result.content?.[0]?.text ?? "Tool execution failed.") : undefined;
 	await putTask(env, { ...current, status, statusMessage, result, lastUpdatedAt: nowIso() });
+	const first = Array.isArray(result.content) ? result.content.find((p): p is { type: "text"; text: string } => p?.type === "text" && typeof p.text === "string") : undefined;
+	const event = { tool, ms: Date.now() - startedAt, error: Boolean(result.isError), err: result.isError ? first?.text : undefined };
+	recordCall(env, ctx, event);
+	shipToLoki(env, ctx, event);
 }
 
 /** Best-effort cancel: flips a non-terminal task to `cancelled` immediately

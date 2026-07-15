@@ -185,7 +185,10 @@ describe("store", () => {
 		const env = mkEnv();
 		const put = j(await store.run(env, { data: "small", content_type: "text/plain", force: true }));
 		const text = vi.fn(async () => "small");
-		const arrayBuffer = vi.fn(async () => new Uint8Array([1]).buffer);
+		// Inline-vs-URL is decided on the DECOMPRESSED size, so the mock must actually
+		// carry that many bytes (a raw, non-gzip buffer — maybeDecompress passes it through).
+		const big = new Uint8Array(5 * 1024 * 1024);
+		const arrayBuffer = vi.fn(async () => big.buffer);
 		env.R2.get = async () => ({ size: 5 * 1024 * 1024, httpMetadata: { contentType: "text/plain" }, customMetadata: {}, text, arrayBuffer });
 		const got = j(await store.run(env, { op: "get", id: put.uuid }));
 		expect(got.url).toBe(put.url);
@@ -197,20 +200,21 @@ describe("store", () => {
 		expect(got.text).toBeUndefined();
 		expect(got.base64).toBeUndefined();
 		expect(text).not.toHaveBeenCalled();
-		expect(arrayBuffer).not.toHaveBeenCalled();
+		expect(arrayBuffer).toHaveBeenCalled();
 	});
 
 	it("get by raw key of an over-4MB binary object mints a handle and returns the url ref", async () => {
 		const env = mkEnv();
 		const text = vi.fn(async () => "x");
-		const arrayBuffer = vi.fn(async () => new Uint8Array([1]).buffer);
+		const big = new Uint8Array(4 * 1024 * 1024 + 1);
+		const arrayBuffer = vi.fn(async () => big.buffer);
 		env.R2.get = async () => ({ size: 4 * 1024 * 1024 + 1, httpMetadata: { contentType: "application/octet-stream" }, customMetadata: { sha256: "abc123" }, text, arrayBuffer });
 		const got = j(await store.run(env, { op: "get", key: "cas/abc123" }));
 		expect(got.url).toMatch(/\/s\/[0-9a-f-]{36}$/);
 		expect(got.sha256).toBe("abc123");
 		expect(got.base64).toBeUndefined();
 		expect(text).not.toHaveBeenCalled();
-		expect(arrayBuffer).not.toHaveBeenCalled();
+		expect(arrayBuffer).toHaveBeenCalled();
 		// The minted handle resolves in KV.
 		const uuid = got.url.split("/s/")[1];
 		expect(JSON.parse(env.OAUTH_KV._m.get(`store:${uuid}`)!)).toMatchObject({ key: "cas/abc123", size: 4 * 1024 * 1024 + 1 });

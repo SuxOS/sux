@@ -52,7 +52,7 @@ type VaultRecord = { path: string; fm: Record<string, unknown>; links: string[];
 const INDEX_MAX = 5000;
 type VaultIndex = { sha: string; at: number; total: number; truncated: boolean; records: VaultRecord[] };
 
-async function buildVaultIndex(env: RtEnv, sha: string): Promise<VaultIndex> {
+async function buildVaultIndex(env: RtEnv, sha: string, cfg: VaultCfg): Promise<VaultIndex> {
 	const listRes = await obsidian.run(env, git({ action: "list" }));
 	if (listRes.isError) throw new Error(listRes.content?.[0]?.text ?? "vault list failed");
 	const listing = JSON.parse(listRes.content[0].text) as { notes?: string[] };
@@ -62,7 +62,11 @@ async function buildVaultIndex(env: RtEnv, sha: string): Promise<VaultIndex> {
 	const records = (
 		await Promise.all(
 			notes.map(async (path) => {
-				const r = await obsidian.run(env, git({ action: "read", path }));
+				// `list` returns dir-prefixed (OBSIDIAN_VAULT_DIR) paths, but `read` re-applies
+				// inVault() itself — feeding the listed path straight back in would double-prefix
+				// into a 404. Strip the dir prefix here, mirroring recall.ts's read-back fix.
+				const readPath = cfg.dir && path.startsWith(`${cfg.dir}/`) ? path.slice(cfg.dir.length + 1) : path;
+				const r = await obsidian.run(env, git({ action: "read", path: readPath }));
 				if (r.isError) {
 					failed++;
 					return null;
@@ -92,13 +96,15 @@ async function vaultIndex(env: RtEnv, cfg: VaultCfg): Promise<VaultIndex | null>
 	if (!head) return null;
 	const cached = (await readVaultIndexBlob(env, cfg)) as VaultIndex | null;
 	if (cached?.sha === head && Array.isArray(cached.records)) return cached;
-	const fresh = await buildVaultIndex(env, head);
+	const fresh = await buildVaultIndex(env, head, cfg);
 	await writeVaultIndexBlob(env, cfg, fresh);
 	return fresh;
 }
 
 /** Direct per-note scan — the fallback when the index is unavailable (no KV / offline HEAD). */
 async function scanVaultDirect(env: RtEnv, folder: string | undefined, cap: number): Promise<{ records: VaultRecord[]; total: number; truncated: boolean }> {
+	const cfg = vaultCfg(env);
+	const dir = "error" in cfg ? "" : cfg.dir;
 	const listRes = await obsidian.run(env, git({ action: "list", ...(folder ? { path: folder } : {}) }));
 	if (listRes.isError) throw new Error(listRes.content?.[0]?.text ?? "vault list failed");
 	const listing = JSON.parse(listRes.content[0].text) as { notes?: string[] };
@@ -107,7 +113,10 @@ async function scanVaultDirect(env: RtEnv, folder: string | undefined, cap: numb
 	const records = (
 		await Promise.all(
 			notes.map(async (path) => {
-				const r = await obsidian.run(env, git({ action: "read", path }));
+				// See buildVaultIndex: `list` returns dir-prefixed paths, but `read` re-applies
+				// inVault() — strip the prefix back off before reading, or it double-prefixes.
+				const readPath = dir && path.startsWith(`${dir}/`) ? path.slice(dir.length + 1) : path;
+				const r = await obsidian.run(env, git({ action: "read", path: readPath }));
 				if (r.isError) return null;
 				const content = r.content[0].text;
 				const fm = parseFrontmatter(content);

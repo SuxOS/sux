@@ -128,7 +128,8 @@ export const homedepot: Fn = {
 		if (!term) return failWith("bad_input", "action=search requires a `term`.");
 		const limit = Math.min(40, Math.max(1, Number(args?.limit) || 15));
 
-		const url = `https://www.homedepot.com/s/${encodeURIComponent(term)}`;
+		const zip = String(args?.zip ?? "").trim();
+		const url = `https://www.homedepot.com/s/${encodeURIComponent(term)}${zip ? `?storeSelection=${encodeURIComponent(zip)}` : ""}`;
 		const r = await retailRender(env, {
 			url,
 			block_resources: true,
@@ -145,7 +146,7 @@ export const homedepot: Fn = {
 			html = r.body;
 		} else {
 			const u = await unlockerRender(env, { url, timeout_ms: 8000 });
-			if (!u.ok) return failWith("blocked", `homedepot: blocked or render failed — ${r.error}`);
+			if (!u.ok) return failWith("blocked", `homedepot: blocked or render failed — ${u.error}`);
 			html = u.body;
 		}
 

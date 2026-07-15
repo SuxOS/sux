@@ -20,12 +20,11 @@ function fakeEnv() {
 }
 
 describe("kv_put", () => {
-	it("refuses a key that would land in reserved space", async () => {
+	it("namespaces a reserved-looking key under kv: rather than refusing it", async () => {
 		const { env, store } = fakeEnv();
 		const r = await kv_put.run(env, { key: "cache:x", value: "v" });
-		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/reserved space/);
-		expect(store.size).toBe(0);
+		expect(r.isError).toBeFalsy();
+		expect(store.has("kv:cache:x")).toBe(true);
 	});
 
 	it("writes a value under the kv: namespace", async () => {

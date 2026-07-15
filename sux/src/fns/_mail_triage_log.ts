@@ -70,22 +70,33 @@ export async function readTriageEntries(env: RtEnv, opts?: { cycle?: string; lim
 	return items.slice(0, Math.max(0, opts?.limit ?? 100));
 }
 
-export type Mover = (env: RtEnv, ids: string[], target: string) => Promise<void>;
-export type Labeler = (env: RtEnv, ids: string[], keyword: string, add: boolean) => Promise<void>;
+/** Resolve to the ids that ACTUALLY reversed — moveMessages/labelMessages can fail
+ *  partially (some ids notUpdated) without setting isError, so callers must check
+ *  per-id outcome, not just the batch-level error flag. */
+export type Mover = (env: RtEnv, ids: string[], target: string) => Promise<string[]>;
+export type Labeler = (env: RtEnv, ids: string[], keyword: string, add: boolean) => Promise<string[]>;
 /** The two reversers bulkUndo needs — the inverse of each auto-act op kind. Injected in tests. */
 export type Reversers = { move?: Mover; label?: Labeler };
 
 /** The default reversers: move back via moveMessages, un-label via labelMessages. Dynamically
- *  imported so this module (and its tests) never statically pull in the whole mail surface. */
+ *  imported so this module (and its tests) never statically pull in the whole mail surface.
+ *  Return only the ids that actually reversed (a partial failure still throws only when
+ *  NOTHING moved, matching moveMessages/labelMessages' own "don't report a silent moved:0" rule). */
 const defaultMover: Mover = async (env, ids, target) => {
 	const mail = await import("../mail-mcp");
 	const r = await mail.moveMessages(env, ids, target);
 	if (r.isError) throw new Error(r.content?.[0]?.text ?? "move failed");
+	const body = JSON.parse(r.content?.[0]?.text ?? "{}") as { failed?: number; errors?: Record<string, unknown> };
+	const failedIds = new Set(Object.keys(body.errors ?? {}));
+	return ids.filter((id) => !failedIds.has(id));
 };
 const defaultLabeler: Labeler = async (env, ids, keyword, add) => {
 	const mail = await import("../mail-mcp");
 	const r = await mail.labelMessages(env, ids, keyword, add);
 	if (r.isError) throw new Error(r.content?.[0]?.text ?? "label failed");
+	const body = JSON.parse(r.content?.[0]?.text ?? "{}") as { failed?: number; errors?: Record<string, unknown> };
+	const failedIds = new Set(Object.keys(body.errors ?? {}));
+	return ids.filter((id) => !failedIds.has(id));
 };
 
 /** Reverse every still-applied "acted" action in a cycle: move ops go back to their origin
@@ -111,8 +122,10 @@ export async function bulkUndo(env: RtEnv, cycle: string, reversers: Reversers =
 	for (const e of moves) (byBox.get(e.from_mailbox as string) ?? byBox.set(e.from_mailbox as string, []).get(e.from_mailbox as string)!).push(e.id);
 	for (const [box, ids] of byBox) {
 		try {
-			await move(env, ids, box);
-			for (const id of ids) reversed.add(id);
+			const succeeded = await move(env, ids, box);
+			for (const id of succeeded) reversed.add(id);
+			const failedIds = ids.filter((id) => !succeeded.includes(id));
+			if (failedIds.length) errors.push({ mailbox: box, ids: failedIds, error: "partial failure — see move result" });
 		} catch (e) {
 			errors.push({ mailbox: box, ids, error: errMsg(e) });
 		}
@@ -121,8 +134,10 @@ export async function bulkUndo(env: RtEnv, cycle: string, reversers: Reversers =
 	for (const e of labels) (byKeyword.get(e.keyword as string) ?? byKeyword.set(e.keyword as string, []).get(e.keyword as string)!).push(e.id);
 	for (const [keyword, ids] of byKeyword) {
 		try {
-			await label(env, ids, keyword, false);
-			for (const id of ids) reversed.add(id);
+			const succeeded = await label(env, ids, keyword, false);
+			for (const id of succeeded) reversed.add(id);
+			const failedIds = ids.filter((id) => !succeeded.includes(id));
+			if (failedIds.length) errors.push({ keyword, ids: failedIds, error: "partial failure — see label result" });
 		} catch (e) {
 			errors.push({ keyword, ids, error: errMsg(e) });
 		}

@@ -198,6 +198,8 @@ function shapeCalObject(o: { href: string; etag: string | null; ical: string }):
 }
 
 class NotFound extends Error {}
+/** Thrown on a 412 from an If-Match write — the object changed since it was read (etag mismatch). */
+class Conflict extends Error {}
 
 /** Property-set for a cal_update/task_update/task_complete rewrite. DTSTAMP (and, for a COMPLETED
  *  task, the COMPLETED stamp) are stamped fresh here — call it at write time, never at stage, so the
@@ -260,6 +262,7 @@ async function calPatch(env: RtEnv, a: any, comp: "VEVENT" | "VTODO"): Promise<T
 		const body = replaceProps(cur.text, comp, buildCalSets(a, comp, tz));
 		const ifMatch = a?.etag ? String(a.etag) : (cur.etag ?? undefined);
 		const r = await caldavFetch(env, "PUT", href, { body, contentType: "text/calendar; charset=utf-8", ...(ifMatch ? { ifMatch } : {}) });
+		if (r.status === 412) throw new Conflict(`${noun} update rejected — etag mismatch, the object changed since it was read: refetch and retry.`);
 		if (!r.ok) throw new Error(`${noun} update failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
 		return { updated: true, href, etag: r.etag, changed };
 	};
@@ -268,6 +271,7 @@ async function calPatch(env: RtEnv, a: any, comp: "VEVENT" | "VTODO"): Promise<T
 		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {
 		if (e instanceof NotFound) return failWith("not_found", errMsg(e));
+		if (e instanceof Conflict) return failWith("conflict", errMsg(e));
 		return fail(errMsg(e));
 	}
 }
@@ -1132,12 +1136,14 @@ const TOOLS: MailTool[] = [
 				const href = String(a.href);
 				const mutate = async () => {
 					const r = await caldavFetch(env, "DELETE", href, a?.etag ? { ifMatch: String(a.etag) } : {});
+					if (r.status === 412) throw new Conflict("delete rejected — etag mismatch, the object changed since it was read: refetch and retry.");
 					if (!r.ok && r.status !== 404) throw new Error(`delete failed: HTTP ${r.status}`);
 					return { deleted: href, ...(r.status === 404 ? { note: "already gone" } : {}) };
 				};
 				const out = await staged(env, "cal_delete", gateArgs(a), { href, etag: a?.etag ?? null }, { action: "delete calendar object", href }, mutate);
 				return ok("stageResult" in out ? out.stageResult : out.result);
 			} catch (e) {
+				if (e instanceof Conflict) return failWith("conflict", errMsg(e));
 				return fail(errMsg(e));
 			}
 		},

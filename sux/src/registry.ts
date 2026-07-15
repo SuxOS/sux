@@ -329,8 +329,10 @@ export type RtEnv = Env &
  *   upstream_error — upstream errored, no more precise attribution
  *   bad_input      — the caller's args are invalid (bad url, missing field, SSRF target)
  *   layout_change  — we fetched fine but the page/response shape no longer parses
+ *   conflict       — an If-Match/etag guard was rejected (412) — the object changed
+ *                     since it was read; refetch and retry, don't blind-retry the same write
  */
-export const FAIL_CODES = ["not_configured", "blocked", "timeout", "rate_limited", "not_found", "upstream_error", "bad_input", "layout_change"] as const;
+export const FAIL_CODES = ["not_configured", "blocked", "timeout", "rate_limited", "not_found", "upstream_error", "bad_input", "layout_change", "conflict"] as const;
 export type FailCode = (typeof FAIL_CODES)[number];
 
 // NOTE on MCP Apps (SEP-1865) content: the base ToolResult.content type stays

@@ -410,8 +410,8 @@ describe("draft-reply — the send-proof staging lane", () => {
 			{ cycle: "z", id: "m1", action: "acted", label: "receipt", confidence: 0.95, reason: "r", op: "archive", from_mailbox: "inbox", to_mailbox: "archive", at: 1 },
 			{ cycle: "z", id: "m2", action: "acted", label: "personal", confidence: 0.85, reason: "r", op: "draft-reply", draft_id: "draft-m2", at: 2 },
 		]);
-		const move = vi.fn(async () => {});
-		const label = vi.fn(async () => {});
+		const move = vi.fn(async (_env: any, ids: string[]) => ids);
+		const label = vi.fn(async (_env: any, ids: string[]) => ids);
 		const res: any = await bulkUndo(env, "z", { move, label });
 		// Only the archive is reversed; the draft-reply is intentionally left in place (Colin's to keep).
 		expect(res.undone).toBe(1);
@@ -524,8 +524,8 @@ describe("runTriage — reversibility: undo-log is written BEFORE a message is m
 		const j1 = logged.find((e) => e.id === "j1");
 		expect(j1).toMatchObject({ action: "acted", op: "label", keyword: "junk" });
 		// Which means a bulk-undo can still reverse it.
-		const label = vi.fn(async () => {});
-		const res: any = await bulkUndo(env, "crash", { label, move: vi.fn(async () => {}) });
+		const label = vi.fn(async (_env: any, ids: string[]) => ids);
+		const res: any = await bulkUndo(env, "crash", { label, move: vi.fn(async (_env: any, ids: string[]) => ids) });
 		expect(res.undone).toBe(1);
 		expect(label).toHaveBeenCalledWith(env, ["j1"], "junk", false);
 	});
@@ -540,8 +540,8 @@ describe("action log + bulk undo", () => {
 			{ cycle: "u", id: "k", action: "acted", label: "junk", confidence: 0.9, reason: "r", op: "label", keyword: "junk", at: 3 },
 			{ cycle: "u", id: "c", action: "suggested", label: "unknown", confidence: 0.2, reason: "r", at: 4 },
 		]);
-		const move = vi.fn(async () => {});
-		const label = vi.fn(async () => {});
+		const move = vi.fn(async (_env: any, ids: string[]) => ids);
+		const label = vi.fn(async (_env: any, ids: string[]) => ids);
 		const res: any = await bulkUndo(env, "u", { move, label });
 		expect(res.undone).toBe(3);
 		// The two archived messages move back to their origin (inbox), grouped into one call.
@@ -599,10 +599,11 @@ describe("action log + bulk undo", () => {
 		await appendTriageEntries(env, [{ cycle: "u", id: "acted1", action: "acted", label: "junk", confidence: 0.9, reason: "r", op: "label", keyword: "junk", at: 1 }]);
 		// A reverser that, mid-flight, lets another cycle's entry land — modeling a tick
 		// appending while bulkUndo awaits Fastmail. The stale-snapshot bug would clobber it.
-		const label = async () => {
+		const label = async (_env: any, ids: string[]) => {
 			await appendTriageEntries(env, [{ cycle: "later", id: "appended", action: "suggested", label: "unknown", confidence: 0.2, reason: "r", at: 2 }]);
+			return ids;
 		};
-		const res: any = await bulkUndo(env, "u", { label, move: async () => {} });
+		const res: any = await bulkUndo(env, "u", { label, move: async (_env: any, ids: string[]) => ids });
 		expect(res.undone).toBe(1);
 		const all = await readTriageEntries(env, { limit: 100 });
 		expect(all.map((e) => e.id).sort()).toEqual(["acted1", "appended"]);
