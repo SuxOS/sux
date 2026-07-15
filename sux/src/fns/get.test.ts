@@ -86,6 +86,14 @@ describe("parseStrategies", () => {
 	it("falls back to a bare-query strategy when no clause matches a known kind", () => {
 		expect(parseStrategies("file(bogus, x)")).toEqual([{ kind: "any", query: "file(bogus, x)" }]);
 	});
+
+	it("caps the number of file() clauses at MAX_GET_STRATEGIES, dropping the rest (unbounded fan-out is a cost-abuse vector)", () => {
+		const input = Array.from({ length: 12 }, (_, i) => `file(pdf, q${i})`).join(" ");
+		const strategies = parseStrategies(input);
+		expect(strategies.length).toBe(5);
+		expect(strategies[0]).toEqual({ kind: "pdf", query: "q0" });
+		expect(strategies[4]).toEqual({ kind: "pdf", query: "q4" });
+	});
 });
 
 describe("LENSES", () => {

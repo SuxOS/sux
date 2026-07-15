@@ -19,11 +19,18 @@ export function isUrlInput(input: string): boolean {
 
 const FILE_CLAUSE_RE = /file\(\s*(\w+)\s*,\s*([^)]+)\)/gi;
 
+// Each strategy fans into up to 2 free operator calls + up to 2 metered lens
+// calls (KIND_PLANS) — an unbounded number of file() clauses is an unbounded
+// Kagi-call fan-out per request, bypassing the per-request cost the rate
+// limiter expects (security review finding). Keep this in sync with
+// rate-limit.ts's requestCost("get", ...), which prices against the same cap.
+export const MAX_GET_STRATEGIES = 5;
+
 export function parseStrategies(input: string, kindArg?: string): Strategy[] {
 	const clauses: Strategy[] = [];
 	FILE_CLAUSE_RE.lastIndex = 0;
 	let m: RegExpExecArray | null;
-	while ((m = FILE_CLAUSE_RE.exec(input))) {
+	while ((m = FILE_CLAUSE_RE.exec(input)) && clauses.length < MAX_GET_STRATEGIES) {
 		const kind = m[1].toLowerCase();
 		if ((KIND_VALUES as readonly string[]).includes(kind)) clauses.push({ kind: kind as Kind, query: m[2].trim() });
 	}
