@@ -64,9 +64,32 @@ describe("put", () => {
 		expect(r.content[0].text).toMatch(/needs the R2 store/);
 	});
 
+	it("a fresh put stages a preview by default — nothing fetched or written until commit_token or force (#486)", async () => {
+		const env = mkEnv();
+		const staged = JSON.parse((await put.run(env, { urls: ["https://a.com", "https://b.com"] })).content[0].text);
+		expect(staged.staged).toBe(true);
+		expect(staged.kind).toBe("put_batch");
+		expect(typeof staged.commit_token).toBe("string");
+		expect(staged.preview.url_count).toBe(2);
+		expect(env.R2._m.size).toBe(0); // nothing fetched or written yet
+		const committed = JSON.parse((await put.run(env, { urls: ["https://a.com", "https://b.com"], commit_token: staged.commit_token })).content[0].text);
+		expect(committed).toHaveLength(2);
+		expect(committed[0].ref).toMatch(UUID);
+		expect(env.R2._m.size).toBe(2);
+	});
+
+	it("a changed payload can't spend a stale commit_token", async () => {
+		const env = mkEnv();
+		const staged = JSON.parse((await put.run(env, { urls: ["https://a.com"] })).content[0].text);
+		const r = await put.run(env, { urls: ["https://b.com"], commit_token: staged.commit_token });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/payload changed/);
+		expect(env.R2._m.size).toBe(0);
+	});
+
 	it("downloads each URL, stores raw bytes to CAS, and returns a /s/<uuid> ref", async () => {
 		const env = mkEnv();
-		const r = await put.run(env, { urls: ["https://a.com", "https://b.com"] });
+		const r = await put.run(env, { urls: ["https://a.com", "https://b.com"], force: true });
 		expect(r.isError).toBeFalsy();
 		const out = JSON.parse(r.content[0].text);
 		expect(out).toHaveLength(2);
@@ -81,7 +104,7 @@ describe("put", () => {
 
 	it("isolates per-url failures and non-http URLs — survivors still store", async () => {
 		const env = mkEnv();
-		const r = await put.run(env, { urls: ["ftp://nope", "https://boom.com", "https://ok.com"] });
+		const r = await put.run(env, { urls: ["ftp://nope", "https://boom.com", "https://ok.com"], force: true });
 		const out = JSON.parse(r.content[0].text);
 		expect(out[0].error).toMatch(/not an absolute http/);
 		expect(out[1].error).toMatch(/network down/);
@@ -92,7 +115,7 @@ describe("put", () => {
 
 	it("reports an oversize download without storing it", async () => {
 		const env = mkEnv();
-		const r = await put.run(env, { urls: ["https://ex.com/huge", "https://ex.com/ok"] });
+		const r = await put.run(env, { urls: ["https://ex.com/huge", "https://ex.com/ok"], force: true });
 		const out = JSON.parse(r.content[0].text);
 		const huge = out.find((x: any) => x.url.includes("huge"));
 		expect(huge.oversize).toBe(true);
@@ -103,7 +126,7 @@ describe("put", () => {
 
 	it("gzip:true stores the gzipped bytes (round-trips) and tags applied", async () => {
 		const env = mkEnv();
-		const r = await put.run(env, { urls: ["https://a.com"], gzip: true });
+		const r = await put.run(env, { urls: ["https://a.com"], gzip: true, force: true });
 		const out = JSON.parse(r.content[0].text);
 		expect(out[0].applied).toEqual(["gzip"]);
 		expect(out[0].content_type).toBe("application/gzip");
@@ -115,7 +138,7 @@ describe("put", () => {
 
 	it("pdf:true converts a downloaded image to a PDF before storing", async () => {
 		const env = mkEnv();
-		const r = await put.run(env, { urls: ["https://ex.com/png"], pdf: true });
+		const r = await put.run(env, { urls: ["https://ex.com/png"], pdf: true, force: true });
 		const out = JSON.parse(r.content[0].text);
 		expect(out[0].applied).toEqual(["pdf"]);
 		expect(out[0].content_type).toBe("application/pdf");
@@ -125,7 +148,7 @@ describe("put", () => {
 
 	it("pdf + gzip chains both transforms in order", async () => {
 		const env = mkEnv();
-		const r = await put.run(env, { urls: ["https://ex.com/html"], pdf: true, gzip: true });
+		const r = await put.run(env, { urls: ["https://ex.com/html"], pdf: true, gzip: true, force: true });
 		const out = JSON.parse(r.content[0].text);
 		expect(out[0].applied).toEqual(["pdf", "gzip"]);
 		expect(out[0].content_type).toBe("application/gzip");
@@ -136,7 +159,7 @@ describe("put", () => {
 
 	it("defaults to a self-expiring handle when no ttl_seconds is given (no permanent handle)", async () => {
 		const env = mkEnv();
-		const r = await put.run(env, { urls: ["https://a.com"] });
+		const r = await put.run(env, { urls: ["https://a.com"], force: true });
 		const out = JSON.parse(r.content[0].text);
 		const uuid = out[0].ref.split("/s/")[1];
 		const handle = JSON.parse(env.OAUTH_KV._m.get(`store:${uuid}`));
@@ -149,7 +172,7 @@ describe("put", () => {
 
 	it("passes ttl_seconds through to a self-expiring handle and rejects a bad ttl", async () => {
 		const env = mkEnv();
-		const r = await put.run(env, { urls: ["https://a.com"], ttl_seconds: 3600 });
+		const r = await put.run(env, { urls: ["https://a.com"], ttl_seconds: 3600, force: true });
 		const out = JSON.parse(r.content[0].text);
 		const uuid = out[0].ref.split("/s/")[1];
 		const handle = JSON.parse(env.OAUTH_KV._m.get(`store:${uuid}`));

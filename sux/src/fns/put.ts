@@ -1,5 +1,6 @@
 import zlib from "node:zlib";
 import { type Fn, fail, ok } from "../registry";
+import { staged } from "../stage";
 import { type ByteBudget, byteBudget, errMsg, FANOUT_BUDGET_MS, FANOUT_BYTE_BUDGET, FANOUT_STORE_TTL_S, fromB64, isHttpUrl, oj, pool, putBlob, toB64 } from "./_util";
 import { fetchBytes, MAX_STORE_BYTES } from "./batch_fetch";
 import { pdf as pdfFn } from "./pdf";
@@ -88,6 +89,7 @@ export const put: Fn = {
 	description:
 		"Bulk DOWNLOAD-and-shelve: fetch many URLs concurrently via the residential proxy and content-address each into sux's R2 store, returning a compact /s/<uuid> handle per URL instead of dragging the bytes through context. urls: array of absolute http(s) URLs (max 100); method: GET (default). Runs ~8 at a time under a time budget — a wide run near the hard deadline returns the URLs it managed (the rest come back as skipped [timeout] entries) rather than losing everything; per-URL failures and oversize files (>25MB) are isolated. " +
 		"Optional per-file transforms applied before storing: pdf:true converts each download to PDF (HTML/text/images → PDF), gzip:true gzips it (level 9). ttl_seconds sets the handle expiry (default 7 days — bulk downloads are staging artifacts that self-expire; pass a larger value to keep them longer, or use `store` for a permanent handle). " +
+		"Each ref is a world-readable, unauthenticated URL, so a FRESH put STAGES A PREVIEW BY DEFAULT (nothing fetched or written) — re-call with the returned commit_token to run, or pass force:true to run in one shot. " +
 		"Returns a JSON array of { url, status, src_bytes, bytes, content_type, ref, applied? } (or { url, error } / { url, oversize } for a skipped one). Composes batch_fetch (download), pdf (convert) and the store — the bulk sibling of `store`.",
 	inputSchema: {
 		type: "object",
@@ -99,6 +101,9 @@ export const put: Fn = {
 			pdf: { type: "boolean", default: false, description: "Convert each downloaded file to PDF before storing (HTML/text/images → PDF)." },
 			gzip: { type: "boolean", default: false, description: "Gzip each file (level 9) before storing." },
 			ttl_seconds: { type: "integer", minimum: 1, description: "Seconds until each uuid handle self-expires (default 7 days; pass a larger value to keep longer, or use `store` for a permanent handle)." },
+			stage: { type: "boolean", description: "Preview + commit_token, no fetch/write." },
+			commit_token: { type: "string", description: "Commit a previously staged put (the payload must match what was staged)." },
+			force: { type: "boolean", description: "Skip staging and run in one shot (the ! override). By default a fresh put stages a preview first." },
 		},
 	},
 	cacheable: false,
@@ -123,16 +128,31 @@ export const put: Fn = {
 		// wanting longer passes an explicit ttl_seconds.
 		const opts: Opts = { method: String(args?.method ?? "GET").toUpperCase(), pdf: args?.pdf === true, gzip: args?.gzip === true, ttlSeconds: ttlSeconds ?? FANOUT_STORE_TTL_S };
 
-		// Time budget: stop firing new downloads near the hard deadline so a wide run
-		// returns the URLs it stored instead of the whole run being killed with none.
-		const deadline = Date.now() + FANOUT_BUDGET_MS;
-		// Aggregate memory budget shared across the pool: workers reserve/release bytes
-		// so CONCURRENCY downloads can't sum past the isolate ceiling.
-		const budget = byteBudget(FANOUT_BYTE_BUDGET);
-		const raw = await pool(urls, CONCURRENCY, (rawUrl) => processUrl(env, rawUrl, opts, budget), deadline);
-		// Un-run URLs (time budget hit) come back undefined; surface each as skipped so
-		// the array stays 1:1 with `urls` and the caller sees exactly what didn't run.
-		const results: UrlResult[] = raw.map((r, i) => r ?? { url: typeof urls[i] === "string" ? (urls[i] as string) : "", error: "[timeout] skipped: put time budget reached before this URL was processed." });
-		return ok(oj(results));
+		// The whole fan-out (download → transform → mint a public ref per URL) is one
+		// side-effect — an egress channel higher-amplification than store.put — so it
+		// routes through the stage guard by default (STAGE_KINDS.put_batch), fetching
+		// nothing until the caller commits or forces.
+		const runBatch = async (): Promise<UrlResult[]> => {
+			// Time budget: stop firing new downloads near the hard deadline so a wide run
+			// returns the URLs it stored instead of the whole run being killed with none.
+			const deadline = Date.now() + FANOUT_BUDGET_MS;
+			// Aggregate memory budget shared across the pool: workers reserve/release bytes
+			// so CONCURRENCY downloads can't sum past the isolate ceiling.
+			const budget = byteBudget(FANOUT_BYTE_BUDGET);
+			const raw = await pool(urls, CONCURRENCY, (rawUrl) => processUrl(env, rawUrl, opts, budget), deadline);
+			// Un-run URLs (time budget hit) come back undefined; surface each as skipped so
+			// the array stays 1:1 with `urls` and the caller sees exactly what didn't run.
+			return raw.map((r, i) => r ?? { url: typeof urls[i] === "string" ? (urls[i] as string) : "", error: "[timeout] skipped: put time budget reached before this URL was processed." });
+		};
+
+		const payload = { urls, method: opts.method, pdf: opts.pdf, gzip: opts.gzip, ttl_seconds: opts.ttlSeconds };
+		const preview = { action: "put batch", url_count: urls.length, ttl_seconds: opts.ttlSeconds, ...(opts.pdf || opts.gzip ? { transforms: [...(opts.pdf ? ["pdf"] : []), ...(opts.gzip ? ["gzip"] : [])] } : {}), sample_urls: urls.slice(0, 5).map((u) => (typeof u === "string" ? u : "")) };
+		const gateArgs = { stage: args?.stage === true, commit_token: args?.commit_token ? String(args.commit_token) : undefined, force: args?.force === true };
+		try {
+			const out = await staged(env, "put_batch", gateArgs, payload, preview, runBatch);
+			return ok(oj("stageResult" in out ? out.stageResult : out.result));
+		} catch (e) {
+			return fail(errMsg(e));
+		}
 	},
 };
