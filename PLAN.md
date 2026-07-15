@@ -14,9 +14,19 @@ A fast, cheap, hard-to-block search/commerce engine that emulates the best of
 Bing / Google / Wikipedia / store sites — with lossless efficiency and a clean,
 always-available simple path.
 
-## Architecture — one service (`kagi-mcp` is stale, slated for decommission)
+## Architecture — two services (Service 1 is stale, slated for decommission)
 
-**`sux` — the engine (general functions in the cloud)**
+**Service 1 · `kagi-mcp` (core) — legacy, slated for decommission (not "always kept")**
+```
+Claude ──OAuth──▶ CF (OAuthProvider) ──▶ KV (state/cache) ──▶ Worker ──▶ public Kagi MCP
+```
+Transparent OAuth→Kagi proxy that predates `sux`. There's no root `wrangler.jsonc`
+left in this repo (`deploy.yml` only deploys `sux/wrangler.jsonc`), so this worker
+is unmanaged by CI. Per `sux/README.md` § Future directions, `docs/proposals/mail.md`,
+and `docs/proposals/jmap.md`: decommission it, don't build against it. Service 2's
+`smartFetch` direct-fetch fallback is the simple path now.
+
+**Service 2 · `sux` — the engine (general functions in the cloud), the sole live service**
 ```
 Claude ──MCP──▶ sux Worker  (all work here: parse, render, ocr, transform, cache)
                      │ smartFetch — EVERY outbound query (direct fallback = simple option)
@@ -27,14 +37,6 @@ Claude ──MCP──▶ sux Worker  (all work here: parse, render, ocr, transf
 ```
 KV cache · rate-limit · observability · QUIC. OAuth-gated. Residential node is a
 pure fetch pass-through (HMAC + SSRF guard + host allowlist).
-
-> The repo root also holds a separate, legacy `kagi-mcp` worker (a transparent
-> OAuth→Kagi proxy) that predates `sux`. It is **not** "the simple option,
-> always kept" — there's no root `wrangler.jsonc` left in this repo (`deploy.yml`
-> only deploys `sux/wrangler.jsonc`), so it's unmanaged by this repo's CI and
-> slated for decommission (see `sux/README.md` § Future directions,
-> `docs/proposals/mail.md`, `docs/proposals/jmap.md`). `smartFetch`'s direct-fetch
-> fallback is the simple path now.
 
 ## Design — Julia-inspired (generic functions + multiple dispatch)
 The tool layer is built like Julia's standard library: a **small set of generic
