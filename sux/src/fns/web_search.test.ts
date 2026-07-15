@@ -237,6 +237,30 @@ describe("web_search", () => {
 		expect(r.content[0].text).not.toMatch(/No results/);
 	});
 
+	it("falls back to other configured engines when the auto-picked default (ddg) errors, instead of hard-failing", async () => {
+		// No engine specified → defaultEngine() picks ddg (no KAGI_SESSION). ddg errors
+		// (e.g. DuckDuckGo HTTP 522) but kagi is configured and healthy — the call must
+		// degrade gracefully and return kagi's results, not fail the whole request.
+		smartFetch.mockRejectedValueOnce(new Error("DuckDuckGo HTTP 522"));
+		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "x" });
+		expect(r.isError).toBeFalsy();
+		expect(r.content[0].text).toContain("1. Kagi Result");
+	});
+
+	it("still hard-fails when the engine was explicitly requested and it errors", async () => {
+		smartFetch.mockRejectedValueOnce(new Error("DuckDuckGo HTTP 522"));
+		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "x", engine: "ddg" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("Engine 'ddg' failed");
+	});
+
+	it("hard-fails on the auto-picked default when no other engine is configured", async () => {
+		smartFetch.mockRejectedValueOnce(new Error("DuckDuckGo HTTP 522"));
+		const r = await webSearch.run({} as any, { query: "x" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("Engine 'ddg' failed");
+	});
+
 	it("summarize falls back to the plain list when AI is absent", async () => {
 		const r = await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", engine: "kagi", summarize: true });
 		expect(r.content[0].text).toMatch(/summary skipped/);
