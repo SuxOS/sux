@@ -19,7 +19,7 @@ jobs:
       issues: write
       checks: read
       statuses: read
-      actions: read
+      actions: write
     uses: SuxOS/.github/.github/workflows/pr-unstick.yml@main
     with:
       cooldown-hours: "24"
