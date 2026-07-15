@@ -42,23 +42,55 @@ bare (no `file(url)` wrapper — that was rejected as awkward).
 
 ## Query mode — the exhaustive search
 
-Fan out concurrent `kagi_search_fetch` calls, one per strategy, then merge:
+Fan out concurrent search strategies, then merge. Strategies split across two
+Kagi auth paths (see below):
 
-- **Built-in Kagi lenses** relevant to files, passed to `kagi_search_fetch` as
-  `lens_id` **by name-slug** (verified live 2026-07-15 through the deployed
-  connector — Kagi accepts the lowercase slug, no numeric ID needed):
+- **Operator strategies (free, `KAGI_SESSION`)**:
+  - `filetype:pdf` / `filetype:epub` / … — inline query operator (documented:
+    [Kagi search operators](https://help.kagi.com/kagi/features/search-operators.html)),
+    derived from `kind` or each `file(kind, …)` clause. Works identically as
+    plain query text on the session-scrape path.
+  - `site:archive.org` — inline `site:` operator, belt-and-braces domain scope.
+- **Lens strategies (metered, `KAGI_API_KEY`)**, passed as `lens_id` **by
+  name-slug** (verified live 2026-07-15 — Kagi accepts the lowercase slug, no
+  numeric ID needed):
   - `pdfs` — PDF files anywhere.
-  - `usenet/archive` — Usenet Archives **and archive.org** non-web collections
-    (this lens already covers archive.org — no separate domain filter needed for it).
-- **Filetype extensions** — `file_type: pdf|epub|djvu|txt|…`, derived from
-  `kind` or from each `file(kind, …)` clause.
-- **Archive domains** — `include_domains: [archive.org, …]` as a belt-and-braces
-  strategy alongside the `usenet/archive` lens.
+  - `usenet/archive` — Usenet Archives **and archive.org** non-web collections.
+    No operator equivalent exists for this — Usenet posts aren't single-domain
+    web content, so `site:` can't replicate it. This is the one piece of
+    coverage that requires the metered path.
 
-Cost note: each strategy is one Kagi call (`search` fn is `cost: 3`). Fan-out is
-concurrent (`Promise.all`) and capped by a `strategies`/`limit` knob. Stopping
-rule is **deterministic**: run the requested strategies, merge, stop. No adaptive
-"keep searching until found" loop (unbounded cost).
+Cost note: exactly 2 metered calls per `get` (the two lenses), regardless of
+how wide the operator fan-out is — bounded, not scaling with `strategies`/`limit`.
+Fan-out is concurrent (`Promise.all`). Stopping rule is **deterministic**: run
+the requested strategies, merge, stop. No adaptive "keep searching until found"
+loop (unbounded cost).
+
+### Auth: hybrid `KAGI_SESSION` + bounded `KAGI_API_KEY`
+
+Kagi's real API is bearer-token-only (no OAuth) and **pay-per-use, billed
+separately from a subscription** — confirmed via
+[Kagi's API docs](https://help.kagi.com/kagi/api/overview.html): "Regular Kagi
+search subscriptions do not provide API access." Routing `get`'s entire
+fan-out through the metered API (`kagi.ts`, as `search.ts` does) would scale
+spend with fan-out width — undesirable for an "exhaustive" search fn.
+
+`kagiSession` (`web_search.ts`) today only sends bare `q=` — no `lens_id`,
+`file_type`, or `include_domains` support. Rather than guess at an unverified
+`lens=` URL param (unconfirmed by Kagi's docs, and untestable via WebFetch
+since it carries no session cookie), `get`'s implementation:
+
+1. **Extends `kagiSession`** to fold `file_type`/`include_domains` into the
+   query text as documented operators (`filetype:`, `site:`/`-site:`) — this
+   is a small upstream improvement to `web_search.ts` that benefits it too,
+   verified live before merge.
+2. **Uses `kagiTool`/`KAGI_API_KEY`** (as `search.ts` does) only for the two
+   lens strategies, bounding metered spend to a small constant.
+
+If `KAGI_SESSION` isn't configured, the operator strategies are skipped
+(not silently upgraded to metered); if `KAGI_API_KEY` isn't configured, the
+two lens strategies are skipped. `get` runs on whichever secrets are present
+and reports which strategies it actually ran.
 
 ### Dedupe by edition
 
@@ -94,8 +126,13 @@ Applied to the acquired bytes:
 ## Destinations (optional)
 
 `store: "vault" | "dropbox" | "r2"` — delegate to `ingest`, reusing its blob
-routing. `summarize:true` adds an LLM summary to the vault note (vault store
-only). Default: no store (just return the file).
+routing. `summarize:true` (vault store only) delegates to the existing
+`summarize` fn to add an LLM summary to the vault note — `summarize` already
+does the cost-conscious dispatch (readability + Workers AI first, Kagi's
+Universal Summarizer as fallback/YouTube path), so `get` adds no new Kagi
+surface here. [Kagi's Summarizer](https://help.kagi.com/kagi/api/summarizer.html)
+does accept a PDF URL directly, but that path is `summarize`'s concern, not
+`get`'s. Default: no store (just return the file).
 
 ## Interface (draft)
 
@@ -130,16 +167,18 @@ get(input, kind?, convert?, as?, download?, store?, summarize?, limit?, strategi
 
 ## Delegation map
 
-| Step            | Delegates to                          |
-|-----------------|---------------------------------------|
-| query search    | `kagiTool` / `search` fan-out         |
-| url → pdf       | `render(as:"pdf")`                    |
-| url → archive   | `wayback` / `scrape`                  |
-| download bytes  | `_util.loadBytes`                     |
-| pdf compress    | `pdf` compress                        |
-| convert→pdf    | `convert` / `pdf`                     |
-| store           | `ingest` (vault/dropbox/r2 routing)   |
-| deliver         | `_util.deliverBytes`                  |
+| Step                  | Delegates to                                          |
+|-----------------------|--------------------------------------------------------|
+| operator search       | extended `kagiSession` (`KAGI_SESSION`, free)          |
+| lens search           | `kagiTool` (`KAGI_API_KEY`, metered, bounded to 2 calls)|
+| url → pdf             | `render(as:"pdf")`                                     |
+| url → archive         | `wayback` / `scrape`                                    |
+| download bytes        | `_util.loadBytes`                                       |
+| pdf compress          | `pdf` compress                                          |
+| convert→pdf           | `convert` / `pdf`                                       |
+| store                 | `ingest` (vault/dropbox/r2 routing)                     |
+| summarize             | `summarize` fn (readability+Workers-AI, Kagi fallback)  |
+| deliver               | `_util.deliverBytes`                                    |
 
 ## Testing
 
