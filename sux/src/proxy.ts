@@ -434,9 +434,53 @@ export async function smartFetch(
 	// a flaky site or a momentary hiccup shouldn't fail the whole tool call. Each
 	// attempt gets a fresh 30s signal; the retry is an ADDITIONAL layer over the
 	// proxy→direct fallback above, not a replacement for it.
-	const resp = await withRetry(() => fetch(url, { method: init.method, headers, body: init.body, redirect: init.redirect, signal: AbortSignal.timeout(30_000) }));
+	//
+	// redirect:"manual"/"error" is an explicit low-level ask (the `redirects` tracer
+	// re-enters smartFetch per hop itself, so isBlockedTarget already re-runs on each
+	// one) — pass it straight to fetch unchanged. Anything else (undefined/"follow")
+	// must NOT hand redirect-chasing to the native fetch: an origin at an
+	// already-vetted public url could 302 a caller straight at a private/loopback/
+	// metadata target, and native "follow" would connect there without ever
+	// re-checking isBlockedTarget on the new host (the security-review finding that
+	// motivated this — the empty/redirect proxy fallback above newly makes this
+	// reachable for redirects the residential node itself can't chase).
+	const resp =
+		init.redirect === "manual" || init.redirect === "error"
+			? await withRetry(() => fetch(url, { method: init.method, headers, body: init.body, redirect: init.redirect, signal: AbortSignal.timeout(30_000) }))
+			: await fetchDirectFollowingRedirects(url, { method: init.method, headers, body: init.body });
 	auditEgress(env, url, directRoute, false, resp.status);
 	return resp;
+}
+
+const MAX_REDIRECT_HOPS = 20;
+
+/**
+ * Direct-fetch a URL, chasing redirects ourselves hop-by-hop instead of handing
+ * that to native fetch's redirect:"follow" — each Location is revalidated against
+ * isBlockedTarget before we connect, mirroring `redirects.ts`'s deliberate
+ * per-hop guard (see the comment at its call site above). Only GET/HEAD chase
+ * automatically: those are every direct caller in this codebase, and reimplementing
+ * fetch's method-downgrade/body-carry rules for POST/PUT redirects isn't worth the
+ * risk of getting them subtly wrong — any other method just returns the raw 3xx.
+ */
+async function fetchDirectFollowingRedirects(url: string, init: { method?: string; headers?: Record<string, string>; body?: string }): Promise<Response> {
+	const chaseable = !init.method || /^(GET|HEAD)$/i.test(init.method);
+	let current = url;
+	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
+		const resp = await withRetry(() => fetch(current, { method: init.method, headers: init.headers, body: init.body, redirect: "manual", signal: AbortSignal.timeout(30_000) }));
+		if (!chaseable || resp.status < 300 || resp.status >= 400) return resp;
+		const loc = resp.headers.get("location");
+		if (!loc) return resp;
+		let next: string;
+		try {
+			next = new URL(loc, current).href;
+		} catch {
+			return resp; // malformed Location — surface the redirect itself rather than throw
+		}
+		if (isBlockedTarget(next)) throw new Error(`smartFetch: refusing blocked redirect target ${next} (private/loopback/link-local/metadata host)`);
+		current = next;
+	}
+	throw new Error(`smartFetch: exceeded ${MAX_REDIRECT_HOPS} redirect hops for ${url}`);
 }
 
 /**

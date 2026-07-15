@@ -308,6 +308,63 @@ describe("proxy empty-body and redirect fallbacks", () => {
 	});
 });
 
+describe("direct-fetch redirect chasing (SSRF-safe)", () => {
+	it("follows a public-to-public redirect itself, revalidating the hop", async () => {
+		const fetchMock = vi.fn(async (u: string | URL, _init?: RequestInit) =>
+			String(u) === "https://example.com/start"
+				? new Response(null, { status: 302, headers: { location: "https://example.com/final" } })
+				: new Response("landed", { status: 200 }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/start", {}, "direct");
+		expect(await resp.text()).toBe("landed");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		// Each hop is fetched with redirect:"manual" — we chase it ourselves, never native "follow".
+		expect(fetchMock.mock.calls[0][1]?.redirect).toBe("manual");
+		expect(fetchMock.mock.calls[1][1]?.redirect).toBe("manual");
+	});
+
+	it("refuses a redirect that points at a private/metadata target instead of connecting to it", async () => {
+		const fetchMock = vi.fn(async (u: string | URL) =>
+			String(u) === "https://example.com/evil"
+				? new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data/" } })
+				: new Response("should never be reached"),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(smartFetch({}, "https://example.com/evil", {}, "direct")).rejects.toThrow(/blocked redirect target/i);
+		// Never connects to the blocked hop.
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not auto-chase a redirect for a non-GET/HEAD method — returns the raw 3xx", async () => {
+		const fetchMock = vi.fn(async () => new Response(null, { status: 307, headers: { location: "https://example.com/final" } }));
+		vi.stubGlobal("fetch", fetchMock);
+		const resp = await smartFetch({}, "https://example.com/submit", { method: "POST", body: "x" }, "direct");
+		expect(resp.status).toBe(307);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("bounds the hop count instead of chasing a redirect loop forever", async () => {
+		const fetchMock = vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://example.com/loop" } }));
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(smartFetch({}, "https://example.com/loop", {}, "direct")).rejects.toThrow(/exceeded \d+ redirect hops/i);
+	});
+
+	it("a residential-proxy redirect falls back to a direct chase that still refuses a malicious hop", async () => {
+		// The proxy's own redirect is unusable (node can't follow it) and triggers the
+		// direct fallback — which independently re-fetches the origin and hits the
+		// SAME malicious redirect. The per-hop guard must catch it there too, not
+		// just on the (unused) Location the proxy happened to report.
+		const fetchMock = vi.fn(async (u: string | URL) =>
+			String(u).startsWith("https://x.ts.net/")
+				? proxyEnvelope({ status: 302, headers: { "content-type": "text/html", location: "http://127.0.0.1:6379/" }, bytes: 0, body: "", bodyEncoding: "base64" })
+				: new Response(null, { status: 302, headers: { location: "http://127.0.0.1:6379/" } }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(smartFetch(ON, "https://archive.org/download/evil.pdf")).rejects.toThrow(/blocked redirect target/i);
+	});
+});
+
 describe("smartFetch direct-path timeout", () => {
 	it("passes an AbortSignal to the direct/fallback fetch (30s bound)", async () => {
 		const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => new Response("ok", { status: 200 }));
