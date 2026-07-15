@@ -34,4 +34,17 @@ describe("search", () => {
 		await search.run({} as any, { query: "cats", proxy: true });
 		expect(kagiTool).toHaveBeenLastCalledWith(expect.anything(), "kagi_search_fetch", expect.anything(), "proxy");
 	});
+	it("passes extract_count through to kagi_search_fetch", async () => {
+		await search.run({} as any, { query: "cats", extract_count: 3 });
+		expect(kagiTool).toHaveBeenLastCalledWith(expect.anything(), "kagi_search_fetch", expect.objectContaining({ extract_count: 3 }), "auto");
+	});
+	it("rejects lens_id combined with file_type (Kagi's API is mutually exclusive here)", async () => {
+		const r = await search.run({} as any, { query: "cats", lens_id: "2", file_type: "pdf" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/lens_id.*mutually exclusive|mutually exclusive.*lens_id/i);
+	});
+	it("rejects lens_id combined with include_domains", async () => {
+		const r = await search.run({} as any, { query: "cats", lens_id: "2", include_domains: ["archive.org"] });
+		expect(r.isError).toBe(true);
+	});
 });

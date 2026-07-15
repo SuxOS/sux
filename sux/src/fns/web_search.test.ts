@@ -11,7 +11,7 @@ vi.mock("./index", () => ({ FUNCTIONS: [{ name: "render", run: renderRun }] }));
 const { smartFetch } = vi.hoisted(() => ({ smartFetch: vi.fn() }));
 vi.mock("../proxy", () => ({ smartFetch }));
 
-import { defaultEngine, parseDdg, parseGoogleSerp, parseKagiSession, webSearch } from "./web_search";
+import { defaultEngine, parseDdg, parseGoogleSerp, parseKagiMarkdown, parseKagiSession, webSearch, withOperators } from "./web_search";
 
 const serp = (hits: Array<{ url: string; title: string }>) =>
 	`<html><body>${hits.map((h) => `<div class="g"><a href="${h.url}"><h3>${h.title}</h3></a></div>`).join("")}</body></html>`;
@@ -80,10 +80,38 @@ describe("parseKagiSession", () => {
 	});
 });
 
+describe("parseKagiMarkdown", () => {
+	it("parses ### [title](url) blocks with a snippet, respecting limit", () => {
+		const md = "### [First](https://a.com)\n**URL:** https://a.com\nFirst snippet.\n\n### [Second](https://b.com)\n**URL:** https://b.com\nSecond snippet.";
+		const hits = parseKagiMarkdown(md, 1);
+		expect(hits.length).toBe(1);
+		expect(hits[0]).toMatchObject({ title: "First", url: "https://a.com" });
+		expect(hits[0].snippet).toContain("First snippet");
+	});
+
+	it("returns an empty array for markdown with no result blocks", () => {
+		expect(parseKagiMarkdown("(no results)", 10)).toEqual([]);
+	});
+});
+
 describe("defaultEngine", () => {
 	it("prefers free Kagi-on-the-subscription when KAGI_SESSION is set, else keyless DDG", () => {
 		expect(defaultEngine({ KAGI_SESSION: "tok" })).toBe("kagi_session");
 		expect(defaultEngine({})).toBe("ddg");
+	});
+});
+
+describe("withOperators", () => {
+	it("returns the query unchanged with no scope", () => {
+		expect(withOperators("cats", undefined)).toBe("cats");
+	});
+
+	it("folds file_type into a filetype: operator", () => {
+		expect(withOperators("cats", { file_type: "pdf" })).toBe("cats filetype:pdf");
+	});
+
+	it("folds include_domains/exclude_domains into site:/-site: operators", () => {
+		expect(withOperators("cats", { include_domains: ["archive.org"], exclude_domains: ["spam.com"] })).toBe("cats site:archive.org -site:spam.com");
 	});
 });
 
@@ -113,6 +141,19 @@ describe("web_search", () => {
 		const { kagiTool } = await import("../kagi");
 		await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "x", engine: "kagi", proxy: true });
 		expect(kagiTool).toHaveBeenLastCalledWith(expect.anything(), "kagi_search_fetch", expect.anything(), "proxy");
+	});
+
+	it("folds file_type/include_domains into the kagi engine's query text (API has no file_type-over-session equivalent)", async () => {
+		const { kagiTool } = await import("../kagi");
+		await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "textbook", engine: "kagi", file_type: "pdf", include_domains: ["archive.org"] });
+		expect(kagiTool).toHaveBeenLastCalledWith(expect.anything(), "kagi_search_fetch", expect.objectContaining({ query: "textbook filetype:pdf site:archive.org" }), "auto");
+	});
+
+	it("folds file_type/exclude_domains into the kagi_session query as operators (session path has no structured params)", async () => {
+		smartFetch.mockResolvedValueOnce(new Response("<html></html>", { status: 200 }));
+		await webSearch.run({ KAGI_SESSION: "tok" } as any, { query: "textbook", engine: "kagi_session", file_type: "pdf", exclude_domains: ["spam.com"] });
+		const calledUrl = decodeURIComponent(String(smartFetch.mock.calls[0][1]));
+		expect(calledUrl).toContain("q=textbook filetype:pdf -site:spam.com");
 	});
 
 	it("scrapes DuckDuckGo keyless (no render) and decodes the uddg redirect", async () => {

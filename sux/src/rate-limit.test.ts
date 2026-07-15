@@ -61,6 +61,23 @@ describe("requestCost", () => {
 		const steps = Array.from({ length: 40 }, () => ({ tool: "render" }));
 		expect(requestCost("pipe", { steps })).toBe(25 * 4); // clamped at 25 steps
 	});
+
+	it("prices get's query-mode fan-out per file() clause, clamped to MAX_GET_STRATEGIES (unbounded-fanout evasion)", () => {
+		expect(requestCost("get", { input: "textbook" })).toBe(2); // 1 bare-query strategy × extraCost("search")
+		expect(requestCost("get", { input: "file(pdf, a) file(code, b) file(docs, c)" })).toBe(6); // 3 strategies × 2
+		const manyClauses = Array.from({ length: 20 }, (_, i) => `file(pdf, q${i})`).join(" ");
+		expect(requestCost("get", { input: manyClauses })).toBe(5 * 2); // clamped at MAX_GET_STRATEGIES=5
+	});
+
+	it("prices get's URL mode by which acquisition path it takes (render vs wayback+scrape)", () => {
+		expect(requestCost("get", { input: "https://example.com/doc" })).toBe(4); // render, extraCost=4
+		expect(requestCost("get", { input: "https://example.com/doc", as: "archive" })).toBe(0); // wayback(0)+scrape(0)
+	});
+
+	it("adds ingest's weight to get when a store is requested", () => {
+		expect(requestCost("get", { input: "textbook", store: "vault" })).toBe(2 + 2); // search-leaf + ingest
+		expect(requestCost("get", { input: "textbook", store: "none" })).toBe(2); // explicit none adds nothing
+	});
 });
 
 describe("weightedRateLimit", () => {

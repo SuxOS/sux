@@ -6,6 +6,7 @@
 // declared per fn via Fn.cost (default 1 = no extra).
 
 import { FUNCTIONS } from "./fns";
+import { MAX_GET_STRATEGIES } from "./fns/get";
 import type { JsonRpc } from "./mcp-util";
 import { findFn, type RtEnv, unwrapFnCall } from "./registry";
 
@@ -77,6 +78,26 @@ export function requestCost(name: string, args: unknown): number {
 			const stepArgs = s && typeof s === "object" ? (s as { args?: unknown }).args : undefined;
 			if (tool) total += requestCost(tool, stepArgs);
 		}
+		return total;
+	}
+	// get's own flat cost (5) doesn't reflect its real internal fan-out: query mode
+	// dispatches a Kagi-equivalent search per file(kind,query) clause (uncapped input
+	// would be an uncapped Kagi-call fan-out — get.ts's MAX_GET_STRATEGIES bounds the
+	// actual clause count parsed, so pricing mirrors that same cap), and URL mode
+	// dispatches render (as:pdf) or wayback+scrape (as:archive). Both call other fns
+	// directly via findFn().run() rather than a nested tools/call, so — like batch/pipe
+	// — the real weight must be priced here rather than left at get's flat baseline.
+	if (name === "get") {
+		const input = typeof a.input === "string" ? a.input : "";
+		let total: number;
+		if (/^https?:\/\//i.test(input.trim())) {
+			total = a.as === "archive" ? extraCost("wayback") + extraCost("scrape") : extraCost("render");
+		} else {
+			const clauseCount = (input.match(/file\(\s*\w+\s*,/gi) ?? []).length;
+			const strategyCount = Math.min(clauseCount || 1, MAX_GET_STRATEGIES);
+			total = strategyCount * extraCost("search");
+		}
+		if (a.store && a.store !== "none") total += extraCost("ingest");
 		return total;
 	}
 	return extraCost(name);

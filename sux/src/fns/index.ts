@@ -121,6 +121,7 @@ import { todoist } from "./todoist";
 import { voice } from "./voice";
 import { fontcase } from "./fontcase";
 import { recall } from "./recall";
+import { get } from "./get";
 import { uw } from "./uw";
 
 export const FUNCTIONS: Fn[] = [
@@ -241,5 +242,6 @@ export const FUNCTIONS: Fn[] = [
 	voice,
 	fontcase,
 	recall,
+	get,
 	uw,
 ];
