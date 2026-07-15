@@ -1,15 +1,20 @@
-import { type Fn, fail, ok } from "../registry";
+import { type Fn, fail, ok, type RtEnv } from "../registry";
 import { oj } from "./_util";
 
-// CoinGecko (api.coingecko.com) — keyless free tier for crypto prices and coin
-// search. No residential proxy: a public market-data API with no bot wall. Two
-// actions: price (simple/price for given coin ids) and search (coins matching a
-// term). Prices are volatile, so a short cache ttl.
+// CoinGecko (api.coingecko.com) — crypto prices and coin search. No residential
+// proxy: a public market-data API with no bot wall. Two actions: price
+// (simple/price for given coin ids) and search (coins matching a term). Prices are
+// volatile, so a short cache ttl. CoinGecko has tightened anonymous/datacenter
+// access (sux#541: blanket 403 on both actions) — an optional COINGECKO_API_KEY
+// (free "Demo" tier) is sent as x-cg-demo-api-key to get past the block; unset
+// falls back to the old keyless request.
 
 const API = "https://api.coingecko.com/api/v3";
 
-async function getJson(url: string): Promise<{ ok: boolean; status: number; json: any }> {
-	const resp = await fetch(url, { headers: { Accept: "application/json" } });
+async function getJson(url: string, apiKey?: string): Promise<{ ok: boolean; status: number; json: any }> {
+	const headers: Record<string, string> = { Accept: "application/json" };
+	if (apiKey) headers["x-cg-demo-api-key"] = apiKey;
+	const resp = await fetch(url, { headers });
 	if (!resp.ok) return { ok: false, status: resp.status, json: null };
 	return { ok: true, status: resp.status, json: await resp.json() };
 }
@@ -17,7 +22,7 @@ async function getJson(url: string): Promise<{ ok: boolean; status: number; json
 export const coingecko: Fn = {
 	name: "coingecko",
 	description:
-		"CoinGecko (keyless, free) — crypto prices and coin search. `action`: search (coins matching a `term` → { id, name, symbol, market_cap_rank }), price (spot prices for comma-separated coin `ids`, with 24h change). Prices via `currency` (default usd). Returns normalized JSON.",
+		"CoinGecko (free) — crypto prices and coin search. `action`: search (coins matching a `term` → { id, name, symbol, market_cap_rank }), price (spot prices for comma-separated coin `ids`, with 24h change). Prices via `currency` (default usd). Returns normalized JSON. Honors an optional COINGECKO_API_KEY (free Demo tier) to get past CoinGecko's anonymous/datacenter blocking.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -30,7 +35,7 @@ export const coingecko: Fn = {
 	},
 	cacheable: true,
 	ttl: 120,
-	run: async (_env, args) => {
+	run: async (env: RtEnv, args) => {
 		const action = String(args?.action ?? "search");
 
 		if (action === "price") {
@@ -40,7 +45,7 @@ export const coingecko: Fn = {
 			const p = new URLSearchParams({ ids, vs_currencies: currency, include_24hr_change: "true" });
 			let r: { ok: boolean; status: number; json: any };
 			try {
-				r = await getJson(`${API}/simple/price?${p}`);
+				r = await getJson(`${API}/simple/price?${p}`, env?.COINGECKO_API_KEY);
 			} catch (e) {
 				return fail(`CoinGecko fetch failed: ${String((e as Error)?.message ?? e)}`);
 			}
@@ -58,7 +63,7 @@ export const coingecko: Fn = {
 		if (!term) return fail("action=search requires a `term`.");
 		let r: { ok: boolean; status: number; json: any };
 		try {
-			r = await getJson(`${API}/search?${new URLSearchParams({ query: term })}`);
+			r = await getJson(`${API}/search?${new URLSearchParams({ query: term })}`, env?.COINGECKO_API_KEY);
 		} catch (e) {
 			return fail(`CoinGecko fetch failed: ${String((e as Error)?.message ?? e)}`);
 		}

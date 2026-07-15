@@ -132,10 +132,13 @@ Scrapers extract best-effort, per-tile try/catch, never throw; zero-products dis
 
 ### CoinGecko (crypto)
 - **Purpose**: Crypto spot prices + coin search.
-- **Auth**: **keyless** free tier (no proxy — public market-data API, no wall).
-- **Base URL**: `https://api.coingecko.com/api/v3` (`coingecko.ts:332`).
-- **Endpoints sux calls**: price → `/simple/price?ids=&vs_currencies=&include_24hr_change=true` (`coingecko.ts:366`); search → `/search?query=` → `{ id, name, symbol, market_cap_rank }`.
-- **Gotchas**: `action` price needs comma-separated `ids` (e.g. `bitcoin,ethereum`), search needs `term`; `currency` default `usd`. Prices volatile → ttl 120. Keyless tier rate-limited (~5-15 calls/min public) — no key config wired.
+- **Auth**: optional `COINGECKO_API_KEY` (free "Demo" tier), sent as the
+  `x-cg-demo-api-key` header. No residential proxy. Anonymous/keyless traffic
+  now gets a blanket HTTP 403 from CoinGecko (sux#541) — the key is effectively
+  required in production, not just a rate-limit nicety.
+- **Base URL**: `https://api.coingecko.com/api/v3` (`coingecko.ts`).
+- **Endpoints sux calls**: price → `/simple/price?ids=&vs_currencies=&include_24hr_change=true`; search → `/search?query=` → `{ id, name, symbol, market_cap_rank }`.
+- **Gotchas**: `action` price needs comma-separated `ids` (e.g. `bitcoin,ethereum`), search needs `term`; `currency` default `usd`. Prices volatile → ttl 120. Without `COINGECKO_API_KEY`, both actions fail with HTTP 403.
 - **Refs**: https://docs.coingecko.com/reference/introduction · OpenAPI at https://docs.coingecko.com/openapi
 
 ### YouTube

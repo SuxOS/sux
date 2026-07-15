@@ -257,7 +257,9 @@ missing key degrades to a clear "not configured" message; the rest keep working.
   token-warm cron).
 - `GOOGLE_MAPS_KEY` — `places`. `BESTBUY_API_KEY` — `bestbuy`.
   `EBAY_CLIENT_ID`/`EBAY_CLIENT_SECRET` — `ebay`. `FACEBOOK_TOKEN` —
-  `facebook`. `YOUTUBE_API_KEY` — `youtube`.
+  `facebook`. `YOUTUBE_API_KEY` — `youtube`. `COINGECKO_API_KEY` (optional,
+  Demo tier) — `coingecko`; CoinGecko now blocks anonymous/datacenter traffic
+  with a blanket 403 without it.
 
 **Academic (all optional, raise rate limits only)**
 - `NCBI_API_KEY` (`pubmed`), `S2_API_KEY` (`semantic_scholar`),

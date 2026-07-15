@@ -344,6 +344,18 @@ Worker-store, all required for the Worker to serve anything.
 - **Unset**: `stackexchange` runs at the lower anonymous quota.
 - **Rotate**: register a new app / regenerate, re-seed op, `--worker`.
 
+## `COINGECKO_API_KEY`
+- **Service / where**: CoinGecko → sign up → **Developer's Dashboard → Demo API key**
+  (`coingecko.com/en/developers/dashboard`). Free "Demo" tier. Sent as the
+  `x-cg-demo-api-key` header by `coingecko` (`sux/src/fns/coingecko.ts`).
+- **Scopes**: a rate-limit/access key only, no write scope.
+- **Store**: Tier-1. `op item create … --title "COINGECKO_API_KEY" credential="…"` →
+  `scripts/secret-sync.sh COINGECKO_API_KEY --worker`.
+- **Unset**: `coingecko` sends the plain anonymous request, which CoinGecko has
+  started blocking with a blanket HTTP 403 from datacenter/keyless traffic (sux#541)
+  — set this to restore both `search` and `price` actions.
+- **Rotate**: regenerate the Demo key on the dashboard, re-seed op, `--worker`.
+
 ---
 
 # 6. Retail (Worker runtime, all optional)

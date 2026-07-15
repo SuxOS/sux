@@ -48,6 +48,7 @@ the response should never carry the value (see #468, the MyChart OAuth leak+XSS 
 | `GITHUB_TOKEN` | **three consumers, one token**: vault git writes (Contents API, `obsidian`/`citation`, the highest-privilege use); self-improve PR creation (gated by `SELF_IMPROVE_PR`); `smartFetch`'s GitHub-host rate lift (`github-auth.ts`, anonymous 60/hr → authenticated 5000/hr, read-only need). Least-privilege intent: a fine-grained PAT scoped to just the vault repo(s), not classic all-repo — see [[secrets\|docs/secrets.md]]. Rotate on suspicion. | ✅ set |
 | `KAGI_API_KEY`, `BRAVE_API_KEY`, `BING_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, `GOOGLE_MAPS_KEY`, `YOUTUBE_API_KEY` | universal `sux` search/web | ✅ set (as used) |
 | `NCBI_API_KEY`, `S2_API_KEY`, `STACKEXCHANGE_KEY` | research fns | ✅ optional |
+| `COINGECKO_API_KEY` | `coingecko` (CoinGecko now blocks anonymous/datacenter traffic — sux#541) | ✅ optional |
 | `KROGER_CLIENT_ID/SECRET`, `BESTBUY_API_KEY`, `EBAY_CLIENT_ID/SECRET` | retail fns | ✅ optional |
 | `REDDIT_CLIENT_ID/SECRET`, `FACEBOOK_TOKEN` | social fns | ✅ optional |
 | `OBSIDIAN_VAULT_REPO/BRANCH/DIR` (vars), `VAULT_TZ` | git vault backend | ✅ set |

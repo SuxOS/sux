@@ -65,4 +65,18 @@ describe("coingecko", () => {
 		expect(r.isError).toBe(true);
 		expect(r.content[0].text).toMatch(/429/);
 	});
+
+	it("sends x-cg-demo-api-key when COINGECKO_API_KEY is set", async () => {
+		const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(SEARCH_BODY), { status: 200 }));
+		await coingecko.run({ COINGECKO_API_KEY: "demokey" } as any, { action: "search", term: "bitcoin" });
+		const headers = spy.mock.calls[0][1]?.headers as Record<string, string>;
+		expect(headers["x-cg-demo-api-key"]).toBe("demokey");
+	});
+
+	it("omits x-cg-demo-api-key when COINGECKO_API_KEY is unset", async () => {
+		const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(SEARCH_BODY), { status: 200 }));
+		await coingecko.run({} as any, { action: "search", term: "bitcoin" });
+		const headers = spy.mock.calls[0][1]?.headers as Record<string, string>;
+		expect(headers["x-cg-demo-api-key"]).toBeUndefined();
+	});
 });
