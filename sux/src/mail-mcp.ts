@@ -9,6 +9,7 @@ import { htmlToMd } from "./fns/_markup";
 import { errMsg, putBlob, storeBase } from "./fns/_util";
 import { dropboxPut, hasDropbox } from "./fns/dropbox";
 import { ledger } from "./ledger";
+import { runSubJob } from "./cron-heartbeat";
 
 // The mail MCP server — the ergonomic Fastmail surface, reached through the `mail_`
 // (and `cal_`/`contact_`) front verbs on the one /mcp connector, behind the same
@@ -91,12 +92,14 @@ export async function handleMailPushWebhook(env: RtEnv, token: string, rawBody: 
 			const resp = await jmapCall(env, { calls: [["PushSubscription/set", { update: { [existing.id]: { verificationCode: String(verificationCode) } } }, "s"]] });
 			const setR = resultFor(resp, "PushSubscription/set");
 			if (Object.prototype.hasOwnProperty.call(setR?.updated ?? {}, existing.id)) await savePushState(env, { ...existing, verified: true });
-		} catch {
-			/* verification confirm failed — leave unverified; a later legit push will retry */
+		} catch (e) {
+			// verification confirm failed — leave unverified; a later legit push will retry, but
+			// log it so a persistently-failing confirm (e.g. a scope/token issue) is diagnosable.
+			console.warn("mail push verification confirm failed:", errMsg(e));
 		}
 		return true;
 	}
-	if (existing.verified) await trigger();
+	if (existing.verified) await runSubJob(env, "mail_triage", trigger);
 	return true;
 }
 
