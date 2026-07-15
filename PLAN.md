@@ -1,5 +1,11 @@
 # PLAN — **sux**
 
+> **Superseded.** The Julia-verb residential-fetch-engine vision below has been
+> superseded by a pivot to a git-markdown knowledge store — see
+> [`docs/proposals/SUX.md`](docs/proposals/SUX.md), which "supersedes the earlier
+> ten-proposal sprawl." That's the current source of truth; this file is kept for
+> history.
+
 > An edge-hosted, residentially-proxied engine of composable functions (Julia-style
 > generic verbs + multiple dispatch). Any useful transform / query / scrape / proxy
 > is a function. **Kagi is just one function now.** "We basically re-invented the
@@ -183,9 +189,9 @@ zillow/redfin · flights/hotels · jobs · social · reviews.
 fewer tokens to the agent) and compose in front of every other verb. Then `search`
 #47 → `compress`/`shrink(bytes)`/`optimize` #31-34 → `archive` #32 → rest.
 
-## Status (live): **113 functions built** · type-checked · 2048 tests green
-Source of truth = **`sux/FUNCTIONS.md`** (`npm run docs` regenerates it). 107 of the
-113 have a dedicated test file.
+## Status (live): type-checked · tests green
+Source of truth = **`sux/FUNCTIONS.md`** (`npm run docs` regenerates it) — see
+FUNCTIONS.md for the current function count and test coverage.
 - **Quality gate (Bosman):** *"the 101st function exists only because the first 100 are
   perfect."* Stop padding count — perfect the set. New functions justified ONLY when they
   wrap an overly-verbose public connector for gross efficiency (F13), never for volume.
@@ -440,7 +446,7 @@ Bosman's original call was no dashboard UI; a Cloudflare-Access-gated WAN dashbo
 - **Repo structure reflects it: one function per file; everything is Workers** → DONE. `sux/src/fns/<name>.ts` (one Fn each) + `registry.ts` projects them into MCP tools/list + dispatch + KV cache. Add a capability = add one file + list it in `fns/index.ts`. All bundled into the one `sux` Worker.
 - **Better name — "kagi is just a function now / we invented cloudflare"** → renamed to **`sux`** (Service 2 Worker `sux/`). Kagi becomes a function inside it. Service 1 stays the lean dedicated Kagi connector.
 - **Docs + corresponding skills** → `sux/FUNCTIONS.md` (auto-gen via `npm run docs`); `sux` skill under `.claude/skills/`.
-- **Do 100 functions (need not align exactly)** → 58 built; expanding toward ~100 via the F8–F14 themes.
+- **Do 100 functions (need not align exactly)** → see FUNCTIONS.md for the current count; expanding toward ~100 via the F8–F14 themes.
 - **Keep BOTH full-proxy and smart routing (+ geo proxy)** → Feature F8.
 - **KV / worker / maybe R2 / maybe Redis** → Feature F9 (storage tiers).
 - **Token optimization / minify** → Feature F10 (+ `optimize`, `shrink(token)`, `grep`).
