@@ -1,3 +1,4 @@
+import { keyedSerialize } from "./keyed-serialize";
 import { findFn, type RtEnv, type ToolResult } from "./registry";
 
 // The proposal kernel — the substrate for sux acting on Colin's behalf under the
@@ -56,6 +57,11 @@ export const PROPOSABLE_FNS = new Set<string>([
 
 const now = (): number => Date.now();
 const days = (n: number): number => n * 24 * 60 * 60 * 1000;
+
+// Serializes approveProposal's read-check-run-write per proposal id so two concurrent
+// approvals (a double-tap, a retried request) can't both read `status: "proposed"`
+// before either write lands and double-execute the payload.
+const approveChains = new Map<string, Promise<unknown>>();
 
 async function readIndex(env: RtEnv): Promise<string[]> {
 	try {
@@ -144,22 +150,24 @@ async function runProposalFn(env: RtEnv, fn: string, args: Record<string, unknow
  *  records the outcome. Irreversible sub-actions still stage (no force) — a `committed`
  *  status whose result is a StageResult means "approved, now needs the tool's own commit". */
 export async function approveProposal(env: RtEnv, id: string): Promise<Proposal> {
-	const p = await getProposal(env, id);
-	if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
-	if (p.status === "committed") return p; // idempotent
-	if (p.status === "rejected") throw new Error(`proposal '${id}' was rejected.`);
-	if (!PROPOSABLE_FNS.has(p.payload.fn) || p.reversible !== true) throw new Error(`proposal '${id}' is no longer executable (fn not allow-listed or not reversible).`);
-	try {
-		const res = await runProposalFn(env, p.payload.fn, p.payload.args);
-		const text = res?.content?.[0]?.type === "text" ? res.content[0].text : undefined;
-		const updated: Proposal = { ...p, status: res?.isError ? "failed" : "committed", result: text ?? res };
-		await putProposal(env, updated);
-		return updated;
-	} catch (e) {
-		const updated: Proposal = { ...p, status: "failed", result: String((e as Error)?.message ?? e) };
-		await putProposal(env, updated);
-		return updated;
-	}
+	return keyedSerialize(approveChains, id, async () => {
+		const p = await getProposal(env, id);
+		if (!p) throw new Error(`no proposal '${id}' (expired or unknown).`);
+		if (p.status === "committed") return p; // idempotent
+		if (p.status === "rejected") throw new Error(`proposal '${id}' was rejected.`);
+		if (!PROPOSABLE_FNS.has(p.payload.fn) || p.reversible !== true) throw new Error(`proposal '${id}' is no longer executable (fn not allow-listed or not reversible).`);
+		try {
+			const res = await runProposalFn(env, p.payload.fn, p.payload.args);
+			const text = res?.content?.[0]?.type === "text" ? res.content[0].text : undefined;
+			const updated: Proposal = { ...p, status: res?.isError ? "failed" : "committed", result: text ?? res };
+			await putProposal(env, updated);
+			return updated;
+		} catch (e) {
+			const updated: Proposal = { ...p, status: "failed", result: String((e as Error)?.message ?? e) };
+			await putProposal(env, updated);
+			return updated;
+		}
+	});
 }
 
 /** Reject → the learning signal (W8 will read these). Keeps the record (status:rejected)

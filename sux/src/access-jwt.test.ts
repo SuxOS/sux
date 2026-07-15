@@ -82,6 +82,15 @@ describe("verifyAccessJwt", () => {
 		expect(await verifyAccessJwt(req(token), { CF_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, CF_ACCESS_AUD: AUD } as any)).toBe(false);
 	});
 
+	it("rejects a not-yet-valid token (future nbf)", async () => {
+		const { privateKey, jwk } = await generateKeyPairAndJwk();
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 })));
+		const now = Math.floor(Date.now() / 1000);
+		const token = await signJwt(privateKey, jwk.kid, { aud: [AUD], exp: now + 3600, nbf: now + 3600 });
+
+		expect(await verifyAccessJwt(req(token), { CF_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, CF_ACCESS_AUD: AUD } as any)).toBe(false);
+	});
+
 	it("rejects a token signed by a key not present in the team's JWKS (forged/unknown kid)", async () => {
 		const { privateKey } = await generateKeyPairAndJwk();
 		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ keys: [] }), { status: 200 })));
