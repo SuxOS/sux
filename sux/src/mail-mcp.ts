@@ -750,24 +750,31 @@ const TOOLS: MailTool[] = [
 					}
 					const messageId = it?.messageId ? String(it.messageId) : undefined;
 					const base = { blobId, ...(messageId ? { messageId } : {}) };
-					if (await led.seen(blobId)) {
-						exported.push({ ...base, skipped: "already exported (idempotent)" });
-						continue;
-					}
-					const { bytes, type } = await downloadBlobBytes(env, { blobId, type: it?.type ? String(it.type) : undefined, name: it?.name ? String(it.name) : undefined });
-					if (dest === "dropbox") {
-						const fname = it?.name ? safe(String(it.name)) : `${safe(blobId)}.bin`;
-						const put = await dropboxPut(env, `/mail-attachments/${safe(blobId)}/${fname}`, bytes);
-						if ("error" in put) {
-							exported.push({ ...base, error: put.error });
+					// Per-item isolation: a missing/oversized blob (downloadBlobBytes throws JmapError)
+					// or a storage hiccup (putBlob) must not abort items already queued behind it — same
+					// continue-on-error contract the dropbox `put.error` branch below already has.
+					try {
+						if (await led.seen(blobId)) {
+							exported.push({ ...base, skipped: "already exported (idempotent)" });
 							continue;
 						}
-						await led.mark(blobId);
-						exported.push({ ...base, dest, type, size: put.size, path: put.path, ...(put.url ? { url: put.url } : {}) });
-					} else {
-						const ref = await putBlob(env, bytes, type);
-						await led.mark(blobId);
-						exported.push({ ...base, dest, type, size: ref.size, ref: ref.url });
+						const { bytes, type } = await downloadBlobBytes(env, { blobId, type: it?.type ? String(it.type) : undefined, name: it?.name ? String(it.name) : undefined });
+						if (dest === "dropbox") {
+							const fname = it?.name ? safe(String(it.name)) : `${safe(blobId)}.bin`;
+							const put = await dropboxPut(env, `/mail-attachments/${safe(blobId)}/${fname}`, bytes);
+							if ("error" in put) {
+								exported.push({ ...base, error: put.error });
+								continue;
+							}
+							await led.mark(blobId);
+							exported.push({ ...base, dest, type, size: put.size, path: put.path, ...(put.url ? { url: put.url } : {}) });
+						} else {
+							const ref = await putBlob(env, bytes, type);
+							await led.mark(blobId);
+							exported.push({ ...base, dest, type, size: ref.size, ref: ref.url });
+						}
+					} catch (e) {
+						exported.push({ ...base, error: errMsg(e) });
 					}
 				}
 				return ok({ dest, count: exported.length, exported });

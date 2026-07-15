@@ -48,16 +48,25 @@ async function gql(env: RtEnv, query: string, variables?: Record<string, unknown
 	return { status: resp.status, json };
 }
 
+/** Fold HTTP status + GraphQL `errors` into the failure taxonomy — shared by every scripted
+ *  op's `query()` AND the raw `graphql` escape hatch, since GraphQL commonly returns HTTP 200
+ *  with a populated `errors` array on a partial/field failure that a bare status check misses. */
+function gqlFailure(op: string, r: { status: number; json: any }): ReturnType<typeof failWith> | undefined {
+	if (r.status >= 400) {
+		const detail = r.json?.errors?.[0]?.message ?? `HTTP ${r.status}`;
+		return failWith(codeFor(r.status), `Monarch ${op}: ${detail}`);
+	}
+	if (Array.isArray(r.json?.errors) && r.json.errors.length) {
+		return failWith("upstream_error", `Monarch ${op}: ${r.json.errors.map((e: any) => e?.message).filter(Boolean).join("; ") || "GraphQL error"}`);
+	}
+	return undefined;
+}
+
 /** Run a query, folding HTTP status + GraphQL `errors` into the failure taxonomy. */
 async function query(env: RtEnv, op: string, gqlDoc: string, variables?: Record<string, unknown>): Promise<{ data?: any; fail?: ReturnType<typeof failWith> }> {
 	const r = await gql(env, gqlDoc, variables);
-	if (r.status >= 400) {
-		const detail = r.json?.errors?.[0]?.message ?? `HTTP ${r.status}`;
-		return { fail: failWith(codeFor(r.status), `Monarch ${op}: ${detail}`) };
-	}
-	if (Array.isArray(r.json?.errors) && r.json.errors.length) {
-		return { fail: failWith("upstream_error", `Monarch ${op}: ${r.json.errors.map((e: any) => e?.message).filter(Boolean).join("; ") || "GraphQL error"}`) };
-	}
+	const fail = gqlFailure(op, r);
+	if (fail) return { fail };
 	return { data: r.json?.data };
 }
 
@@ -224,7 +233,8 @@ export const monarch: Fn = {
 				if (!isReadOnlyDoc(doc)) return failWith("bad_input", "monarch graphql is read-only — mutation/subscription documents are refused (sux never moves money).");
 				const vars = a?.variables && typeof a.variables === "object" && !Array.isArray(a.variables) ? (a.variables as Record<string, unknown>) : undefined;
 				const r = await gql(env, doc, vars);
-				if (r.status >= 400) return failWith(codeFor(r.status), `Monarch graphql: ${r.json?.errors?.[0]?.message ?? `HTTP ${r.status}`}`);
+				const fail = gqlFailure("graphql", r);
+				if (fail) return fail;
 				return ok(oj(r.json ?? {}));
 			}
 			return failWith("bad_input", `monarch: unknown op '${op}'.`);

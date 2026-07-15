@@ -599,6 +599,26 @@ describe("mail_* ergonomic tools", () => {
 		expect(r2.put).toHaveBeenCalledTimes(2);
 	});
 
+	it("mail_attachments isolates a per-item failure (missing blob) instead of aborting the whole batch (#368)", async () => {
+		const f = vi.fn(async (input: any) => {
+			const url = String(input?.url ?? input);
+			if (url.includes("/jmap/session")) return json(SESSION);
+			if (url.includes("/jmap/download/")) return url.includes("MISSING") ? json({}, 404) : new Response(new Uint8Array([104, 105, 33]).buffer, { status: 200, headers: { "content-type": "application/octet-stream" } });
+			return json({}, 404);
+		});
+		global.fetch = f as any;
+		const r2 = { put: vi.fn(async () => {}) };
+		const e = { FASTMAIL_TOKEN: "tok", OAUTH_KV: kvStub(), R2: r2 } as any;
+		const items = [{ blobId: "GOOD1" }, { blobId: "MISSING" }, { blobId: "GOOD2" }];
+		const out = parse(await tool("mail_attachments").run(e, { items, dest: "store" }));
+		expect(out.count).toBe(3);
+		expect(out.exported[0]).toMatchObject({ blobId: "GOOD1", dest: "store" });
+		expect(out.exported[1]).toMatchObject({ blobId: "MISSING" });
+		expect(String(out.exported[1].error)).toMatch(/not found/i);
+		expect(out.exported[2]).toMatchObject({ blobId: "GOOD2", dest: "store" });
+		expect(r2.put).toHaveBeenCalledTimes(2);
+	});
+
 	it("mail_attachments dest:dropbox is not_configured without a Dropbox credential (#265)", async () => {
 		installFetch();
 		const r = await tool("mail_attachments").run(env(), { items: [{ blobId: "B1" }], dest: "dropbox" });

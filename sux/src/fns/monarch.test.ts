@@ -58,6 +58,14 @@ describe("monarch (read-only GraphQL adapter)", () => {
 		expect(out).toMatchObject({ data: { me: { id: "u1" } } });
 	});
 
+	it("graphql surfaces a GraphQL-level error even on a 2xx response, instead of returning isError:false (#373)", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ errors: [{ message: "field 'me' is not accessible" }] }), { status: 200 })));
+		const r = await monarch.run(ENV, { op: "graphql", query: "query Me { me { id } }" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("[upstream_error]");
+		expect(r.content[0].text).toMatch(/not accessible/);
+	});
+
 	it("graphql refuses a mutation without ever calling fetch", async () => {
 		const spy = vi.fn();
 		vi.stubGlobal("fetch", spy);

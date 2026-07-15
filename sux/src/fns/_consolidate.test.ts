@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_STALE_DAYS, hasConsolidate, MAX_NOTES_PER_SWEEP, runConsolidate, staleDays, type ConsolidateDeps } from "./_consolidate";
+import { runSubJob } from "../cron-heartbeat";
 
 // A single OAUTH_KV stub for the ledger — mirrors _weekly_recall.test.ts's fakeKV. The whole
 // feature is exercised through injected deps: no real vault, no real obsidian fn.
@@ -208,5 +209,29 @@ describe("runConsolidate", () => {
 		expect(path).toBe("Consolidation/2026-W15.md");
 		expect(content).toContain("Consolidation sweep");
 		expect(content).toContain("never verified");
+	});
+
+	it("a vault list failure flips the cron heartbeat unhealthy via runSubJob/subJobError", async () => {
+		const env = envWith({ CONSOLIDATE_ENABLED: "1" });
+		const deps = mkDeps({});
+		deps.listNotes = async () => {
+			throw new Error("vault unreachable");
+		};
+		await runSubJob(env, "consolidate", () => runConsolidate(env, { week: "2026-W70" }, deps));
+		const beat = JSON.parse(await env.OAUTH_KV.get("sux:cron:heartbeat:consolidate"));
+		expect(beat.ok).toBe(false);
+		expect(beat.error).toContain("vault list failed");
+	});
+
+	it("a vault append failure flips the cron heartbeat unhealthy via runSubJob/subJobError", async () => {
+		const env = envWith({ CONSOLIDATE_ENABLED: "1" });
+		const deps = mkDeps({ "A.md": fm("title: A") });
+		deps.digestAppend = async () => {
+			throw new Error("append rejected");
+		};
+		await runSubJob(env, "consolidate", () => runConsolidate(env, { week: "2026-W71" }, deps));
+		const beat = JSON.parse(await env.OAUTH_KV.get("sux:cron:heartbeat:consolidate"));
+		expect(beat.ok).toBe(false);
+		expect(beat.error).toContain("vault append failed");
 	});
 });
