@@ -73,7 +73,7 @@ export type ConsolidateReport = {
 	week?: string;
 	dormant?: boolean;
 	skipped?: boolean;
-	error?: boolean;
+	error?: boolean | string;
 	scanned?: number;
 	truncated?: boolean;
 	window_offset?: number;
@@ -144,7 +144,8 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 	try {
 		paths = await deps.listNotes(env);
 	} catch (e) {
-		return { week, note: `vault list failed: ${errMsg(e)}` };
+		const msg = `vault list failed: ${errMsg(e)}`;
+		return { week, error: msg, note: msg };
 	}
 	const truncated = paths.length > MAX_NOTES_PER_SWEEP;
 	const storedOffset = Number(await led.get(CURSOR_KEY));
@@ -193,7 +194,8 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 		await led.mark(CURSOR_KEY, String(nextOffset));
 		return { week, scanned, truncated, window_offset: windowOffset, next_offset: nextOffset, stale, duplicate_candidates, digest_written: true };
 	} catch (e) {
-		return { week, scanned, truncated, window_offset: windowOffset, stale, duplicate_candidates, digest_written: false, note: `vault append failed: ${errMsg(e)}` };
+		const msg = `vault append failed: ${errMsg(e)}`;
+		return { week, scanned, truncated, window_offset: windowOffset, stale, duplicate_candidates, digest_written: false, error: msg, note: msg };
 	}
 }
 

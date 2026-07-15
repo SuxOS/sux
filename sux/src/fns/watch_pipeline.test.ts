@@ -17,11 +17,11 @@ function fakeEnv() {
 	return { env, store };
 }
 
-const mockApiResponse = (data: unknown) => {
+const mockApiResponse = (data: unknown, opts?: { status?: number; headers?: Record<string, string> }) => {
 	vi.mocked(fetch).mockResolvedValueOnce(
 		new Response(JSON.stringify(data), {
-			status: 200,
-			headers: { "content-type": "application/json" },
+			status: opts?.status ?? 200,
+			headers: { "content-type": "application/json", ...opts?.headers },
 		})
 	);
 };
@@ -51,7 +51,6 @@ describe("watch_pipeline", () => {
 		const { env, store } = fakeEnv();
 
 		// Mock API responses
-		mockApiResponse([]); // merge queues
 		mockApiResponse([{ id: 1, title: "Test PR", state: "open" }]); // PRs
 		mockApiResponse([{ id: 2, title: "Test Issue", state: "open" }]); // issues
 		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
@@ -67,6 +66,7 @@ describe("watch_pipeline", () => {
 		expect(j.previous_hash).toBeUndefined();
 		expect(typeof j.hash).toBe("string");
 		expect(j.hash).toHaveLength(64); // SHA-256 hex
+		expect(j.truncated).toBeUndefined();
 		expect(r.noCache).toBe(true);
 
 		// Hash was persisted
@@ -80,7 +80,6 @@ describe("watch_pipeline", () => {
 		const { env, store } = fakeEnv();
 
 		// First check
-		mockApiResponse([]); // merge queues
 		mockApiResponse([{ id: 1, title: "Test PR", state: "open" }]); // PRs
 		mockApiResponse([{ id: 2, title: "Test Issue", state: "open" }]); // issues
 		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
@@ -88,7 +87,6 @@ describe("watch_pipeline", () => {
 		const first = parse(await watch_pipeline.run(env, { owner: "testorg", repo: "testrepo" }));
 
 		// Second check with identical state
-		mockApiResponse([]); // merge queues
 		mockApiResponse([{ id: 1, title: "Test PR", state: "open" }]); // PRs
 		mockApiResponse([{ id: 2, title: "Test Issue", state: "open" }]); // issues
 		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
@@ -106,7 +104,6 @@ describe("watch_pipeline", () => {
 		const { env, store } = fakeEnv();
 
 		// First check
-		mockApiResponse([]); // merge queues
 		mockApiResponse([{ id: 1, title: "Test PR", state: "open" }]); // PRs
 		mockApiResponse([{ id: 2, title: "Test Issue", state: "open" }]); // issues
 		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
@@ -114,7 +111,6 @@ describe("watch_pipeline", () => {
 		const first = parse(await watch_pipeline.run(env, { owner: "testorg", repo: "testrepo" }));
 
 		// Second check with different state (new PR)
-		mockApiResponse([]); // merge queues
 		mockApiResponse([
 			{ id: 1, title: "Test PR", state: "open" },
 			{ id: 3, title: "New PR", state: "open" },
@@ -137,14 +133,6 @@ describe("watch_pipeline", () => {
 	it("handles API errors gracefully", async () => {
 		const { env } = fakeEnv();
 
-		// Mock API failure for PRs (required endpoint)
-		// Merge queue attempt (optional)
-		vi.mocked(fetch).mockResolvedValueOnce(
-			new Response(JSON.stringify({ message: "Not Found" }), {
-				status: 404,
-				headers: { "content-type": "application/json" },
-			})
-		);
 		// PRs call fails
 		vi.mocked(fetch).mockResolvedValueOnce(
 			new Response(JSON.stringify({ message: "Not Found" }), {
@@ -158,11 +146,21 @@ describe("watch_pipeline", () => {
 		expect(r.content[0].text).toMatch(/\[upstream_error\]/);
 	});
 
+	it("surfaces a rate-limit hint instead of a bare status code on 403/429", async () => {
+		const { env } = fakeEnv();
+
+		mockApiResponse({ message: "rate limited" }, { status: 403, headers: { "retry-after": "42" } });
+
+		const r = await watch_pipeline.run(env, { owner: "testorg", repo: "testrepo" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/rate limited/i);
+		expect(r.content[0].text).toMatch(/42s/);
+	});
+
 	it("namespaces distinct repos independently", async () => {
 		const { env, store } = fakeEnv();
 
 		// First repo
-		mockApiResponse([]); // merge queues
 		mockApiResponse([{ id: 1, title: "Repo1 PR", state: "open" }]); // PRs
 		mockApiResponse([{ id: 2, title: "Repo1 Issue", state: "open" }]); // issues
 		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
@@ -170,7 +168,6 @@ describe("watch_pipeline", () => {
 		await watch_pipeline.run(env, { owner: "org", repo: "repo1" });
 
 		// Different repo with same data should have different hash
-		mockApiResponse([]); // merge queues
 		mockApiResponse([{ id: 1, title: "Repo1 PR", state: "open" }]); // PRs
 		mockApiResponse([{ id: 2, title: "Repo1 Issue", state: "open" }]); // issues
 		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
@@ -184,7 +181,6 @@ describe("watch_pipeline", () => {
 	it("includes GitHub token in Authorization header when provided", async () => {
 		const { env } = fakeEnv();
 
-		mockApiResponse([]); // merge queues
 		mockApiResponse([{ id: 1, title: "Test PR", state: "open" }]); // PRs
 		mockApiResponse([{ id: 2, title: "Test Issue", state: "open" }]); // issues
 		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
@@ -202,15 +198,8 @@ describe("watch_pipeline", () => {
 	});
 
 	it("handles missing optional API endpoints gracefully", async () => {
-		const { env, store } = fakeEnv();
+		const { env } = fakeEnv();
 
-		// Simulate merge queue endpoint not available (404)
-		vi.mocked(fetch).mockResolvedValueOnce(
-			new Response(JSON.stringify({ message: "Not Found" }), {
-				status: 404,
-				headers: { "content-type": "application/json" },
-			})
-		);
 		// PRs
 		mockApiResponse([{ id: 1, title: "Test PR", state: "open" }]);
 		// Issues
@@ -228,5 +217,39 @@ describe("watch_pipeline", () => {
 		const j = parse(r);
 		expect(j.first_seen).toBe(true);
 		expect(j.changed).toBe(false);
+	});
+
+	it("filters pull requests out of the /issues response so PR activity isn't double-counted", async () => {
+		const { env } = fakeEnv();
+
+		mockApiResponse([{ id: 1, title: "Test PR", state: "open" }]); // PRs
+		mockApiResponse([
+			{ id: 2, title: "Real Issue", state: "open" },
+			{ id: 1, title: "Test PR (as issue)", state: "open", pull_request: { url: "https://api.github.com/repos/o/r/pulls/1" } },
+		]); // issues (includes a PR per GitHub's documented /issues behavior)
+		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
+
+		const withPr = parse(await watch_pipeline.run(env, { owner: "testorg", repo: "testrepo" }));
+
+		// Same state, but the issues call never returns the PR item at all.
+		mockApiResponse([{ id: 1, title: "Test PR", state: "open" }]); // PRs
+		mockApiResponse([{ id: 2, title: "Real Issue", state: "open" }]); // issues, PR excluded server-side already
+		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
+
+		const withoutPr = parse(await watch_pipeline.run(env, { owner: "testorg", repo: "testrepo2" }));
+
+		expect(withPr.hash).toBe(withoutPr.hash);
+	});
+
+	it("flags truncated when a resource returns a full page (may have more beyond it)", async () => {
+		const { env } = fakeEnv();
+		const fullPage = Array.from({ length: 30 }, (_, i) => ({ id: i, title: `PR ${i}`, state: "open" }));
+
+		mockApiResponse(fullPage); // PRs — exactly per_page
+		mockApiResponse([{ id: 999, title: "Test Issue", state: "open" }]); // issues
+		mockApiResponse({ total_count: 0, workflow_runs: [] }); // actions
+
+		const r = parse(await watch_pipeline.run(env, { owner: "testorg", repo: "testrepo" }));
+		expect(r.truncated).toEqual(["pull_requests"]);
 	});
 });

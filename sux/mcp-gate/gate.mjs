@@ -103,10 +103,16 @@ function proxy(routeName, who, req, res, url) {
   // 'error' on these streams; with zero listeners that throws asynchronously
   // and crashes the whole process, taking down every route on both listeners.
   req.on('error', (err) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(firstByteTimer);
     log(req.method, `${routeName}/mcp`, 499, who, err.code || err.message);
     up.destroy();
   });
   res.on('error', (err) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(firstByteTimer);
     log(req.method, `${routeName}/mcp`, 499, who, err.code || err.message);
     up.destroy();
   });

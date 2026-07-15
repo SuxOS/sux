@@ -128,15 +128,21 @@ export function createTask(env: RtEnv, ctx: ExecutionContext, tool: string, ttlR
 	};
 	// Write the initial record BEFORE returning it, but don't block the response
 	// on the write landing — same "fire the KV write off the response path"
-	// shape as deferCacheWrite. A tasks/get that races the write and misses is
-	// vanishingly unlikely (single ctx.waitUntil, no cross-isolate hop yet) and
-	// falls back to "not found" — a transient miss, not a wrong answer.
-	ctx.waitUntil(putTask(env, rec));
+	// shape as deferCacheWrite. `run()` only starts once that write has landed
+	// (chained off the SAME putTask promise, still off the response path), so
+	// `finishTask` can never see a not-yet-written record and drop a
+	// fast-completing result on the floor — a tasks/get racing the write is
+	// still possible and falls back to "not found", a transient miss, not a
+	// wrong answer.
+	const initialWrite = putTask(env, rec);
+	ctx.waitUntil(initialWrite);
 	ctx.waitUntil(
-		run()
-			.then(
-				(result) => finishTask(env, rec.taskId, result),
-				(e) => finishTask(env, rec.taskId, { content: [{ type: "text", text: `Tool execution threw: ${String((e as Error)?.message ?? e)}` }], isError: true }),
+		initialWrite
+			.then(() =>
+				run().then(
+					(result) => finishTask(env, rec.taskId, result),
+					(e) => finishTask(env, rec.taskId, { content: [{ type: "text", text: `Tool execution threw: ${String((e as Error)?.message ?? e)}` }], isError: true }),
+				),
 			)
 			.catch((e) => console.warn(`sux task ${rec.taskId} (${tool}) failed to persist its finish: ${String((e as Error)?.message ?? e)}`)),
 	);
