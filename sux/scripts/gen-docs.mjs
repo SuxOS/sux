@@ -21,7 +21,7 @@ const CATEGORIES = [
 	["Text / AI", ["summarize", "translate", "classify", "ocr", "entities", "redact", "voice", "fontcase"]],
 	["Batching / composition", ["batch", "batch_fetch", "pipe"]],
 	["Storage", ["kv_get", "kv_put", "kv_list", "kv_delete", "store", "put", "dropbox"]],
-	["Web search / query", ["search", "web_search", "tavily", "find_similar", "wayback"]],
+	["Web search / query", ["search", "web_search", "tavily", "find_similar", "wayback", "get"]],
 	["Retail / shopping", ["shop", "product_search", "amazon", "walmart", "homedepot", "lowes", "bestbuy", "ebay", "costco", "kroger", "ace", "weekly_ad"]],
 	["Research / reference", ["arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "coingecko", "youtube"]],
 	["People / places / social", ["people", "people_finder", "places", "linkedin", "facebook", "uw"]],
