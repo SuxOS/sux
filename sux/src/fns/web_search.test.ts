@@ -227,6 +227,22 @@ describe("web_search", () => {
 		expect(text.indexOf("example.com/a")).toBeLessThan(text.indexOf("example.org/b"));
 	});
 
+	it("names the engine in a single-engine 'no results' failure (not a silent generic message)", async () => {
+		smartFetch.mockResolvedValueOnce(new Response("<html></html>", { status: 200 }));
+		const r = await webSearch.run({} as any, { query: "x", engine: "ddg" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toContain("from engine 'ddg'");
+	});
+
+	it("warns when a scraped engine silently returns 0 hits while other engines in the same 'all' run found results", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		renderRun.mockResolvedValueOnce({ content: [{ text: serp([{ url: "https://example.com/a", title: "Shared" }]) }] });
+		smartFetch.mockResolvedValueOnce(new Response("<html></html>", { status: 200 })); // ddg parses to []
+		await webSearch.run({ KAGI_API_KEY: "k" } as any, { query: "hello", engine: "all" });
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("engine 'ddg' returned 0 hits"));
+		warn.mockRestore();
+	});
+
 	it("surfaces a single engine's error instead of masking it as 'no results'", async () => {
 		const kagi = await import("../kagi");
 		(kagi.kagiTool as any).mockRejectedValueOnce(new Error("HTTP 401"));

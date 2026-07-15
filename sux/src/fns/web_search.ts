@@ -211,6 +211,12 @@ export async function kagiSession(env: any, q: string, limit: number, route: Rou
 	return parseKagiSession(await resp.text(), limit);
 }
 
+// Engines whose parser scrapes HTML we don't control (vs. a stable JSON API) — a
+// markup tweak on the source site makes these return [] with no error at all, so
+// a 0-hit result from one of these is worth flagging when compared against other
+// engines that did find something (see #537).
+const SCRAPED_ENGINES = new Set(["ddg", "google", "kagi_session"]);
+
 const ENGINES: Record<string, { envKey?: string; envName?: string; run: (env: any, q: string, n: number, route: Route) => Promise<Hit[]> }> = {
 	kagi_session: { envKey: "KAGI_SESSION", envName: "KAGI_SESSION", run: kagiSession }, // subscription (free), residential-proxy HTML scrape
 	kagi: { envKey: "KAGI_API_KEY", envName: "KAGI_API_KEY", run: kagi }, // metered Search API
@@ -325,10 +331,21 @@ export const webSearch: Fn = {
 		settled.forEach((s, i) => {
 			if (s.status === "rejected") console.warn(`web_search engine '${engines[i]}' failed: ${reason(s)}`);
 		});
+		// A scraped engine returning [] with no thrown error is indistinguishable from a
+		// genuine no-results query — the one signal we can cheaply check is other engines
+		// in the same run finding something. Flag it so silent markup drift is traceable.
+		if (ranAll) {
+			const anyHits = lists.some((l) => l.length > 0);
+			settled.forEach((s, i) => {
+				if (s.status === "fulfilled" && s.value.length === 0 && anyHits && SCRAPED_ENGINES.has(engines[i])) {
+					console.warn(`web_search engine '${engines[i]}' returned 0 hits for "${q}" while other engines found results — possible markup drift`);
+				}
+			});
+		}
 		const hits = ranAll ? merge(lists, limit) : lists[0] ?? [];
 		if (!hits.length) {
 			if (!ranAll && settled[0]?.status === "rejected") return fail(`Engine '${engine}' failed: ${reason(settled[0])}`);
-			return fail(`No results for "${q}"${ranAll ? ` across: ${engines.join(", ")}` : ""}.`);
+			return fail(`No results for "${q}"${ranAll ? ` across: ${engines.join(", ")}` : ` from engine '${engine}'`}.`);
 		}
 
 		const body = fmt(hits);
