@@ -235,6 +235,11 @@ function available(env: any): string[] {
 		.map(([name]) => name);
 }
 
+// Auto-fallback pool for the no-`engine`-arg case, in preference order. Excludes
+// `google`: it's opt-in (heavy mac-backend render) and only ever runs when named
+// explicitly or via `all`, never silently pulled in by a fallback.
+const AUTO_FALLBACK_ORDER = ["kagi_session", "ddg", "kagi", "exa", "brave"] as const;
+
 const normUrl = (u: string): string =>
 	u
 		.trim()
@@ -269,7 +274,7 @@ export const webSearch: Fn = {
 	cost: 3,
 	description:
 		"Web search over Kagi, native Google, Exa, and Brave. `engine`: kagi_session, kagi, ddg, google, exa, brave, or `all` — which fans out across every currently-available engine concurrently (MAP), merges/dedupes by URL with consensus ranking, and with `summarize: true` reduces the pooled results into one Workers-AI synthesis with citations (map-reduce). " +
-		"DEFAULT is kagi_session — Kagi run on YOUR subscription (free/unmetered) by scraping the /html/search page with the KAGI_SESSION token through the residential proxy — when that secret is set, else ddg. ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the free no-key fallback. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in). kagi, exa, and brave are key-gated (KAGI_API_KEY, EXA_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. exa has a genuine 20,000 req/mo free tier and is the preferred key-gated fallback — brave lost its free tier in Feb 2026 and is now metered with no default spend cap, so prefer configuring EXA_API_KEY over BRAVE_API_KEY. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number. " +
+		"DEFAULT is kagi_session — Kagi run on YOUR subscription (free/unmetered) by scraping the /html/search page with the KAGI_SESSION token through the residential proxy — when that secret is set, else ddg. ddg (DuckDuckGo) is scraped keyless+cheap via the residential proxy (no JS needed) — the free no-key fallback. google renders the real SERP in the headed `render` mac backend (Google needs JS; heavier/slower, opt-in — never picked automatically). kagi, exa, and brave are key-gated (KAGI_API_KEY, EXA_API_KEY, BRAVE_API_KEY) and used only when their secret is set; `all` skips unconfigured ones. exa has a genuine 20,000 req/mo free tier and is the preferred key-gated fallback — brave lost its free tier in Feb 2026 and is now metered with no default spend cap, so prefer configuring EXA_API_KEY over BRAVE_API_KEY. When `engine` is left unset and the auto-picked default (kagi_session or ddg) errors or comes back empty, it's non-fatal: the call falls back through whichever of kagi_session/ddg/kagi/exa/brave are configured and merges what succeeds, same graceful-degradation as the fetch ladder's escalation — an explicit `engine` still fails hard on that engine's own error. Falls back to the plain merged list if AI isn't configured. Returns numbered results (title, url, snippet) — cite by number. " +
 			"file_type / include_domains / exclude_domains scope the Kagi engines (kagi, kagi_session) via documented query operators (filetype:, site:, -site:) — neither Kagi surface has a structured param for these on the session path, so both fold into the query text the same way. Other engines ignore them.",
 	inputSchema: {
 		type: "object",
@@ -291,6 +296,7 @@ export const webSearch: Fn = {
 	run: async (env, args) => {
 		const q = String(args?.query ?? "").trim();
 		if (!q) return fail("query is required.");
+		const explicitEngine = args?.engine !== undefined;
 		const engine = String(args?.engine ?? defaultEngine(env));
 		const limit = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 		const wantSummary = args?.summarize === true;
@@ -316,7 +322,7 @@ export const webSearch: Fn = {
 
 		// Run the selected engines in parallel; keep whatever succeeds.
 		const settled = await Promise.allSettled(engines.map((name) => ENGINES[name].run(env, queryFor(name), limit, route)));
-		const lists = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
+		let lists = settled.map((s) => (s.status === "fulfilled" ? s.value : []));
 		const ranAll = engine === "all";
 		// Don't swallow engine errors: log every rejection so a silently-dead engine
 		// is traceable, and surface the reason for a single named engine (an expired
@@ -325,14 +331,36 @@ export const webSearch: Fn = {
 		settled.forEach((s, i) => {
 			if (s.status === "rejected") console.warn(`web_search engine '${engines[i]}' failed: ${reason(s)}`);
 		});
-		const hits = ranAll ? merge(lists, limit) : lists[0] ?? [];
+		let hits = ranAll ? merge(lists, limit) : lists[0] ?? [];
+
+		// The engine wasn't picked by the caller — it's whatever defaultEngine() guessed
+		// (kagi_session or the keyless ddg scrape). A single bad guess (e.g. DDG's HTTP 522)
+		// shouldn't hard-fail the whole call when other configured engines are healthy — fall
+		// back through the rest of the pool and merge, same graceful-degradation pattern as
+		// the fetch ladder's scrape → render → render:mac escalation.
+		if (!hits.length && !ranAll && !explicitEngine) {
+			const rest = AUTO_FALLBACK_ORDER.filter((name) => name !== engine && (!ENGINES[name].envKey || (env as any)[ENGINES[name].envKey]));
+			if (rest.length) {
+				const settled2 = await Promise.allSettled(rest.map((name) => ENGINES[name].run(env, queryFor(name), limit, route)));
+				settled2.forEach((s, i) => {
+					if (s.status === "rejected") console.warn(`web_search engine '${rest[i]}' failed: ${reason(s)}`);
+				});
+				const lists2 = settled2.map((s) => (s.status === "fulfilled" ? s.value : []));
+				hits = merge([...lists, ...lists2], limit);
+				if (hits.length) {
+					engines = [engine, ...rest];
+					lists = [...lists, ...lists2];
+				}
+			}
+		}
+
 		if (!hits.length) {
-			if (!ranAll && settled[0]?.status === "rejected") return fail(`Engine '${engine}' failed: ${reason(settled[0])}`);
-			return fail(`No results for "${q}"${ranAll ? ` across: ${engines.join(", ")}` : ""}.`);
+			if (!ranAll && engines.length === 1 && settled[0]?.status === "rejected") return fail(`Engine '${engine}' failed: ${reason(settled[0])}`);
+			return fail(`No results for "${q}"${ranAll || engines.length > 1 ? ` across: ${engines.join(", ")}` : ""}.`);
 		}
 
 		const body = fmt(hits);
-		const header = ranAll ? `Merged ${hits.length} results from: ${engines.join(", ")}\n\n` : "";
+		const header = ranAll || engines.length > 1 ? `Merged ${hits.length} results from: ${engines.join(", ")}\n\n` : "";
 
 		if (!wantSummary) return ok(header + body);
 		if (!hasAI(env)) return ok(`${header}${body}\n\n(summary skipped: Workers AI binding not configured)`);
