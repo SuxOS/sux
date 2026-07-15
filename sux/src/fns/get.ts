@@ -4,7 +4,7 @@ import { kagiSession, parseKagiMarkdown, withOperators } from "./web_search";
 import { kagiTool } from "../kagi";
 import type { Route } from "../proxy";
 import type { RtEnv, ToolResult } from "../registry";
-import { deliverBytes, fromB64, inlineB64, loadBytes, toB64 } from "./_util";
+import { deliverBytes, fromB64, inlineB64, loadBytes, putBlob, toB64 } from "./_util";
 
 export type Kind = "pdf" | "document" | "ebook" | "code" | "docs" | "artifact" | "reference" | "any";
 
@@ -179,4 +179,14 @@ export async function acquireFromUrl(env: RtEnv, url: string, as: "pdf" | "archi
 	if (s?.isError) throw new Error(s.content?.[0]?.text ?? "scrape failed");
 	const html = s.content?.[0]?.text ?? "";
 	return { bytes: new TextEncoder().encode(html), contentType: "text/html" };
+}
+
+export async function storeResult(env: RtEnv, bytes: Uint8Array, contentType: string, store: "vault" | "dropbox" | "r2", summarize: boolean): Promise<{ where: string; ref: string }> {
+	const blobRef = await putBlob(env, bytes, contentType);
+	if (store === "r2") return { where: "r2", ref: blobRef.url };
+
+	const ingestFn = await findFn("ingest");
+	const r = await ingestFn.run(env, { url: blobRef.url, blobs: store === "dropbox" ? "dropbox" : "auto", summarize, tags: ["get"] });
+	if (r?.isError) throw new Error(r.content?.[0]?.text ?? "ingest failed");
+	return { where: store, ref: r.content?.[0]?.text ?? blobRef.url };
 }

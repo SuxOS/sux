@@ -9,12 +9,14 @@ vi.mock("./web_search", async (importOriginal) => {
 	return { ...actual, kagiSession };
 });
 
-const { pdfRun, renderRun, waybackRun, scrapeRun, loadBytesMock } = vi.hoisted(() => ({
+const { pdfRun, renderRun, waybackRun, scrapeRun, ingestRun, loadBytesMock, putBlobMock } = vi.hoisted(() => ({
 	pdfRun: vi.fn(),
 	renderRun: vi.fn(),
 	waybackRun: vi.fn(),
 	scrapeRun: vi.fn(),
+	ingestRun: vi.fn(),
 	loadBytesMock: vi.fn(),
+	putBlobMock: vi.fn(),
 }));
 vi.mock("./index", () => ({
 	FUNCTIONS: [
@@ -22,11 +24,12 @@ vi.mock("./index", () => ({
 		{ name: "render", run: renderRun },
 		{ name: "wayback", run: waybackRun },
 		{ name: "scrape", run: scrapeRun },
+		{ name: "ingest", run: ingestRun },
 	],
 }));
 vi.mock("./_util", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./_util")>();
-	return { ...actual, loadBytes: loadBytesMock };
+	return { ...actual, loadBytes: loadBytesMock, putBlob: putBlobMock };
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -52,6 +55,7 @@ import { dedupeEditions } from "./get";
 import { runStrategies } from "./get";
 import { fetchAndNormalize } from "./get";
 import { acquireFromUrl } from "./get";
+import { storeResult } from "./get";
 
 describe("isUrlInput", () => {
 	it("recognizes absolute http(s) URLs", () => {
@@ -237,5 +241,30 @@ describe("acquireFromUrl", () => {
 		expect(scrapeRun).toHaveBeenCalledWith({}, { url: "https://a.com" });
 		expect(contentType).toBe("text/html");
 		expect(new TextDecoder().decode(bytes)).toBe("<html>live</html>");
+	});
+});
+
+describe("storeResult", () => {
+	it("puts the bytes into the content-addressed store, then delegates to ingest with that URL", async () => {
+		putBlobMock.mockResolvedValueOnce({ uuid: "u1", url: "https://sux.example/s/u1", key: "cas/abc", sha256: "abc", size: 4, content_type: "application/pdf" });
+		ingestRun.mockResolvedValueOnce({ content: [{ text: '{"path":"Inbox/2026-07-15 doc.md"}' }] });
+		const { where, ref } = await storeResult({} as any, new Uint8Array([1, 2, 3, 4]), "application/pdf", "vault", true);
+		expect(putBlobMock).toHaveBeenCalledWith({}, expect.any(Uint8Array), "application/pdf");
+		expect(ingestRun).toHaveBeenCalledWith({}, expect.objectContaining({ url: "https://sux.example/s/u1", blobs: "auto", summarize: true, tags: ["get"] }));
+		expect(where).toBe("vault");
+		expect(ref).toContain("Inbox");
+	});
+
+	it("passes blobs:dropbox when store is dropbox", async () => {
+		putBlobMock.mockResolvedValueOnce({ uuid: "u2", url: "https://sux.example/s/u2", key: "cas/def", sha256: "def", size: 4, content_type: "application/pdf" });
+		ingestRun.mockResolvedValueOnce({ content: [{ text: "{}" }] });
+		await storeResult({} as any, new Uint8Array([1]), "application/pdf", "dropbox", false);
+		expect(ingestRun).toHaveBeenCalledWith({}, expect.objectContaining({ blobs: "dropbox", summarize: false }));
+	});
+
+	it("throws when ingest itself fails", async () => {
+		putBlobMock.mockResolvedValueOnce({ uuid: "u3", url: "https://sux.example/s/u3", key: "cas/ghi", sha256: "ghi", size: 1, content_type: "application/pdf" });
+		ingestRun.mockResolvedValueOnce({ isError: true, content: [{ text: "vault not configured" }] });
+		await expect(storeResult({} as any, new Uint8Array([1]), "application/pdf", "vault", false)).rejects.toThrow(/vault not configured/);
 	});
 });
