@@ -1,8 +1,16 @@
 # `get` — universal "get me a file" fn
 
-Status: design (approved via brainstorming)
+Status: design (approved via brainstorming) — **blocked on one open item**
 Date: 2026-07-15
 Branch: `feat/get-file-fn`
+
+## Open item (blocks lens-strategy implementation only)
+
+Real numeric `lens_id` for Kagi's built-in **PDFs** and **Usenet/Archive**
+lenses — user is retrieving them from `kagi.com/settings/lenses`. See
+"Hard constraint" note under Query mode for the full story (an earlier
+slug-based "confirmation" turned out to be a false positive). Everything
+else in this spec is unblocked and independent of this value.
 
 ## Purpose
 
@@ -51,20 +59,45 @@ Kagi auth paths (see below):
     derived from `kind` or each `file(kind, …)` clause. Works identically as
     plain query text on the session-scrape path.
   - `site:archive.org` — inline `site:` operator, belt-and-braces domain scope.
-- **Lens strategies (metered, `KAGI_API_KEY`)**, passed as `lens_id` **by
-  name-slug** (verified live 2026-07-15 — Kagi accepts the lowercase slug, no
-  numeric ID needed):
-  - `pdfs` — PDF files anywhere.
-  - `usenet/archive` — Usenet Archives **and archive.org** non-web collections.
-    No operator equivalent exists for this — Usenet posts aren't single-domain
-    web content, so `site:` can't replicate it. This is the one piece of
-    coverage that requires the metered path.
+- **Lens strategies (metered, `KAGI_API_KEY`)** — `lens_id` for the **PDFs**
+  and **Usenet/Archive** built-in lenses. No operator equivalent exists for
+  Usenet content specifically — Usenet posts aren't single-domain web content,
+  so `site:` can't replicate it. This is the one piece of coverage that
+  requires the metered path.
+
+  > ⚠️ **`lens_id` is numeric, not a slug — this was a correction, not an
+  > initial finding.** An earlier pass live-tested `lens_id: "pdfs"` and
+  > `lens_id: "usenet/archive"` and saw plausible-looking (PDF/archive-skewed)
+  > result sets, and concluded the slugs worked. That was a **false positive**:
+  > a follow-up test with `lens_id: "this-is-not-a-real-lens-xyz"` produced the
+  > *same* unfiltered profile (Amazon, unrelated GitHub repos, YouTube) as the
+  > no-lens baseline — proving Kagi **silently ignores an invalid `lens_id`**
+  > rather than erroring, and the earlier "confirmation" was just the query's
+  > organic PDF/archive.org-heavy phrasing, not real lens filtering. The
+  > official [`kagimcp` server source](https://github.com/kagisearch/kagimcp/blob/main/src/kagimcp/server.py)
+  > documents `lens_id` as accepting only the known numeric built-in IDs
+  > (Academic=2, Forums=1, Programming=15, News360=29, Recipes=120, Small
+  > Web=107 — matching `search.ts`) or a custom numeric ID/shareable URL from
+  > `kagi.com/settings/lenses`. **The real numeric IDs for PDFs and
+  > Usenet/Archive are not in any doc found so far** — pending: the user
+  > retrieving them from their own `kagi.com/settings/lenses`. Until filled
+  > in, do not hardcode a guessed ID.
 
 Cost note: exactly 2 metered calls per `get` (the two lenses), regardless of
 how wide the operator fan-out is — bounded, not scaling with `strategies`/`limit`.
 Fan-out is concurrent (`Promise.all`). Stopping rule is **deterministic**: run
 the requested strategies, merge, stop. No adaptive "keep searching until found"
 loop (unbounded cost).
+
+### Hard constraint: `lens_id` is mutually exclusive with scope args
+
+Per the same `kagimcp` source, the Kagi Search API **rejects** a call that sets
+`lens_id` together with any of `include_domains`/`exclude_domains`/
+`time_relative`/`file_type` — these are two disjoint strategy shapes, never
+combined in one call. `get`'s per-strategy fan-out already satisfies this by
+construction (lens strategies carry only `lens_id`; operator strategies carry
+only `file_type`/domains), but implementation must not "helpfully" merge a
+lens strategy with a file_type filter in the same call.
 
 ### Auth: hybrid `KAGI_SESSION` + bounded `KAGI_API_KEY`
 
