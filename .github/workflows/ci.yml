@@ -167,3 +167,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh pr edit "${{ github.event.pull_request.number }}" --add-label hold
+
+  # Loop 3 (red-rebase): on a failed PR gate, Claude pushes a fix to the PR branch.
+  # Job-chained per SuxOS/.github#260/#263 — the old workflow_run stub structurally
+  # never fired for PR branches, so this chain replaces .github/workflows/claude-autofix.yml.
+  autofix:
+    needs: [check]
+    if: needs.check.result == 'failure' && github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write # OIDC token-exchange for the Claude app
+    uses: SuxOS/.github/.github/workflows/claude-autofix.yml@main
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      head-branch: ${{ github.event.pull_request.head.ref }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+      base-branch: ${{ github.event.pull_request.base.ref }}
+    secrets: inherit
