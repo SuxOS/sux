@@ -69,6 +69,14 @@ the pre-merge snapshot). Any audit-to-issue pipeline should re-check a finding a
 stop re-discovering and re-closing already-fixed issues (#585). A builder that hits one mid-batch
 should drop it as redundant/superseded and say so explicitly, rather than re-implementing the fix.
 
+The same staleness risk exists on the **build side**, not just the audit-to-issue side: several
+`bot/issue-build-*` branches can be cut off near-simultaneous commits to `main` and land in quick
+succession, so a builder's branch point can predate a concurrent build's merge of the very fix
+it's about to (re)implement (#612, #617 — PR #603 had already landed the #612-cited fix by the
+time that build ran). A builder should `git fetch origin main` and re-check whether its target
+issue is already resolved immediately before the final commit/push, not just at branch creation,
+and drop/rebase rather than push a duplicate fix.
+
 ## The workflows
 
 | File | Trigger | Does |
