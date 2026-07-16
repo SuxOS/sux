@@ -145,7 +145,10 @@ export const homedepot: Fn = {
 		if (r.ok) {
 			html = r.body;
 		} else {
-			const u = await unlockerRender(env, { url, timeout_ms: 8000 });
+			// retailRender's worst case (cf + mac both timing out) already spends ~52s of the
+			// 60s FN_DEADLINE_MS, leaving an 8s buffer this rung must stay INSIDE of — 8000ms
+			// left zero margin for connection overhead/JSON parse/extraction (#636).
+			const u = await unlockerRender(env, { url, timeout_ms: 5000 });
 			if (!u.ok) return failWith("blocked", `homedepot: blocked or render failed — ${u.error}`);
 			html = u.body;
 		}
