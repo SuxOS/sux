@@ -323,4 +323,35 @@ describe("store", () => {
 		const resp = await handleObservability(new URL("https://x/s/does-not-exist"), new Request("https://x/s/does-not-exist"), env);
 		expect(resp!.status).toBe(404);
 	});
+
+	it("get by a raw phi/ key is refused — store can't read PHI blobs (#608)", async () => {
+		const env = mkEnv();
+		env.R2._m.set("phi/mychart/patient-1/bundle.json", { bytes: new TextEncoder().encode('{"resourceType":"Bundle"}'), ct: "application/json" });
+		const r = await store.run(env, { op: "get", key: "phi/mychart/patient-1/bundle.json" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/private \(PHI\)/);
+	});
+
+	it("get by a handle that resolves to a phi/ key is also refused (defense-in-depth, #608)", async () => {
+		const env = mkEnv();
+		env.R2._m.set("phi/apple-health/steps", { bytes: new Uint8Array([1, 2, 3]) });
+		// A handle should never point at phi/ (putPhi mints none), but if one somehow does,
+		// the fence on the resolved key still blocks the read.
+		env.OAUTH_KV._m.set("store:11111111-1111-1111-1111-111111111111", JSON.stringify({ key: "phi/apple-health/steps", content_type: "application/octet-stream", size: 3 }));
+		const r = await store.run(env, { op: "get", id: "11111111-1111-1111-1111-111111111111" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/private \(PHI\)/);
+	});
+
+	it("list never enumerates phi/ keys — unprefixed omits them, prefix:'phi/' is empty (#608)", async () => {
+		const env = mkEnv();
+		await store.run(env, { data: "public", force: true }); // a cas/ object
+		env.R2._m.set("phi/mychart/patient-1/bundle.json", { bytes: new Uint8Array([1]) });
+		env.R2._m.set("phi/apple-health/steps", { bytes: new Uint8Array([1]) });
+		const all = j(await store.run(env, { op: "list" }));
+		expect(all.objects.some((o: any) => o.key.startsWith("phi/"))).toBe(false);
+		expect(all.objects.every((o: any) => o.key.startsWith("cas/"))).toBe(true);
+		const phi = j(await store.run(env, { op: "list", prefix: "phi/" }));
+		expect(phi.objects).toHaveLength(0);
+	});
 });

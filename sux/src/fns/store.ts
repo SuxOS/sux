@@ -2,6 +2,7 @@ import { type Fn, fail, ok } from "../registry";
 import { staged } from "../stage";
 import { maybeDecompress } from "./_gzip";
 import { extractStoreId, fromB64, isExpired, putBlob, STORE_KV_PREFIX, storeBase, toB64, oj } from "./_util";
+import { PHI_PREFIX } from "../mychart";
 
 // Object storage in sux's R2. Bytes are content-addressed (key = sha256, so
 // identical content dedupes to one immutable object — Nix-store style). Each put
@@ -98,6 +99,11 @@ export const store: Fn = {
 					return fail("get needs `id` (uuid/url) or `key`.");
 				}
 				if (!r2key) return fail("get needs `id` (uuid/url) or `key`.");
+				// PHI fence: raw FHIR/HealthKit blobs live under phi/ in this same bucket
+				// (mychart putPhi). Every other egress path refuses that prefix (/s/<uuid> in
+				// observability.ts, the kv fns); store's read side must too, or a raw `key`
+				// (or a handle pointing at one) reads PHI straight back into context.
+				if (r2key.startsWith(PHI_PREFIX)) return fail("that key is private (PHI) and cannot be read through store.");
 				const obj = await env.R2.get(r2key);
 				if (!obj) return fail(`No object at key '${r2key}'.`);
 				const type = ct ?? obj.httpMetadata?.contentType ?? "application/octet-stream";
@@ -129,7 +135,10 @@ export const store: Fn = {
 
 			if (op === "list") {
 				const res = await env.R2.list({ prefix: args?.prefix ? String(args.prefix) : undefined, limit: Math.min(1000, Math.max(1, Number(args?.limit) || 100)), cursor: args?.cursor ? String(args.cursor) : undefined });
-				return ok(oj({ objects: res.objects.map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })), truncated: Boolean(res.truncated), cursor: res.cursor }));
+				// Drop any phi/ keys from the listing — the private PHI prefix must never be
+				// enumerable through store, so `list prefix:"phi/"` returns empty and an
+				// unprefixed list omits them (same boundary observability.ts enforces on /s/).
+				return ok(oj({ objects: res.objects.filter((o) => !o.key.startsWith(PHI_PREFIX)).map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })), truncated: Boolean(res.truncated), cursor: res.cursor }));
 			}
 
 			return fail(`Unknown op '${op}'.`);
