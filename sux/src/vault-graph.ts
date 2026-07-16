@@ -69,6 +69,70 @@ export function extractTags(content: string, fm: Record<string, unknown>): strin
 	return [...set];
 }
 
+export type VaultTask = { text: string; done: boolean; line: number; id?: string; due?: string; recur?: string };
+
+/** All `- [ ]`/`- [x]` checkbox tasks in a note, fenced code blocks excluded (a task-shaped
+ * line inside ``` ``` is someone's example, not a real task). Honors the Tasks-plugin-style
+ * trailing `^t-xxx` block id and the emoji shorthand for due (📅 YYYY-MM-DD) and recurrence
+ * (🔁 ...) — enough to answer "overdue today" as an in-memory filter, no live Obsidian. */
+export function extractTasks(content: string): VaultTask[] {
+	const tasks: VaultTask[] = [];
+	let inFence = false;
+	content.split(/\r?\n/).forEach((raw, i) => {
+		if (/^\s*(```|~~~)/.test(raw)) {
+			inFence = !inFence;
+			return;
+		}
+		if (inFence) return;
+		const m = raw.match(/^\s*-\s\[([ xX])\]\s+(.*)$/);
+		if (!m) return;
+		const done = m[1].toLowerCase() === "x";
+		let text = m[2].trim();
+		const idM = text.match(/\^(t-[\w-]+)\s*$/);
+		const id = idM?.[1];
+		if (idM) text = text.slice(0, idM.index).trimEnd();
+		const due = text.match(/📅\s*(\d{4}-\d{2}-\d{2})/)?.[1];
+		const recur = text.match(/🔁\s*([^📅✅⏳🛫➕]+)/)?.[1]?.trim();
+		// Metadata emoji (due/recurrence) describe the task, not its title — strip them
+		// back out of `text` the way Obsidian's Tasks plugin renders the plain description.
+		text = text
+			.replace(/🔁\s*[^📅✅⏳🛫➕]+/, "")
+			.replace(/📅\s*\d{4}-\d{2}-\d{2}/, "")
+			.trim();
+		tasks.push({ text, done, line: i + 1, ...(id ? { id } : {}), ...(due ? { due } : {}), ...(recur ? { recur } : {}) });
+	});
+	return tasks;
+}
+
+const KEYWORD_CAP = 40;
+
+/** First ~300 chars of body (frontmatter + fenced code stripped) — a grep-quality excerpt
+ * for in-memory substring search over the vault index, standing in for GitHub code search
+ * (dead on private repos). */
+export function bodyExcerpt(content: string, maxLen = 300): string {
+	return content
+		.replace(/^---\r?\n[\s\S]*?\r?\n---/, "")
+		.replace(/```[\s\S]*?```/g, "")
+		.trim()
+		.slice(0, maxLen);
+}
+
+/** Up to KEYWORD_CAP distinct lowercased body words (≥3 chars, frontmatter/code excluded) —
+ * a bounded per-note fingerprint so a keyword filter doesn't require scanning full note text,
+ * and doesn't balloon the index blob at 1k-5k notes. */
+export function bodyKeywords(content: string): string[] {
+	const body = content
+		.replace(/^---\r?\n[\s\S]*?\r?\n---/, "")
+		.replace(/```[\s\S]*?```/g, "")
+		.replace(/`[^`]*`/g, "");
+	const set = new Set<string>();
+	for (const m of body.matchAll(/[A-Za-z][A-Za-z0-9'-]{2,}/g)) {
+		set.add(m[0].toLowerCase());
+		if (set.size >= KEYWORD_CAP) break;
+	}
+	return [...set];
+}
+
 /** Does a frontmatter field match a wanted value? Equality, array-membership, or mere presence (no value). */
 export function frontmatterMatches(fm: Record<string, unknown>, field: string, value?: unknown): boolean {
 	if (!(field in fm)) return false;

@@ -6,6 +6,14 @@
 > ten-proposal sprawl." That's the current source of truth; this file is kept for
 > history.
 
+> **Canonical reading order** (2026-07-16, Ledger R8):
+> [`docs/design/north-star.md`](docs/design/north-star.md) (principles) →
+> [`docs/proposals/SUX.md`](docs/proposals/SUX.md) (current thesis, amended by
+> [`pivot-validation-2026-07.md`](docs/design/pivot-validation-2026-07.md)) →
+> [`op-engine-design.md`](docs/superpowers/specs/2026-07-15-suxos-v2-op-engine-design.md)
+> (execution architecture) → this file / [`ROADMAP.md`](docs/proposals/ROADMAP.md)
+> (both historical/parked).
+
 > An edge-hosted, residentially-proxied engine of composable functions (Julia-style
 > generic verbs + multiple dispatch). Any useful transform / query / scrape / proxy
 > is a function. **Kagi is just one function now.** "We basically re-invented the

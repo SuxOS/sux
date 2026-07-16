@@ -3,7 +3,23 @@ import { fail, failWith, ok, type RtEnv, type ToolResult } from "./registry";
 import { ingest } from "./fns/ingest";
 import { obsidian, readGitContents, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
 import { vaultToday } from "./fns/_util";
-import { evalFilter, extractTags, extractWikilinks, type Filter, frontmatterMatches, linkResolvesTo, parseFrontmatter, patchBlockRef, patchFrontmatter, patchHeadingSection, type PatchMode } from "./vault-graph";
+import {
+	bodyExcerpt,
+	bodyKeywords,
+	evalFilter,
+	extractTags,
+	extractTasks,
+	extractWikilinks,
+	type Filter,
+	frontmatterMatches,
+	linkResolvesTo,
+	parseFrontmatter,
+	patchBlockRef,
+	patchFrontmatter,
+	patchHeadingSection,
+	type PatchMode,
+	type VaultTask,
+} from "./vault-graph";
 
 // The vault MCP server — our rolled-own obsidian-web-mcp (prior art:
 // github.com/jimprosser/obsidian-web-mcp), kept on OUR Workers implementation.
@@ -35,7 +51,17 @@ type VaultTool = {
 
 const git = (args: Record<string, unknown>) => ({ ...args, backend: "git" });
 
-type VaultRecord = { path: string; fm: Record<string, unknown>; links: string[]; tags: string[] };
+type VaultRecord = { path: string; fm: Record<string, unknown>; links: string[]; tags: string[]; tasks: VaultTask[]; excerpt: string; keywords: string[] };
+
+const toRecord = (path: string, content: string, fm: Record<string, unknown>): VaultRecord => ({
+	path,
+	fm,
+	links: extractWikilinks(content),
+	tags: extractTags(content, fm),
+	tasks: extractTasks(content),
+	excerpt: bodyExcerpt(content),
+	keywords: bodyKeywords(content),
+});
 
 // The whole-vault derived index: one KV blob of {path, fm, tags, links} for every
 // note, stamped with the HEAD sha it was built at. backlinks/query/tags all read
@@ -70,8 +96,7 @@ async function buildVaultIndex(env: RtEnv, sha: string, cfg: VaultCfg): Promise<
 					return null;
 				}
 				const content = r.content[0].text;
-				const fm = parseFrontmatter(content);
-				return { path, fm, links: extractWikilinks(content), tags: extractTags(content, fm) } as VaultRecord;
+				return toRecord(path, content, parseFrontmatter(content));
 			}),
 		)
 	).filter((x): x is VaultRecord => x !== null);
@@ -117,8 +142,7 @@ async function scanVaultDirect(env: RtEnv, folder: string | undefined, cap: numb
 				const r = await obsidian.run(env, git({ action: "read", path: readPath }));
 				if (r.isError) return null;
 				const content = r.content[0].text;
-				const fm = parseFrontmatter(content);
-				return { path, fm, links: extractWikilinks(content), tags: extractTags(content, fm) } as VaultRecord;
+				return toRecord(path, content, parseFrontmatter(content));
 			}),
 		)
 	).filter((x): x is VaultRecord => x !== null);
@@ -172,9 +196,14 @@ const TOOLS: VaultTool[] = [
 	// through the local mcp-gate wrapper meanwhile.
 	{
 		name: "vault_write",
-		description: "Create or overwrite a note. Every write is a git commit — history is the undo.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path", "content"], properties: { path: { type: "string" }, content: { type: "string", description: "Full markdown body." } } },
-		run: (env, a) => obsidian.run(env, git({ action: "write", path: a?.path, content: a?.content })),
+		description: "Create or overwrite a note. Every write is a git commit — history is the undo. Optional `base_sha` (from a prior read/write) makes a concurrent change since then 409 instead of silently clobbering it.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["path", "content"],
+			properties: { path: { type: "string" }, content: { type: "string", description: "Full markdown body." }, base_sha: { type: "string", description: "Expected current commit sha; a mismatch fails with a 409 instead of overwriting." } },
+		},
+		run: (env, a) => obsidian.run(env, git({ action: "write", path: a?.path, content: a?.content, ...(typeof a?.base_sha === "string" && a.base_sha ? { base_sha: a.base_sha } : {}) })),
 	},
 	{
 		name: "vault_append",
@@ -380,6 +409,60 @@ const TOOLS: VaultTool[] = [
 				for (const r of records) for (const t of r.tags) counts[t] = (counts[t] ?? 0) + 1;
 				const tags = Object.entries(counts).sort((a2, b2) => b2[1] - a2[1]).map(([tag, count]) => ({ tag, count }));
 				return ok(JSON.stringify({ count: tags.length, tags, scanned: records.length, total, truncated }, null, 2));
+			} catch (e) {
+				return fail(String((e as Error)?.message ?? e));
+			}
+		},
+	},
+	{
+		name: "vault_tasks",
+		description:
+			"Checkbox tasks (`- [ ]`/`- [x]`) across the vault, from the KV-cached index — no live Obsidian. Filter by `done`, `overdue` (undone + a 📅 due date before today, vault-local day), or `tag`/`folder` scope. Recognizes the Tasks-plugin shorthand: 📅 due date, 🔁 recurrence, trailing `^t-id`.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				done: { type: "boolean", description: "Filter to done (true) or undone (false) tasks; omit for both." },
+				overdue: { type: "boolean", description: "Only undone tasks whose 📅 due date is before today." },
+				tag: { type: "string", description: "Only notes carrying this tag." },
+				folder: { type: "string" },
+				cap: { type: "integer", minimum: 1, maximum: 2000 },
+			},
+		},
+		run: async (env, a) => {
+			try {
+				const { records, total, truncated } = await scanVault(env, a?.folder ? String(a.folder) : undefined, clampCap(a?.cap));
+				const today = vaultToday(env.VAULT_TZ);
+				const wantDone = typeof a?.done === "boolean" ? a.done : undefined;
+				const wantOverdue = a?.overdue === true;
+				const wantTag = a?.tag ? String(a.tag).replace(/^#/, "").toLowerCase() : undefined;
+				const tasks: Array<{ path: string } & VaultTask> = [];
+				for (const r of records) {
+					if (wantTag && !r.tags.some((t) => t.toLowerCase() === wantTag)) continue;
+					for (const t of r.tasks) {
+						if (wantDone !== undefined && t.done !== wantDone) continue;
+						if (wantOverdue && (t.done || !t.due || t.due >= today)) continue;
+						tasks.push({ path: r.path, ...t });
+					}
+				}
+				return ok(JSON.stringify({ count: tasks.length, tasks, scanned: records.length, total, truncated }, null, 2));
+			} catch (e) {
+				return fail(String((e as Error)?.message ?? e));
+			}
+		},
+	},
+	{
+		name: "vault_search_body",
+		description:
+			"Grep-quality body search over the vault, from the KV-cached index — case-insensitive substring match against each note's excerpt/keywords (GitHub code search is dead on private repos). NOT full-text: only the first ~300 chars of each note's body are indexed, so a hit deep in a long note can be missed — read the note to confirm.",
+		inputSchema: { type: "object", additionalProperties: false, required: ["q"], properties: { q: { type: "string", description: "Substring/word to search for." }, folder: { type: "string" }, cap: { type: "integer", minimum: 1, maximum: 2000 } } },
+		run: async (env, a) => {
+			const q = typeof a?.q === "string" ? a.q.trim().toLowerCase() : "";
+			if (!q) return failWith("bad_input", "vault_search_body requires a non-empty `q`.");
+			try {
+				const { records, total, truncated } = await scanVault(env, a?.folder ? String(a.folder) : undefined, clampCap(a?.cap));
+				const hits = records.filter((r) => r.excerpt.toLowerCase().includes(q) || r.keywords.includes(q)).map((r) => ({ path: r.path, excerpt: r.excerpt }));
+				return ok(JSON.stringify({ q, count: hits.length, hits, scanned: records.length, total, truncated }, null, 2));
 			} catch (e) {
 				return fail(String((e as Error)?.message ?? e));
 			}

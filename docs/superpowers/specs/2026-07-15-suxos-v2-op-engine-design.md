@@ -5,6 +5,14 @@
 **Status:** Draft for review. Terminal state of a `/brainstorming` pass; next step is `writing-plans`.
 **Relates to:** `2026-07-15-get-file-fn-design.md`, the fetch-family redesign (`feat/fetch-family-redesign`), and the `SuxOS/suxlib` HOLD note in `docs/knowledge/master-plan.md` (this spec lifts that HOLD).
 
+> **Status: execution architecture** — third in the canonical vision-corpus
+> reading order (2026-07-16, Ledger R8):
+> [`north-star.md`](../../design/north-star.md) (principles) →
+> [`SUX.md`](../../proposals/SUX.md) (product thesis, amended by
+> [`pivot-validation-2026-07.md`](../../design/pivot-validation-2026-07.md)) →
+> this doc → `PLAN.md` / [`ROADMAP.md`](../../proposals/ROADMAP.md)
+> (historical/parked).
+
 ---
 
 ## 0. One-paragraph summary

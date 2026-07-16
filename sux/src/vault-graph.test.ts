@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evalFilter, extractTags, extractWikilinks, frontmatterMatches, linkResolvesTo, noteBasename, parseFrontmatter, patchBlockRef, patchFrontmatter, patchHeadingSection } from "./vault-graph";
+import { bodyExcerpt, bodyKeywords, evalFilter, extractTags, extractTasks, extractWikilinks, frontmatterMatches, linkResolvesTo, noteBasename, parseFrontmatter, patchBlockRef, patchFrontmatter, patchHeadingSection } from "./vault-graph";
 
 describe("vault-graph pure layer (§4)", () => {
 	it("extractWikilinks strips alias/heading/block refs", () => {
@@ -125,6 +125,35 @@ describe("vault-graph pure layer (§4)", () => {
 		const r = patchBlockRef("line one ^id1\nline two", "id1", "replace", "rewritten");
 		expect(r.content).toBe("rewritten ^id1\nline two");
 		expect(() => patchBlockRef("no anchor here", "id1", "replace", "x")).toThrow(/not found/);
+	});
+
+	it("extractTasks parses checkbox lines, skips fenced code, honors ^t- ids and 📅/🔁 metadata", () => {
+		const content = ["- [ ] call plumber 📅 2026-07-20 ^t-abc123", "- [x] done thing", "```", "- [ ] not a real task", "```", "- [ ] water plants 🔁 every week 📅 2026-08-01", "not a task line"].join("\n");
+		const tasks = extractTasks(content);
+		expect(tasks).toHaveLength(3); // fenced task line excluded
+		expect(tasks[0]).toMatchObject({ text: "call plumber", done: false, id: "t-abc123", due: "2026-07-20", line: 1 });
+		expect(tasks[1]).toMatchObject({ text: "done thing", done: true, line: 2 });
+		expect(tasks[2]).toMatchObject({ text: "water plants", done: false, due: "2026-08-01", recur: "every week" });
+	});
+
+	it("extractTasks returns [] for a note with no checkboxes", () => {
+		expect(extractTasks("# Note\njust prose, no tasks here")).toEqual([]);
+	});
+
+	it("bodyExcerpt strips frontmatter + fenced code and bounds length", () => {
+		const content = "---\ntitle: X\n---\n# Heading\n```\ncode block\n```\nThe real body text.";
+		expect(bodyExcerpt(content)).toBe("# Heading\n\nThe real body text.");
+		expect(bodyExcerpt("a".repeat(500), 10)).toHaveLength(10);
+	});
+
+	it("bodyKeywords lowercases distinct words, excludes frontmatter/code, and caps count", () => {
+		const kw = bodyKeywords("---\ntitle: Ignored\n---\nHello World hello `inline code` and ```\nfenced\n```");
+		expect(kw).toContain("hello");
+		expect(kw).toContain("world");
+		expect(kw).not.toContain("ignored");
+		expect(kw).not.toContain("inline");
+		expect(kw).not.toContain("fenced");
+		expect(new Set(kw).size).toBe(kw.length); // distinct
 	});
 
 });

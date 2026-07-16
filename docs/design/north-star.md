@@ -4,6 +4,14 @@ status: living
 audience: Colin + Claude — the anchor every design decision serves
 ---
 
+> **Canonical reading order across the vision corpus** (2026-07-16, Ledger R8):
+> this doc (principles, living) → [`docs/proposals/SUX.md`](../proposals/SUX.md)
+> (current product thesis, as amended by
+> [`pivot-validation-2026-07.md`](pivot-validation-2026-07.md)) →
+> [`op-engine-design.md`](../superpowers/specs/2026-07-15-suxos-v2-op-engine-design.md)
+> (execution architecture) → `PLAN.md` /
+> [`docs/proposals/ROADMAP.md`](../proposals/ROADMAP.md) (historical/parked).
+
 # North star
 
 sux is a **personal AI Swiss-army-knife you weave your life through** — a living, breathing
