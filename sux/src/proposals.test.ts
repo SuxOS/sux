@@ -72,4 +72,16 @@ describe("proposal kernel", () => {
 	it("approve on an unknown/expired id throws", async () => {
 		await expect(approveProposal(env(), "nope")).rejects.toThrow(/no proposal/);
 	});
+
+	it("concurrent approvals of the same proposal execute the payload only once", async () => {
+		const e = env();
+		const p = await propose(e, { ...base, payload: { fn: "obsidian", args: { action: "append", path: "x.md" } } });
+		const { FUNCTIONS } = await import("./fns");
+		const obsidianRun = FUNCTIONS.find((f: any) => f.name === "obsidian")!.run as ReturnType<typeof vi.fn>;
+		obsidianRun.mockClear();
+		const [a, b] = await Promise.all([approveProposal(e, p.id), approveProposal(e, p.id)]);
+		expect(a.status).toBe("committed");
+		expect(b.status).toBe("committed");
+		expect(obsidianRun).toHaveBeenCalledTimes(1);
+	});
 });
