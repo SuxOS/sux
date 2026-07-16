@@ -5,6 +5,7 @@
 // centralizes the parse + decompress + cap + compress plumbing so those modules
 // only own their element type, key, and cap (and any domain-specific ordering).
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
+import { keyedSerialize } from "../keyed-serialize";
 import type { RtEnv } from "../registry";
 
 // A stored blob is only ever a JSON array we wrote; anything else (missing key,
@@ -32,6 +33,15 @@ export type CappedKvLog<T> = {
 // push a `put` over the limit and start throwing on every subsequent append.
 const MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 
+// push() is a load-then-save read-modify-write with no CAS; two concurrent pushes on
+// the same key (e.g. a cron tick overlapping a webhook-triggered tick) would otherwise
+// have the later save silently clobber the earlier one's just-appended entries. Keying
+// this per-isolate serialization map on the KV key (not per-log-instance) means every
+// push() on the same key — across however many cappedKvLog(...) call sites reference
+// it — chains onto the same tail, matching the fix keyed-serialize.ts already applies
+// by hand in _feedback.ts / _mail_triage_log.ts, but as a default every caller gets.
+const pushChains = new Map<string, Promise<unknown>>();
+
 export function cappedKvLog<T>(env: RtEnv, key: string, cap: number): CappedKvLog<T> {
 	const load = async (): Promise<T[]> => safeParse<T>(await maybeDecompressString((await env.OAUTH_KV.get(key)) ?? ""));
 	const save = async (items: T[]): Promise<void> => {
@@ -39,11 +49,12 @@ export function cappedKvLog<T>(env: RtEnv, key: string, cap: number): CappedKvLo
 		while (items.length > 1 && new TextEncoder().encode(JSON.stringify(items)).length > MAX_TOTAL_BYTES) items.length--;
 		await env.OAUTH_KV.put(key, await maybeCompressString(JSON.stringify(items)));
 	};
-	const push = async (...entries: T[]): Promise<T[]> => {
-		const items = await load();
-		items.unshift(...entries);
-		await save(items);
-		return items;
-	};
+	const push = async (...entries: T[]): Promise<T[]> =>
+		keyedSerialize(pushChains, key, async () => {
+			const items = await load();
+			items.unshift(...entries);
+			await save(items);
+			return items;
+		});
 	return { load, save, push };
 }
