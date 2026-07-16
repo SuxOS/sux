@@ -2,7 +2,7 @@ import type OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { isAllowedLogin } from "./utils";
 import { type CacheMeta, cacheKey, deferCacheWrite, type JsonRpc, parseJsonRpc, sseResponse } from "./mcp-util";
 import { unpackFromCache } from "./cache-codec";
-import { findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall } from "./registry";
+import { checkSchema, findFn, frontToolList, type RtEnv, type ToolResult, unwrapFnCall } from "./registry";
 import { MCP_UI_MIME } from "./fns/_ui";
 import { buildManifest, CONNECTOR_PATHS } from "./connectors";
 import { singleFlight } from "./single-flight";
@@ -24,6 +24,7 @@ import { handleRecovery } from "./recovery";
 import { handleAppleHealth, handleMychartRoutes, refreshMychartToken } from "./mychart";
 import { normalizeArgs, normalizeText } from "./normalize";
 import { cancelTask, createTask, getTask, isTerminal, listTasks, toPublicTask, toTaskResult, waitForTerminal } from "./tasks";
+import { errMsg } from "./fns/_util";
 
 type Props = { login: string; name: string; email: string; accessToken: string };
 
@@ -292,6 +293,8 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			const argErr = checkArgs(rawArgs, MAX_ARG_BYTES, MAX_ARG_DEPTH);
 			if (argErr) return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Tool '${name}' rejected: ${argErr}` }], isError: true } });
 			const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
+			const schemaErr = checkSchema(fn.inputSchema, (args ?? {}) as Record<string, unknown>);
+			if (schemaErr) return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `[bad_input] ${schemaErr}` }], isError: true } });
 			const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8) } };
 			const taskField = rpc.params.task as { ttl?: unknown } | null;
 			const rec = createTask(env, ctx, name, taskField && typeof taskField === "object" ? taskField.ttl : undefined, async () => {
@@ -357,6 +360,17 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// (hash/encode/compress/qr/kv/…) opt out via `raw` so their bytes are untouched.
 		const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
 
+		// Schema guard: enforce the leaf's own inputSchema (required/additionalProperties)
+		// centrally, once, instead of leaving every fn's run() to hand-roll the same check
+		// — see #538 (a misnamed param silently hashed "" instead of erroring).
+		const schemaErr = checkSchema(fn.inputSchema, (args ?? {}) as Record<string, unknown>);
+		if (schemaErr) {
+			const rejectEvent = { tool: name, ms: 0, error: true, err: schemaErr };
+			recordCall(env, ctx, rejectEvent);
+			shipToLoki(env, ctx, rejectEvent);
+			return sseResponse({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `[bad_input] ${schemaErr}` }], isError: true } });
+		}
+
 		const started = Date.now();
 		// Short per-call correlation id, threaded onto env so every downstream
 		// smartFetch of this tools/call can tag its egress-audit Loki line with the
@@ -395,7 +409,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 						const s = await llm(rtEnv, "Summarize this tool result as concisely as possible while preserving key facts, names, numbers, dates, and URLs. Output only the summary — no preamble.", joined.slice(0, 24_000), 512);
 						if (s.trim()) out = { content: [{ type: "text", text: s.trim() }], ...(out.noCache ? { noCache: true } : {}) };
 					} catch (e) {
-						console.warn(`sux summarize failed for '${name}', returning raw: ${String((e as Error).message ?? e)}`);
+						console.warn(`sux summarize failed for '${name}', returning raw: ${errMsg(e)}`);
 					}
 				}
 			}
@@ -452,14 +466,14 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 					// isError/noCache results are never cached, so a stale value is always a
 					// success — "never serve stale for noCache/isError" holds by construction.
 					const stale = typeof meta?.softExpiresAt === "number" && Date.now() >= meta.softExpiresAt;
-					if (stale) ctx.waitUntil(computeAndCache().catch((e) => console.warn(`sux stale refresh failed for '${name}': ${String((e as Error).message ?? e)}`)));
+					if (stale) ctx.waitUntil(computeAndCache().catch((e) => console.warn(`sux stale refresh failed for '${name}': ${errMsg(e)}`)));
 					const hitEvent = { tool: name, ms: Date.now() - started, cache: true, ...(stale ? { stale: true } : {}) };
 					recordCall(env, ctx, hitEvent);
 					shipToLoki(env, ctx, hitEvent);
 					return sseResponse({ jsonrpc: "2.0", id, result: JSON.parse(unpackFromCache(raw)) });
 				}
 			} catch (e) {
-				console.warn(`sux cache read failed for '${name}', recomputing: ${String((e as Error).message ?? e)}`);
+				console.warn(`sux cache read failed for '${name}', recomputing: ${errMsg(e)}`);
 			}
 		}
 
@@ -468,7 +482,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		try {
 			result = await computeAndCache();
 		} catch (e) {
-			err = String((e as Error).message ?? e);
+			err = errMsg(e);
 			console.error(`sux tool '${name}' threw: ${(e as Error)?.stack ?? err}`);
 			result = { content: [{ type: "text" as const, text: `Tool '${name}' failed: ${err}` }], isError: true };
 		}
@@ -510,7 +524,7 @@ export const rtServer = {
 			try {
 				allowed = (await env.MCP_RATE_LIMITER.limit({ key: login! })).success;
 			} catch (e) {
-				console.warn(`rate limiter threw, failing open: ${String((e as Error)?.message ?? e)}`);
+				console.warn(`rate limiter threw, failing open: ${errMsg(e)}`);
 			}
 			if (!allowed) return new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "content-type": "application/json", "retry-after": "10" } });
 		}
@@ -707,7 +721,7 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 		// and a push error is swallowed so it never fails the tick.
 		await shipMetricsSnapshot(env, ctx);
 	} catch (e) {
-		console.warn(`sux scheduled maintenance: metrics snapshot push skipped: ${String((e as Error)?.message ?? e)}`);
+		console.warn(`sux scheduled maintenance: metrics snapshot push skipped: ${errMsg(e)}`);
 	}
 }
 
@@ -735,7 +749,7 @@ function asOAuthError(e: unknown): OAuthErrorLike | null {
 // message means an internal error can't accidentally echo its own message just
 // because it happens to contain a common word like "state" or "invalid" (#569).
 export function oauthErrorResponse(e: unknown): Response {
-	console.error(`oauth wrapper caught: ${String((e as Error)?.message ?? e)}`);
+	console.error(`oauth wrapper caught: ${errMsg(e)}`);
 	const oauthErr = asOAuthError(e);
 	if (oauthErr) {
 		return new Response(JSON.stringify({ error: oauthErr.code, error_description: oauthErr.description }), {
@@ -766,7 +780,7 @@ export default {
 		// maintenance suite + self-improve (maintenanceTick pushes a snapshot too, so the
 		// daily run is also covered).
 		if (event.cron === METRICS_CRON) {
-			ctx.waitUntil(shipMetricsSnapshot(env, ctx).catch((e) => console.warn(`sux scheduled metrics: snapshot push skipped: ${String((e as Error)?.message ?? e)}`)));
+			ctx.waitUntil(shipMetricsSnapshot(env, ctx).catch((e) => console.warn(`sux scheduled metrics: snapshot push skipped: ${errMsg(e)}`)));
 			ctx.waitUntil(runSubJob(env, "mail_triage", () => mailTriageTick(env)));
 			return;
 		}
@@ -827,7 +841,7 @@ export default {
 					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
 					return new Response(JSON.stringify({ ok: true, job, result: out }, null, 2), { headers: { "content-type": "application/json" } });
 				} catch (e) {
-					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });
+					return new Response(JSON.stringify({ error: errMsg(e) }), { status: 500, headers: { "content-type": "application/json" } });
 				}
 			}
 		}

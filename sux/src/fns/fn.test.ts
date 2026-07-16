@@ -51,7 +51,17 @@ describe("fnEscape.run", () => {
 
 	it("defaults omitted args to an empty object (no-arg leaf shape)", async () => {
 		const r = await fnEscape.run(env, { name: "hash" });
-		// hash with no text hashes the empty string — same digest, proving inner={} was passed.
-		expect(r.content[0].text).toContain("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+		// hash requires `text`; omitted args become {} (not undefined), so the schema
+		// guard reports it missing rather than throwing on a missing inner object (#538).
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+		expect(r.content[0].text).toContain("missing required field `text`");
+	});
+
+	it("rejects a misnamed param instead of silently defaulting (#538)", async () => {
+		const r = await fnEscape.run(env, { name: "hash", args: { data: "hello world", algo: "sha256" } });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+		expect(r.content[0].text).toContain("missing required field `text`");
 	});
 });

@@ -515,6 +515,33 @@ export function findFn(fns: Fn[], name: string): Fn | undefined {
 }
 
 /**
+ * Minimal JSON-Schema enforcement for a leaf's `inputSchema`: checks `required`
+ * and `additionalProperties: false`, the two guarantees every schema declares but
+ * that dispatch never actually verified — each fn's `run()` was left to hand-roll
+ * its own guard, and `hash.ts` didn't, so a misnamed param (`data` instead of
+ * `text`) silently hashed `""` instead of erroring (#538). Returns a human-
+ * readable reason for the first violation, or null when `args` satisfies the
+ * schema. Deliberately shallow — no `type`/`enum`/nested-shape checking, just
+ * presence of required top-level keys and absence of undeclared ones.
+ */
+export function checkSchema(schema: unknown, args: Record<string, unknown>): string | null {
+	if (!schema || typeof schema !== "object") return null;
+	const s = schema as { required?: unknown; additionalProperties?: unknown; properties?: unknown };
+	if (Array.isArray(s.required)) {
+		for (const key of s.required) {
+			if (typeof key === "string" && !(key in args)) return `missing required field \`${key}\`.`;
+		}
+	}
+	if (s.additionalProperties === false && s.properties && typeof s.properties === "object") {
+		const allowed = new Set(Object.keys(s.properties as Record<string, unknown>));
+		for (const key of Object.keys(args)) {
+			if (!allowed.has(key)) return `unexpected property \`${key}\`.`;
+		}
+	}
+	return null;
+}
+
+/**
  * Resolve an `fn` escape call to the real leaf it targets. Returns `{name, args}`
  * of the underlying leaf when `params` is `fn({name, args})` and the inner name
  * resolves to a registered leaf (not `fn` itself); returns null otherwise (a direct

@@ -1,5 +1,5 @@
 import { normalizeText } from "../normalize";
-import { failWith, type Fn, findFn } from "../registry";
+import { checkSchema, failWith, type Fn, findFn } from "../registry";
 import { FUNCTIONS } from "./index";
 
 // The ESCAPE HATCH. The front-door lists only the front verbs (see registry
@@ -41,6 +41,8 @@ export const fnEscape: Fn = {
 		if (!leaf) return failWith("not_found", `Unknown tool "${target}". Call sux() for the map of available leaves.`);
 		const inner = args?.args ?? {};
 		if (inner === null || typeof inner !== "object" || Array.isArray(inner)) return failWith("bad_input", "`args` must be an object (the leaf's own arguments).");
+		const schemaErr = checkSchema(leaf.inputSchema, inner as Record<string, unknown>);
+		if (schemaErr) return failWith("bad_input", schemaErr);
 		return leaf.run(env, inner);
 	},
 };
