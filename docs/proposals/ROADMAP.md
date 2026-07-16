@@ -8,6 +8,13 @@ tags: [sux, meta, meta]
 updated: 2026-07-09
 ---
 
+> **Status: parked** (re-triggers stand — see the summary above). Canonical
+> reading order (2026-07-16, Ledger R8): [`north-star.md`](../design/north-star.md)
+> (principles) → [`SUX.md`](SUX.md) (current thesis, amended by
+> [`pivot-validation-2026-07.md`](../design/pivot-validation-2026-07.md)) →
+> [`op-engine-design.md`](../superpowers/specs/2026-07-15-suxos-v2-op-engine-design.md)
+> (execution architecture) → `PLAN.md` / this file (historical/parked).
+
 # sux build program — roadmap
 
 Seven design proposals (this directory) form one coherent build program, not seven independent features. They share substrate modules; the ownership and build order below are what keep them from diverging. This file is the coherence anchor — when two docs specify the same shared module, this file names the owner and the frozen interface.

@@ -37,6 +37,8 @@ describe("vault MCP tools", () => {
 			"vault_query",
 			"vault_patch",
 			"vault_tags",
+			"vault_tasks",
+			"vault_search_body",
 		]);
 		expect(names).not.toContain("vault_search"); // live-dependent — deferred to the vpc phase
 		for (const t of VAULT_TOOLS) expect(t.inputSchema).toBeDefined();
@@ -73,6 +75,49 @@ describe("vault MCP tools", () => {
 
 		const t = parse(await tool("vault_tags").run(ENV, {}));
 		expect(t.tags.map((x: any) => x.tag).sort()).toEqual(["idea", "project"]);
+	});
+
+	it("vault_tasks filters checkbox tasks by done/overdue, honoring 📅/🔁/^t- (GO condition 1a)", async () => {
+		const notes: Record<string, string> = {
+			"Daily/a.md": "- [ ] call plumber 📅 2020-01-01 ^t-abc\n- [x] done thing\n- [ ] no due date",
+			"Daily/b.md": "```\n- [ ] not a real task (fenced)\n```\n- [ ] water plants 🔁 every week 📅 2999-01-01",
+		};
+		routes.handler = (url) => {
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "s1" }), { status: 200 });
+		};
+
+		const all = parse(await tool("vault_tasks").run(ENV, {}));
+		expect(all.count).toBe(4); // fenced line excluded
+
+		const overdue = parse(await tool("vault_tasks").run(ENV, { overdue: true }));
+		expect(overdue.tasks).toEqual([expect.objectContaining({ path: "Daily/a.md", text: "call plumber", done: false, id: "t-abc", due: "2020-01-01" })]);
+
+		const done = parse(await tool("vault_tasks").run(ENV, { done: true }));
+		expect(done.tasks.map((t: any) => t.text)).toEqual(["done thing"]);
+
+		const recurring = parse(await tool("vault_tasks").run(ENV, { overdue: false, done: false }));
+		expect(recurring.tasks.find((t: any) => t.text.includes("water plants"))).toMatchObject({ recur: "every week", due: "2999-01-01" });
+	});
+
+	it("vault_search_body grep-quality-searches the indexed excerpt/keywords", async () => {
+		const notes: Record<string, string> = {
+			"Notes/a.md": "---\nstatus: draft\n---\nThe quarterly roadmap review happens Tuesday.",
+			"Notes/b.md": "unrelated note about groceries",
+		};
+		routes.handler = (url) => {
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
+			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
+			const path = m ? decodeURIComponent(m[1]) : "";
+			return new Response(JSON.stringify({ content: b64(notes[path]), sha: "s1" }), { status: 200 });
+		};
+		const r = parse(await tool("vault_search_body").run(ENV, { q: "roadmap" }));
+		expect(r.hits.map((h: any) => h.path)).toEqual(["Notes/a.md"]);
+
+		const empty = await tool("vault_search_body").run(ENV, {});
+		expect(empty.isError).toBe(true);
 	});
 
 	it("scanVault serves the HEAD-keyed KV index — ~N note reads collapse to 1, rebuilt only on HEAD change", async () => {

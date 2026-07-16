@@ -179,6 +179,16 @@ export async function readGitContents(env: any, cfg: VaultCfg, full: string): Pr
 	return { status: cur.status, sha: cur.json?.sha, body };
 }
 
+// Bounded read-modify-write retry for append/edit: a 409 means a concurrent writer
+// landed between our read and our PUT, not a real conflict for these two ops (append
+// merges onto whatever's current; edit's `find` still applies against the fresh body
+// in the common case) — so re-read and retry instead of surfacing a hard fail. `write`
+// deliberately does NOT retry: it has no prior content to reconcile against, so a 409
+// there is a genuine "you meant to overwrite something else" signal (base_sha).
+const RETRY_ATTEMPTS = 3;
+const RETRY_BASE_MS = 40;
+const retryDelay = (attempt: number): number => Math.round(RETRY_BASE_MS * 2 ** attempt * (0.5 + Math.random()));
+
 // Surgical find/replace: the match must be unique unless all=true, so an edit
 // can never land somewhere unintended — task ops flip exactly the checkbox they
 // mean to, and a note is never reprinted wholesale. The function replacer keeps
@@ -352,6 +362,7 @@ export const obsidian: Fn = {
 			path: { type: "string", description: "Note path within the vault (read/append/write/edit/delete; a folder filter for list)." },
 			query: { type: "string", description: "Search query (action=search)." },
 			content: { type: "string", description: "Markdown content (action=append/write)." },
+			base_sha: { type: "string", description: "action=write: expected current commit sha (from a prior read/write). A mismatch 409s instead of silently overwriting; append/edit already do this via their own read." },
 			find: { type: "string", description: "Exact text to replace (action=edit); must match exactly once unless `all` is set." },
 			replace: { type: "string", description: "Replacement text (action=edit; empty string deletes the match)." },
 			all: { type: "boolean", description: "Replace every occurrence of `find` (action=edit)." },
@@ -437,26 +448,38 @@ export const obsidian: Fn = {
 				if (!p) return fail("action=append requires a `path`.");
 				if (!content) return fail("action=append requires `content`.");
 				const full = inVault(p);
-				// Read current (for the sha + existing body); 404 → create fresh. Goes
-				// through readGitContents so a >1MB note's body isn't seen as empty and
-				// destroyed by the merge.
-				const cur = await readGitContents(env, cfg, full);
-				if (cur.error) return fail(cur.error);
-				const existing = cur.body;
-				const sha = cur.status === 200 ? cur.sha : undefined;
-				const merged = existing ? `${existing.replace(/\n+$/, "")}\n\n${content}\n` : `${content}\n`;
-				const body = JSON.stringify({ message: `sux: append to ${p}`, content: toB64(new TextEncoder().encode(merged)), branch, ...(sha ? { sha } : {}) });
-				const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
-				if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (append needs a GITHUB_TOKEN with write access).`);
-				await noteWritten(env, cfg, p, merged, put.json?.commit?.sha);
-				return ok(oj({ ok: true, path: p, bytes: merged.length, commit: put.json?.commit?.sha }));
+				// Read-modify-write, retried on a 409: a concurrent writer landed between our
+				// read and our PUT. append is trivially retryable (it re-reads the merge base
+				// each attempt), so this self-heals instead of hard-failing (GO condition 2).
+				for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+					if (attempt > 0) await new Promise((r) => setTimeout(r, retryDelay(attempt - 1)));
+					// Goes through readGitContents so a >1MB note's body isn't seen as empty
+					// and destroyed by the merge.
+					const cur = await readGitContents(env, cfg, full);
+					if (cur.error) return fail(cur.error);
+					const existing = cur.body;
+					const sha = cur.status === 200 ? cur.sha : undefined;
+					const merged = existing ? `${existing.replace(/\n+$/, "")}\n\n${content}\n` : `${content}\n`;
+					const body = JSON.stringify({ message: `sux: append to ${p}`, content: toB64(new TextEncoder().encode(merged)), branch, ...(sha ? { sha } : {}) });
+					const put = await ghJson(env, `${GH}/repos/${repo}/contents/${encodeURIComponent(full)}`, { method: "PUT", body });
+					if (put.status === 409) continue;
+					if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (append needs a GITHUB_TOKEN with write access).`);
+					await noteWritten(env, cfg, p, merged, put.json?.commit?.sha);
+					return ok(oj({ ok: true, path: p, bytes: merged.length, commit: put.json?.commit?.sha }));
+				}
+				return fail(`append to ${p} lost the race to a concurrent writer ${RETRY_ATTEMPTS} times in a row — retry once more.`);
 			}
 			if (action === "write") {
 				const p = String(args?.path ?? "").trim();
 				const content = String(args?.content ?? "");
 				if (!p) return fail("action=write requires a `path`.");
 				if (!content) return fail("action=write requires `content`.");
-				const r = await vaultPut(env, cfg, p, content, `sux: write ${p}`);
+				// base_sha is opt-in optimistic concurrency: a caller that threads it wants
+				// a concurrent change since their prior read/write to 409, not clobber it.
+				// Omitting it keeps today's last-write-wins behavior (no prior content to
+				// reconcile against, so there's nothing to retry here — unlike append/edit).
+				const baseSha = typeof args?.base_sha === "string" && args.base_sha ? args.base_sha : undefined;
+				const r = await vaultPut(env, cfg, p, content, `sux: write ${p}`, baseSha !== undefined ? { sha: baseSha } : undefined);
 				if (!r.ok) return fail(r.error);
 				return ok(oj({ ok: true, path: p, bytes: content.length, created: r.created, commit: r.commit }));
 			}
@@ -466,16 +489,22 @@ export const obsidian: Fn = {
 				if (!p) return fail("action=edit requires a `path`.");
 				if (!find) return fail("action=edit requires `find` (the exact text to replace).");
 				const full = inVault(p);
-				const cur = await readGitContents(env, cfg, full);
-				if (cur.status === 404) return fail(`Note not found: ${p}`);
-				if (cur.error) return fail(cur.error);
-				const edited = applyEdit(cur.body, find, String(args?.replace ?? ""), args?.all === true);
-				if ("error" in edited) return fail(`${edited.error} in ${p}`);
-				// PUT with the READ-TIME sha (optimistic concurrency): a concurrent write
-				// since this read yields a 409 "note changed" instead of a silent clobber.
-				const w = await vaultPut(env, cfg, p, edited.text, `sux: edit ${p}`, { sha: cur.sha });
-				if (!w.ok) return fail(w.error);
-				return ok(oj({ ok: true, path: p, replaced: edited.count, commit: w.commit }));
+				// Read-modify-write, retried on a 409 (GO condition 2): re-read + reapply
+				// `find`/`replace` against the fresh body each attempt, so a concurrent write
+				// self-heals instead of hard-failing. PUTs the READ-TIME sha each try —
+				// optimistic concurrency, not a re-fetched HEAD that would defeat it.
+				for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+					if (attempt > 0) await new Promise((r) => setTimeout(r, retryDelay(attempt - 1)));
+					const cur = await readGitContents(env, cfg, full);
+					if (cur.status === 404) return fail(`Note not found: ${p}`);
+					if (cur.error) return fail(cur.error);
+					const edited = applyEdit(cur.body, find, String(args?.replace ?? ""), args?.all === true);
+					if ("error" in edited) return fail(`${edited.error} in ${p}`);
+					const w = await vaultPut(env, cfg, p, edited.text, `sux: edit ${p}`, { sha: cur.sha });
+					if (w.ok) return ok(oj({ ok: true, path: p, replaced: edited.count, commit: w.commit }));
+					if (!w.conflict) return fail(w.error);
+				}
+				return fail(`edit of ${p} lost the race to a concurrent writer ${RETRY_ATTEMPTS} times in a row — retry once more.`);
 			}
 			if (action === "delete") {
 				const p = String(args?.path ?? "").trim();

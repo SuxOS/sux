@@ -115,6 +115,39 @@ describe("obsidian (git backend)", () => {
 		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("first\n");
 	});
 
+	it("append retries a 409 (bounded, jittered), re-reading the merge base each attempt", async () => {
+		let reads = 0;
+		let puts = 0;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				puts++;
+				const sha = JSON.parse(init.body).sha;
+				if (sha === "abc") return new Response(JSON.stringify({ message: "does not match" }), { status: 409 });
+				return new Response(JSON.stringify({ commit: { sha: "def" } }), { status: 200 });
+			}
+			reads++;
+			return new Response(JSON.stringify({ content: b64("old"), sha: reads === 1 ? "abc" : "abc2" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "append", path: "log.md", content: "new line" });
+		expect(r.isError).toBeFalsy();
+		expect(puts).toBe(2);
+	});
+
+	it("append surfaces a clear failure after exhausting retries on a persistent 409", async () => {
+		let puts = 0;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				puts++;
+				return new Response(JSON.stringify({ message: "does not match" }), { status: 409 });
+			}
+			return new Response(JSON.stringify({ content: b64("old"), sha: "abc" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "append", path: "log.md", content: "new line" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/lost the race/);
+		expect(puts).toBe(3);
+	});
+
 	it("writes (overwrites) a note, passing the existing sha", async () => {
 		let putBody: any;
 		routes.handler = (url, init) => {
@@ -128,6 +161,42 @@ describe("obsidian (git backend)", () => {
 		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, created: false, commit: "c1" });
 		expect(putBody.sha).toBe("s1");
 		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("fresh body");
+	});
+
+	it("write with base_sha PUTs it directly (no lookup) instead of the fetched-HEAD sha", async () => {
+		let putBody: any;
+		let getCalls = 0;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				putBody = JSON.parse(init.body);
+				return new Response(JSON.stringify({ commit: { sha: "c2" } }), { status: 200 });
+			}
+			getCalls++;
+			return new Response(JSON.stringify({ content: b64("old body"), sha: "current-head" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "write", path: "n.md", content: "fresh body", base_sha: "caller-known-sha" });
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, commit: "c2" });
+		expect(putBody.sha).toBe("caller-known-sha");
+		expect(getCalls).toBe(0); // opts.sha short-circuits the existing-sha lookup
+	});
+
+	it("write with a stale base_sha 409s instead of silently clobbering (GO condition 2)", async () => {
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") return new Response(JSON.stringify({ message: "does not match" }), { status: 409 });
+			return new Response(JSON.stringify({ content: b64("old body"), sha: "current-head" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "write", path: "n.md", content: "fresh body", base_sha: "stale-sha" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/changed since read/);
+	});
+
+	it("write without base_sha keeps today's last-write-wins behavior (no opt-in, no 409)", async () => {
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") return new Response(JSON.stringify({ commit: { sha: "c3" } }), { status: 200 });
+			return new Response(JSON.stringify({ content: b64("old body"), sha: "s1" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "write", path: "n.md", content: "fresh body" });
+		expect(r.isError).toBeFalsy();
 	});
 
 	it("edits by read-modify-commit, replacing exactly the unique match", async () => {
@@ -164,21 +233,41 @@ describe("obsidian (git backend)", () => {
 		expect(Buffer.from(putBody.content, "base64").toString("utf8")).toBe("z y z");
 	});
 
-	it("edit PUTs the read-time sha and surfaces a 409 as 'note changed since read'", async () => {
-		// A concurrent write landed between our read (sha s6) and our write, so GitHub
-		// rejects the stale-sha PUT with 409 — must be a clear conflict, never a clobber.
-		let putSha: string | undefined;
+	it("edit retries a 409 (bounded, jittered) and succeeds once the concurrent write clears", async () => {
+		// A concurrent write landed between our first read (sha s6) and our write —
+		// GitHub 409s that stale-sha PUT. GO condition 2: re-read + retry instead of
+		// hard-failing; by the 2nd attempt the note is back at rest, so it should land.
+		let reads = 0;
+		let puts = 0;
 		routes.handler = (url, init) => {
 			if (init?.method === "PUT") {
-				putSha = JSON.parse(init.body).sha;
+				puts++;
+				const sha = JSON.parse(init.body).sha;
+				if (sha === "s6") return new Response(JSON.stringify({ message: "does not match" }), { status: 409 });
+				return new Response(JSON.stringify({ commit: { sha: "c9" } }), { status: 200 });
+			}
+			reads++;
+			return new Response(JSON.stringify({ content: b64("- [ ] task\nrest"), sha: reads === 1 ? "s6" : "s7" }), { status: 200 });
+		};
+		const r = await obsidian.run(ENV, { action: "edit", path: "d.md", find: "- [ ] task", replace: "- [x] task" });
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ ok: true, replaced: 1, commit: "c9" });
+		expect(puts).toBe(2); // 1st PUT 409s (sha s6), retry re-reads (sha s7) and lands
+	});
+
+	it("edit surfaces a clear conflict after exhausting retries on a persistent 409", async () => {
+		let puts = 0;
+		routes.handler = (url, init) => {
+			if (init?.method === "PUT") {
+				puts++;
 				return new Response(JSON.stringify({ message: "does not match" }), { status: 409 });
 			}
 			return new Response(JSON.stringify({ content: b64("- [ ] task\nrest"), sha: "s6" }), { status: 200 });
 		};
 		const r = await obsidian.run(ENV, { action: "edit", path: "d.md", find: "- [ ] task", replace: "- [x] task" });
-		expect(putSha).toBe("s6"); // PUT carried the READ-TIME sha, not a re-fetched HEAD
 		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/changed since read/);
+		expect(r.content[0].text).toMatch(/lost the race/);
+		expect(puts).toBe(3); // RETRY_ATTEMPTS
 	});
 
 	it("edit fails cleanly when the find text is absent", async () => {
