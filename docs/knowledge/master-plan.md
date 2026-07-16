@@ -13,11 +13,13 @@ landscape in the deep-research report (folded in when it lands).
 - **Minimal repo split, grown organically.** Single-allow-all at the org level (org secrets = all
   repos, App = all repos) for ease. One repo per dev session for parallel work.
 
-## Repo decomposition (chosen shape — minimal, grows as needed)
+## Repo decomposition (current shape — 6 repos, grown organically from the original 3-repo plan)
 - **`SuxOS/sux`** — core Worker + fns + namespaces (vault/mail/files) + recall + the knowledge base. The product. [transfer `colinxs/sux`]
 - **`SuxOS/.github`** — the reusable autonomous pipeline (review/fix/merge/audit) + org profile; every repo inherits via thin stubs + org secrets.
 - **`SuxOS/suxrouter`** — the router. Renamed/moved into the org as `SuxOS/suxrouter` (DONE).
-- **`SuxOS/suxlib`** — HOLD. Extract a shared lib only when a SECOND TS consumer exists; today `sux` is the only one, so a lib repo would have one consumer = premature.
+- **`SuxOS/suxlib`** — shipped, absorbing `sux-fileops`. The second TS consumer (`sux`'s op engine) that used to gate this repo's existence landed 2026-07-16 (see `docs/superpowers/specs/2026-07-15-suxos-v2-op-engine-design.md`); the prior HOLD (single-consumer premature-extraction concern) no longer applies. Pure core (op engine + archive/sanitize/transform/pdf domain logic, most of it absorbed from `sux-fileops`) + CLI/HTTP/MCP adapters, consumed by `sux` as a source dependency.
+- **`SuxOS/sux-fileops`** — retired. Its pure-core file-ops logic and CLI/HTTP/MCP adapter pattern were absorbed into `SuxOS/suxlib`; the repo itself stays up (not archived/deleted — that's a separate human call) with a deprecation notice pointing at `suxlib`, receiving no further feature work.
+- **`SuxOS/claude-config`** — not a SuxOS product; Colin's personal Claude Code tool config (cardinal rules + the locus-aware `orient`/`work`/`dispatch`/`paste` skills), versioned here for convenience/visibility alongside the repos it's used against.
 - `packaging/` (plugin/desktop-extension/skill) + `plugins/` — stay in `sux`; split only if they earn their own release cadence.
 
 ## Tracks (sequenced by worthiness; parallel where safe)
