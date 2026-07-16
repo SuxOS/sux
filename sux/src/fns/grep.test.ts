@@ -72,4 +72,26 @@ describe("grep ReDoS guards", () => {
 		const r = await grep.run({} as any, { text: "abcabc\nxyz", pattern: "(abc)+" });
 		expect(r.isError).toBeFalsy();
 	});
+	it("rejects a nested-group bypass — dangerous quantifier hidden past an inner group's own closing paren", async () => {
+		// A single-level `[^)]*` check can never reach past the inner `)` closing
+		// `(a+)` to see the outer `)+` — these all previously slipped through.
+		for (const p of ["((a+)(a*))+", "((a+))+", "(a(b+)c)+", "((a|b)c)*", "(x(y{2,})z)+"]) {
+			const r = await grep.run({} as any, { text: "aaaa", pattern: p });
+			expect(r.isError).toBe(true);
+			expect(r.content[0].text).toMatch(/catastrophic backtracking/);
+		}
+	});
+	it("still allows safe nested groups (no quantifier/alternation inside, or the inner group isn't itself quantified)", async () => {
+		for (const p of ["(a(b)c)+", "(abc)(def)+", "((ab)(cd))+"]) {
+			const r = await grep.run({} as any, { text: "abcabc", pattern: p });
+			expect(r.isError).toBeFalsy();
+		}
+	});
+	it("doesn't crash on unbalanced or escaped parens", async () => {
+		const r1 = await grep.run({} as any, { text: "x", pattern: "(a+" }); // unbalanced -> invalid regex, not a heuristic crash
+		expect(r1.isError).toBe(true);
+		expect(r1.content[0].text).toMatch(/Invalid regex/);
+		const r2 = await grep.run({} as any, { text: "(a+)+", pattern: "\\(a\\+\\)\\+" }); // literal, escaped — not a real group
+		expect(r2.isError).toBeFalsy();
+	});
 });

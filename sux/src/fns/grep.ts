@@ -1,6 +1,48 @@
 import { type Fn, fail, ok } from "../registry";
 import { fetchTextOkEscalating, oj } from "./_util";
 
+// ReDoS guard: true when `pattern` contains a group (capturing, non-capturing, or
+// lookaround — anything delimited by balanced parens) that's immediately followed by
+// a quantifier (+, *, {n,}) and whose own content contains a quantifier or alternation
+// character ANYWHERE within its true balanced span — not just before the first `)`.
+// A naive single-level check like `\([^)]*[+*{|][^)]*\)\s*[+*{]` cannot see past an
+// inner group's own closing paren, so a dangerous quantifier nested one (or more)
+// levels deep — e.g. `((a+)(a*))+` — sails through untouched: the `[^)]*` segments
+// always hit the FIRST `)` (the inner group's) before ever reaching the outer one.
+// This walks the pattern once, tracking escapes (`\(` is a literal paren, not a group
+// delimiter) and character classes (`[()]` — parens inside `[...]` are literal too),
+// so each group's span is its TRUE matching close paren regardless of nesting depth.
+function hasNestedCatastrophicQuantifier(pattern: string): boolean {
+	const opens: number[] = [];
+	let inClass = false;
+	for (let i = 0; i < pattern.length; i++) {
+		const c = pattern[i];
+		if (c === "\\") {
+			i++; // skip the escaped character entirely — it can't open/close a group or class
+			continue;
+		}
+		if (inClass) {
+			if (c === "]") inClass = false;
+			continue;
+		}
+		if (c === "[") {
+			inClass = true;
+			continue;
+		}
+		if (c === "(") {
+			opens.push(i);
+			continue;
+		}
+		if (c === ")") {
+			const start = opens.pop();
+			if (start === undefined) continue; // unmatched — let new RegExp() reject it below
+			const followedByQuantifier = /^\s*[+*{]/.test(pattern.slice(i + 1));
+			if (followedByQuantifier && /[+*{|]/.test(pattern.slice(start + 1, i))) return true;
+		}
+	}
+	return false;
+}
+
 export const grep: Fn = {
 	name: "grep",
 	description:
@@ -25,13 +67,15 @@ export const grep: Fn = {
 		// ReDoS guardrails: cap the pattern size and reject the classic
 		// catastrophic-backtracking shapes — an outer quantifier (+, *, {n,})
 		// applied to a group whose body already contains a quantifier ((a+)+,
-		// (a*)*, (.*)+, (a{2,})+ …) or a top-level alternation ((a|aa)+ …).
-		// Both make matching backtrack exponentially. Heuristic, not exhaustive;
-		// grep is OAuth-gated so this bounds self-inflicted stalls, and a rejected
-		// pattern can be rewritten without an outer quantifier over such a group.
+		// (a*)*, (.*)+, (a{2,})+ …) or a top-level alternation ((a|aa)+ …),
+		// at ANY nesting depth (see hasNestedCatastrophicQuantifier above —
+		// e.g. `((a+)(a*))+`). Both make matching backtrack exponentially.
+		// Heuristic, not exhaustive; grep is OAuth-gated so this bounds
+		// self-inflicted stalls, and a rejected pattern can be rewritten
+		// without an outer quantifier over such a group.
 		if (pattern.length > 1000) return fail("Pattern too long (max 1000 chars).");
-		if (/\([^)]*[+*{|][^)]*\)\s*[+*{]/.test(pattern)) {
-			return fail("Pattern rejected: an outer quantifier over a group that itself contains a quantifier or alternation ((x+)+, (x*)*, (.*)+, (x{2,})+, (a|aa)+ …) risks catastrophic backtracking. Rewrite without a quantifier applied to such a group.");
+		if (hasNestedCatastrophicQuantifier(pattern)) {
+			return fail("Pattern rejected: an outer quantifier over a group that itself contains a quantifier or alternation ((x+)+, (x*)*, (.*)+, (x{2,})+, (a|aa)+ …), at any nesting depth, risks catastrophic backtracking. Rewrite without a quantifier applied to such a group.");
 		}
 
 		let re: RegExp;
