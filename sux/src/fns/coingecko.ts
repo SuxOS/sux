@@ -9,7 +9,7 @@ import { oj } from "./_util";
 const API = "https://api.coingecko.com/api/v3";
 
 async function getJson(url: string): Promise<{ ok: boolean; status: number; json: any }> {
-	const resp = await fetch(url, { headers: { Accept: "application/json" } });
+	const resp = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
 	if (!resp.ok) return { ok: false, status: resp.status, json: null };
 	return { ok: true, status: resp.status, json: await resp.json() };
 }

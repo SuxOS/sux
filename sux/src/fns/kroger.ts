@@ -33,7 +33,7 @@ async function api(env: RtEnv, path: string): Promise<any> {
 	// GETs are idempotent, so retry transient/rate-limit failures with backoff. A
 	// 401/403 is NOT transient — withRetry passes it straight through, so the
 	// re-mint self-heal below still fires on exactly the first rejected response.
-	const get = (token: string) => withRetry(() => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } }));
+	const get = (token: string) => withRetry(() => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(20_000) }));
 	let resp = await get(await getClientToken(env, oauth(env)));
 	if (resp.status === 401 || resp.status === 403) {
 		await env.OAUTH_KV.delete(TOKEN_KEY);

@@ -21,7 +21,7 @@ const oauth = (env: RtEnv): OAuthClientCreds => ({
 
 /** GET an authed eBay endpoint; self-heals a stale app token (401/403) by re-minting once — matching kroger/reddit/tailscale. */
 async function api(env: RtEnv, url: string): Promise<any> {
-	const get = (token: string) => fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+	const get = (token: string) => fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
 	let resp = await get(await getClientToken(env, oauth(env)));
 	if (resp.status === 401 || resp.status === 403) {
 		// eBay invalidated the token before its ~2h TTL → drop the cache and re-mint DIRECTLY (not via

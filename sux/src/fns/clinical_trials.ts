@@ -42,7 +42,7 @@ export const clinical_trials: Fn = {
 		const p = new URLSearchParams({ "query.term": term, pageSize: String(pageSize), format: "json" });
 		let resp: Response;
 		try {
-			resp = await fetch(`${API}?${p}`);
+			resp = await fetch(`${API}?${p}`, { signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
 			return fail(`ClinicalTrials.gov fetch failed: ${String((e as Error)?.message ?? e)}`);
 		}

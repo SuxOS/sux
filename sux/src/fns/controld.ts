@@ -13,6 +13,7 @@ const API = "https://api.controld.com";
 async function api(env: RtEnv, path: string): Promise<any> {
 	const resp = await fetch(`${API}${path}`, {
 		headers: { Authorization: `Bearer ${env.CONTROLD_API_TOKEN}`, Accept: "application/json" },
+		signal: AbortSignal.timeout(20_000),
 	});
 	if (!resp.ok) throw new Error(`ControlD API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();

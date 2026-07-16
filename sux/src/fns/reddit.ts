@@ -41,6 +41,7 @@ async function mintToken(env: RtEnv): Promise<string> {
 		method: "POST",
 		headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json", "User-Agent": UA_OAUTH },
 		body: "grant_type=client_credentials",
+		signal: AbortSignal.timeout(20_000),
 	});
 	if (!resp.ok) throw new Error(`OAuth token HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	const j: any = await resp.json();
@@ -68,7 +69,7 @@ async function getToken(env: RtEnv): Promise<string> {
  * descriptive User-Agent rides EVERY request — Reddit blocks default UAs.
  */
 async function api(env: RtEnv, path: string): Promise<any> {
-	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "User-Agent": UA_OAUTH } });
+	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "User-Agent": UA_OAUTH }, signal: AbortSignal.timeout(20_000) });
 	let resp = await get(await getToken(env));
 	if (resp.status === 401 || resp.status === 403) {
 		await env.OAUTH_KV.delete(TOKEN_KEY);
