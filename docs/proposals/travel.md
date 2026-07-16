@@ -1,14 +1,14 @@
 ---
 title: travel — API-first vertical
-status: parked
+status: retired
 cluster: retrieval
 type: proposal
-summary: "One fn producing a flights/hotels/attractions/visa/price-trend dossier from Amadeus; two-phase DAG; visa harm-avoidance (refuse, don't guess)."
-tags: [sux, retrieval, parked]
-updated: 2026-07-09
+summary: "RETIRED 2026-07-16 — travel vertical dropped. One fn producing a flights/hotels/attractions/visa/price-trend dossier from Amadeus; two-phase DAG; visa harm-avoidance (refuse, don't guess)."
+tags: [sux, retrieval, retired]
+updated: 2026-07-16
 ---
 
-> **⚠️ Reality check — 2026-07-14 (external-research pass):** Amadeus has announced the **Amadeus for Developers self-service portal will be decommissioned on July 17th, 2026** (confirmed on the developers.amadeus.com homepage decommission banner; new-user registration is already paused ahead of that date). Enterprise APIs remain reachable only via the separate Enterprise portal. This proposal's entire data floor — Amadeus Self-Service flights/hotels/price-analytics — is closing to new self-serve developers within days of this note. **Before building: either grandfather a self-service key/secret immediately, or re-base the proposal on a successor provider (e.g. Duffel, Kiwi/Tequila, Travelpayouts).** For the record, auth as designed was OAuth2 client-credentials — a self-serve API Key + Secret exchanged for a 1-hour token, no org agreement required while the portal existed — and the free monthly test-env request quota carried into production (pay only for overage). Sources: https://developers.amadeus.com/ and https://developers.amadeus.com/self-service .
+> **🗑️ RETIRED — 2026-07-16 (operator decision):** Travel search is not a vertical we expect to want, so this proposal is dropped, not merely parked. Tracking issue [#435](https://github.com/SuxOS/sux/issues/435) is closed as *not planned*. The Amadeus for Developers self-service portal decommissioned on 2026-07-17 (new-user registration was paused ahead of that date); we deliberately did **not** grandfather a self-service key. The design below is preserved for the record only. **If travel is ever revived**, it cannot re-use the Amadeus self-serve floor this proposal assumed — it must re-base on a successor provider (e.g. Duffel, Kiwi/Tequila, Travelpayouts), and this doc should be re-evaluated from scratch rather than resumed.
 
 # Design: `travel(from, to)` — API-first travel vertical for sux
 
