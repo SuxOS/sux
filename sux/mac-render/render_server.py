@@ -23,6 +23,8 @@ def _read_key():
 
 CAPSOLVER_KEY = _read_key()
 
+CGNAT_RANGE = ipaddress.ip_network("100.64.0.0/10")  # Tailscale's own range; stdlib's is_private/is_reserved don't cover RFC 6598 shared address space — see sux/src/proxy.ts isPrivateIp, which blocks this same range for the identical reason.
+
 def is_private_ip(ip):
     # SSRF guard: this Mac sits inside the operator's home LAN, so a page that
     # ends up connected to a loopback/private/link-local/CGNAT/reserved address
@@ -37,6 +39,8 @@ def is_private_ip(ip):
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
+    if addr.version == 4 and addr in CGNAT_RANGE:
+        return True
     return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_multicast or addr.is_unspecified
 
 BLOCK_MARKERS = (
