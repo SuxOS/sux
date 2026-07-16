@@ -48,7 +48,7 @@ export const semantic_scholar: Fn = {
 		if (env?.S2_API_KEY) headers["x-api-key"] = env.S2_API_KEY;
 		let resp: Response;
 		try {
-			resp = await fetch(`${API}?${p}`, { headers });
+			resp = await fetch(`${API}?${p}`, { headers, signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
 			return fail(`Semantic Scholar fetch failed: ${String((e as Error)?.message ?? e)}`);
 		}

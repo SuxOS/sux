@@ -13,7 +13,7 @@ function authParam(env: RtEnv): string {
 }
 
 async function getJson(url: string): Promise<any> {
-	const resp = await fetch(url);
+	const resp = await fetch(url, { signal: AbortSignal.timeout(20_000) });
 	if (!resp.ok) throw new Error(`NCBI E-utilities HTTP ${resp.status}.`);
 	return resp.json();
 }

@@ -68,7 +68,7 @@ export const weekly_ad: Fn = {
 		const p = new URLSearchParams({ locale: "en-us", postal_code: zip, q: term });
 		let resp: Response;
 		try {
-			resp = await fetch(`${API}?${p}`, { headers: { Accept: "application/json" } });
+			resp = await fetch(`${API}?${p}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
 			return failWith("upstream_error", `Flipp fetch failed: ${String((e as Error)?.message ?? e)}`);
 		}

@@ -81,7 +81,7 @@ async function discoverSession(env: RtEnv): Promise<JmapSession> {
 	const url = env.FASTMAIL_SESSION_URL || DEFAULT_SESSION_URL;
 	let resp: Response;
 	try {
-		resp = await withRetry(() => fetch(url, { headers: authHeaders(env) }));
+		resp = await withRetry(() => fetch(url, { headers: authHeaders(env), signal: AbortSignal.timeout(20_000) }));
 	} catch (e) {
 		throw new JmapError("upstream_error", `JMAP session discovery failed: ${String((e as Error)?.message ?? e)}`);
 	}

@@ -10,7 +10,7 @@ const VIDEOS = "https://www.googleapis.com/youtube/v3/videos";
 
 
 async function api(url: string): Promise<any> {
-	const resp = await fetch(url, { headers: { Accept: "application/json" } });
+	const resp = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
 	if (!resp.ok) throw new Error(`YouTube API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();
 }

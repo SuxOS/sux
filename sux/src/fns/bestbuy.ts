@@ -11,7 +11,7 @@ const SHOW = "sku,name,salePrice,regularPrice,onlineAvailability,image,url,manuf
 
 
 async function api(url: string): Promise<any> {
-	const resp = await fetch(url, { headers: { Accept: "application/json" } });
+	const resp = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
 	if (!resp.ok) throw new Error(`Best Buy API HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 	return resp.json();
 }

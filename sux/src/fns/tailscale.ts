@@ -34,7 +34,7 @@ const oauth = (env: RtEnv): OAuthClientCreds => ({
  * so KV read-after-delete eventual consistency can't hand back the rejected token.
  */
 async function api(env: RtEnv, path: string): Promise<any> {
-	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+	const get = (token: string) => fetch(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
 	let resp = await get(await getClientToken(env, oauth(env)));
 	if (resp.status === 401 || resp.status === 403) {
 		await env.OAUTH_KV.delete(TOKEN_KEY);

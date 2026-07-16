@@ -48,7 +48,7 @@ export const openalex: Fn = {
 		const p = new URLSearchParams({ search: term, "per-page": String(perPage), mailto: MAILTO });
 		let resp: Response;
 		try {
-			resp = await fetch(`${API}?${p}`);
+			resp = await fetch(`${API}?${p}`, { signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
 			return fail(`OpenAlex fetch failed: ${String((e as Error)?.message ?? e)}`);
 		}

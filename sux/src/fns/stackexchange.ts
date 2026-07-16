@@ -62,7 +62,7 @@ export const stackexchange: Fn = {
 		if (env?.STACKEXCHANGE_KEY) p.set("key", env.STACKEXCHANGE_KEY);
 		let resp: Response;
 		try {
-			resp = await fetch(`${API}?${p}`);
+			resp = await fetch(`${API}?${p}`, { signal: AbortSignal.timeout(20_000) });
 		} catch (e) {
 			return fail(`Stack Exchange fetch failed: ${String((e as Error)?.message ?? e)}`);
 		}

@@ -57,6 +57,7 @@ export const places: Fn = {
 					"X-Goog-FieldMask": FIELD_MASK,
 				},
 				body: JSON.stringify({ textQuery: query, maxResultCount: maxResults }),
+				signal: AbortSignal.timeout(20_000),
 			});
 			if (!resp.ok) throw new Error(`Google Places HTTP ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 300)}`);
 			const j: any = await resp.json();
