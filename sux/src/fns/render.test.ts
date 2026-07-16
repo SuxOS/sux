@@ -147,6 +147,13 @@ describe("render", () => {
 		expect(stubs.close).toHaveBeenCalled();
 	});
 
+	it("a bot-wall page returned as a 200 surfaces as an error, not as content (backend:cf looksBlocked guard)", async () => {
+		stubs.content.mockResolvedValueOnce("<html><body>Access Denied Reference #18.abc</body></html>");
+		const r = await render.run(BROWSER_ENV, { url: "https://example.com" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/cf render blocked/i);
+	});
+
 	it("passes wait_until and timeout through to goto", async () => {
 		await render.run(BROWSER_ENV, { url: "https://example.com", wait_until: "domcontentloaded", timeout_ms: 5000 });
 		expect(stubs.goto).toHaveBeenCalledWith("https://example.com", { waitUntil: "domcontentloaded", timeout: 5000 });

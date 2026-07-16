@@ -167,6 +167,11 @@ export const render: Fn = {
 		if ("bytes" in result) {
 			return deliverBytes(env, result.bytes, result.contentType, args?.delivery ?? "url", () => inlineB64(result.bytes, result.contentType));
 		}
+		// A bot wall/challenge interstitial IS valid HTML — cfRender can't tell it apart
+		// from real content, so it comes back `ok`. Mirror the mac path above (and
+		// retail-render's cf leg) so a detected wall surfaces as an error envelope
+		// instead of a 200 that extract fns then parse and cache (#635).
+		if (looksBlocked(result.body)) return failWith("upstream_error", "cf render blocked (bot wall)");
 		return ok(clampBytes(result.body, MAX_OUTPUT_BYTES));
 	},
 };
