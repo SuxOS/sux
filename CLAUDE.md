@@ -173,6 +173,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   so a fresh `wrangler types` run silently DROPS fields like `TS_OAUTH_CLIENT_ID`/`DROPBOX_FULL_*`
   from `Env` instead of adding to it (#219/#220). Add a new binding's type directly to `RtEnv` in
   `registry.ts` instead (`R2Bucket`'s hand-rolled override is the existing precedent for this).
+- **W8 (agent#749, "approval→learning loop for proposal ranking": `_learning.ts` +
+  `proposals.ts`'s `insights` action feeding `_agenda.ts`'s `rankDropsLearned`) is still
+  unmerged** — a `593fe13` attempt was superseded by `17768be` (#786), which rebuilt only
+  W7 (Monarch detectors) and explicitly left W8 for #749. Any open issue filed against that
+  never-merged shape (#794 confirmed; grep issue bodies for `_learning.ts` or
+  `rankDropsLearned` for others) is unbuildable until #749 lands — drop it back to the queue
+  rather than inventing the missing files. Once #749 ships, re-check those follow-ups against
+  whatever it actually built, not the exact shape described in the older issues (#797).
 
 ## House style
 
