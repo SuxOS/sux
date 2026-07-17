@@ -258,6 +258,15 @@ export type RtEnv = Env &
 		ASK_GATE_REMINDER_AFTER_MINUTES?: string;
 		ASK_GATE_REMINDER_COOLDOWN_MINUTES?: string;
 
+		// Learning-folder reconciliation (fns/_learning_folder.ts + the daily cron, #433) —
+		// sweeps a Dropbox app-folder subfolder for PDFs not yet whitelisted in the oracle
+		// and studies them. Same fail-closed gate as AGENDA_*/BRIEFING_*: unset
+		// LEARNING_FOLDER_ENABLED ⇒ total no-op (also requires hasDropbox). Path/topic
+		// default to /learning and "learning" when unset.
+		LEARNING_FOLDER_ENABLED?: string;
+		LEARNING_FOLDER_PATH?: string;
+		LEARNING_FOLDER_TOPIC?: string;
+
 		// Manual ops trigger for the daily cron ticks (POST /admin/tick?job=…), bearer-gated
 		// by this token. Unset ⇒ the endpoint 404s (feature off). Lets an operator run a
 		// mail-triage / self-improve / maintenance cycle on demand instead of waiting for cron.

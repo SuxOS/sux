@@ -19,7 +19,7 @@ describe("find_similar", () => {
 	it("finds similar pages by url (POST /findSimilar)", async () => {
 		const fetchMock = vi.fn(async (_u?: any, _i?: any) => new Response(JSON.stringify({ results: [{ title: "T", url: "https://a.com", publishedDate: "2024-01-01", author: "Ada", score: 0.9, id: "1" }] }), { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
-		const r = await find_similar.run({ EXA_API_KEY: "k" } as any, { url: "https://example.com", num_results: 5 });
+		const r = await find_similar.run({ EXA_API_KEY: "k" } as any, { url: "https://example.com", limit: 5 });
 		vi.unstubAllGlobals();
 		expect(r.isError).toBeFalsy();
 		const call = fetchMock.mock.calls[0];
