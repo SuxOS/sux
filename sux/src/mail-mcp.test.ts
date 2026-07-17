@@ -193,6 +193,40 @@ describe("mail_* ergonomic tools", () => {
 		expect(r.isError).toBe(true);
 	});
 
+	// #707: Fastmail's maxObjectsInSet is 500 — an Email/set update over that many ids is
+	// rejected by the server outright. labelMessages/moveMessages must chunk, accumulating
+	// updated/notUpdated across chunks, so a caller (esp. mail_sieve_backfill's end-of-run
+	// label call) can pass an arbitrarily large ids array without hitting the cap.
+	function emailSetCalls(f: any): any[] {
+		return f.mock.calls
+			.filter((c: any) => String(c[0]).includes("/jmap/api"))
+			.map((c: any) => JSON.parse(c[1].body).methodCalls.find((m: any) => m[0] === "Email/set"))
+			.filter(Boolean);
+	}
+
+	it("mail_label chunks a bulk update to ≤500 ids per Email/set call, accumulating results across chunks (#707)", async () => {
+		const f = installFetch();
+		const ids = Array.from({ length: 1200 }, (_, i) => (i === 10 || i === 600 ? `bad${i}` : `e${i}`));
+		const out = parse(await tool("mail_label").run(env(), { ids, label: "junk" }));
+		expect(out.labeled).toBe(1198);
+		expect(out.failed).toBe(2);
+
+		const setCalls = emailSetCalls(f);
+		expect(setCalls).toHaveLength(3);
+		expect(setCalls.map((c: any) => Object.keys(c[1].update).length)).toEqual([500, 500, 200]);
+	});
+
+	it("mail_move chunks a bulk update to ≤500 ids per Email/set call (#707)", async () => {
+		const f = installFetch();
+		const ids = Array.from({ length: 600 }, (_, i) => `e${i}`);
+		const out = parse(await tool("mail_move").run(env(), { ids, mailbox: "archive" }));
+		expect(out.moved).toBe(600);
+
+		const setCalls = emailSetCalls(f);
+		expect(setCalls).toHaveLength(2);
+		expect(setCalls.map((c: any) => Object.keys(c[1].update).length)).toEqual([500, 100]);
+	});
+
 	it("mail_read returns the plain-text body", async () => {
 		installFetch();
 		const out = parse(await tool("mail_read").run(env(), { id: "e1" }));
