@@ -284,6 +284,8 @@ export const webSearch: Fn = {
 		properties: {
 			query: { type: "string", description: "Search query." },
 			engine: { type: "string", enum: ["kagi_session", "kagi", "ddg", "google", "exa", "brave", "all"], description: "Default: kagi_session (free, on your Kagi subscription) when KAGI_SESSION is set, else ddg (free, keyless)." },
+			// Lower than search's 50: this limit is shared across every engine `all` fans out to
+			// (Brave's own API hard-caps count at 20), unlike search which wraps Kagi alone.
 			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 			summarize: { type: "boolean", description: "Summarize the merged results with Workers AI.", default: false },
 			proxy: { type: "boolean", description: "Route the Kagi query through the Tailscale residential proxy (direct fallback if the node is down).", default: false },

@@ -18,7 +18,7 @@ export const find_similar: Fn = {
 		properties: {
 			url: { type: "string", description: "Find pages similar to this URL." },
 			query: { type: "string", description: "Neural search query (used when no url is given)." },
-			num_results: { type: "integer", minimum: 1, maximum: 25, default: 10 },
+			limit: { type: "integer", minimum: 1, maximum: 25, default: 10 },
 		},
 	},
 	cacheable: true,
@@ -30,7 +30,7 @@ export const find_similar: Fn = {
 		const query = String(args?.query ?? "").trim();
 		if (!url && !query) return fail("Provide either url (find similar pages) or query (neural search).");
 
-		const numResults = Math.min(25, Math.max(1, Number(args?.num_results) || 10));
+		const numResults = Math.min(25, Math.max(1, Number(args?.limit) || 10));
 		const endpoint = url ? "https://api.exa.ai/findSimilar" : "https://api.exa.ai/search";
 		const body = url ? { url, numResults } : { query, numResults, type: "neural" };
 

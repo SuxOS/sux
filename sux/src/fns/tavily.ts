@@ -28,7 +28,7 @@ export const tavily: Fn = {
 		required: ["query"],
 		properties: {
 			query: { type: "string", description: "Search query." },
-			max_results: { type: "integer", minimum: 1, maximum: 20, default: 8 },
+			limit: { type: "integer", minimum: 1, maximum: 20, default: 8 },
 			depth: { type: "string", enum: ["basic", "advanced"], default: "basic" },
 		},
 	},
@@ -39,7 +39,7 @@ export const tavily: Fn = {
 
 		const query = String(args?.query ?? "").trim();
 		if (!query) return fail("`query` is required.");
-		const maxResults = Math.min(20, Math.max(1, Number(args?.max_results) || 8));
+		const maxResults = Math.min(20, Math.max(1, Number(args?.limit) || 8));
 		const depth = args?.depth === "advanced" ? "advanced" : "basic";
 
 		try {

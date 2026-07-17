@@ -45,7 +45,7 @@ const norm = (p: unknown): string => {
 // bearer and, on a 401 under the refresh flow, drops the cache and re-mints once.
 
 /** Create a shared link for a path, reusing the existing one on 409. */
-async function sharedLink(env: RtEnv, path: string): Promise<string | undefined> {
+export async function sharedLink(env: RtEnv, path: string): Promise<string | undefined> {
 	const mk = await rpc(env, "/sharing/create_shared_link_with_settings", { path });
 	if (mk.status === 200 && mk.json?.url) return mk.json.url;
 	if (String(mk.json?.error_summary ?? "").includes("shared_link_already_exists")) {

@@ -717,6 +717,11 @@ async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void>
 		await refreshAdblockEngine(env);
 	});
 	await runSubJob(env, "life_wiki", () => lifeWikiTick(env));
+	// Learning-folder reconciliation (#433): dormant unless LEARNING_FOLDER_ENABLED is set.
+	await runSubJob(env, "learning_folder", async () => {
+		const { runLearningFolderSync } = await import("./fns/_learning_folder");
+		return runLearningFolderSync(env);
+	});
 	// Markup-drift probe (#545): run a known-good query through web_search's cheap
 	// scraped engines (ddg, kagi_session) and flag a 0-hit response as a soft
 	// failure — same silent-failure mode #537 fixed for a live merge, caught here

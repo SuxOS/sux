@@ -29,7 +29,7 @@ describe("tavily", () => {
 			body = JSON.parse(init.body);
 			return json(RESULT);
 		}) as any;
-		const r = await tavily.run(keyedEnv(), { query: "capital of france", max_results: 5, depth: "advanced" });
+		const r = await tavily.run(keyedEnv(), { query: "capital of france", limit: 5, depth: "advanced" });
 		expect(r.isError).toBeFalsy();
 		const j = JSON.parse(r.content[0].text);
 		expect(j.answer).toBe("The capital of France is Paris.");
