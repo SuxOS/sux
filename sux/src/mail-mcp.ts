@@ -46,6 +46,36 @@ function resultFor(resp: { methodResponses: any[] }, method: string, callId?: st
 
 const clamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Number(v) || dflt));
 
+// Fastmail's maxObjectsInSet (fns/_jmap.ts's coreLimits reads it off the Session but
+// nothing enforces it for a Set) is 500 — an Email/set update over that many ids is
+// rejected outright by the server. Chunk any bulk update to this size so a caller can
+// pass an arbitrarily large `ids` array without hitting the cap (mail_sieve_backfill's
+// end-of-run label call is the sharp case: a single flag easily exceeds 500 matches).
+const JMAP_MAX_OBJECTS_IN_SET = 500;
+
+function chunked<T>(arr: T[], size: number): T[][] {
+	const out: T[][] = [];
+	for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+	return out;
+}
+
+/** Run an Email/set `update` over `ids` in ≤JMAP_MAX_OBJECTS_IN_SET-id chunks, accumulating
+ *  updated/notUpdated across every chunk so the caller decides success/failure once, over the
+ *  whole id list — not per chunk. `patchFor` builds each id's per-message patch. */
+async function chunkedEmailSetUpdate(env: RtEnv, ids: string[], patchFor: (id: string) => Record<string, unknown>): Promise<{ updated: string[]; notUpdated: Record<string, unknown> }> {
+	const updated: string[] = [];
+	const notUpdated: Record<string, unknown> = {};
+	for (const batch of chunked(ids, JMAP_MAX_OBJECTS_IN_SET)) {
+		const update: Record<string, unknown> = {};
+		for (const id of batch) update[id] = patchFor(id);
+		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
+		const setResult = resultFor(resp, "Email/set");
+		updated.push(...Object.keys(setResult?.updated ?? {}));
+		Object.assign(notUpdated, setResult?.notUpdated ?? {});
+	}
+	return { updated, notUpdated };
+}
+
 // --- mail_push (JMAP PushSubscription) — one KV record, keyed by a fixed key since sux
 // only ever needs one live subscription (one Fastmail account). The URL path segment
 // (`token`) IS the credential: Fastmail's push POST carries no auth header of ours, so an
@@ -1487,12 +1517,8 @@ export async function moveMessages(env: RtEnv, ids: unknown, target: string | st
 		}
 		// A MOVE sets mailboxIds to EXACTLY the target set — the additive `mailboxIds/<id>:true`
 		// patch left the message in its origin mailbox too (move-to-trash stayed in the Inbox).
-		const update: Record<string, unknown> = {};
-		for (const id of list) update[id] = { mailboxIds: Object.fromEntries(targetIds.map((tid) => [tid, true])) };
-		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
-		const setResult = resultFor(resp, "Email/set");
-		const moved = Object.keys(setResult?.updated ?? {});
-		const notUpdated = setResult?.notUpdated ?? {};
+		const mailboxIds = Object.fromEntries(targetIds.map((tid) => [tid, true]));
+		const { updated: moved, notUpdated } = await chunkedEmailSetUpdate(env, list, () => ({ mailboxIds }));
 		const failed = Object.keys(notUpdated);
 		// Don't report a silent moved:0 — an invalid target / rejected patch surfaces as an error.
 		if (!moved.length && failed.length) return fail(`move to '${targets.join(", ")}' failed: ${JSON.stringify(notUpdated).slice(0, 300)}`);
@@ -1517,12 +1543,8 @@ export async function labelMessages(env: RtEnv, ids: unknown, label: string, add
 	const keyword = keywordFor(label);
 	if (!list.length || !label) return failWith("bad_input", "requires a non-empty `ids` array and a `label`.");
 	try {
-		const update: Record<string, unknown> = {};
-		for (const id of list) update[id] = { [`keywords/${keyword}`]: add ? true : null };
-		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
-		const setResult = resultFor(resp, "Email/set");
-		const changed = Object.keys(setResult?.updated ?? {});
-		const notUpdated = setResult?.notUpdated ?? {};
+		const patch = { [`keywords/${keyword}`]: add ? true : null };
+		const { updated: changed, notUpdated } = await chunkedEmailSetUpdate(env, list, () => patch);
 		const failed = Object.keys(notUpdated);
 		if (!changed.length && failed.length) return fail(`${add ? "add" : "remove"} label '${keyword}' failed: ${JSON.stringify(notUpdated).slice(0, 300)}`);
 		return ok({ labeled: changed.length, keyword, add, ...(failed.length ? { failed: failed.length, errors: notUpdated } : {}) });

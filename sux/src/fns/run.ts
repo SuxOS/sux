@@ -91,6 +91,35 @@ export async function runVerb({ op: opId, input, mode = "auto" }: { op: string; 
 	return { instanceId: instance.id };
 }
 
+/** Fetch a durable instance's live status (queued/running/paused/waiting/complete/errored/…,
+ * plus `error`/`output` once terminal) — the read side of the durable-run control surface. */
+export async function statusVerb(instanceId: string, env: RtEnv): Promise<{ status: string; error?: { name: string; message: string }; output?: unknown }> {
+	if (!env.OP_WORKFLOW) throw new Error("run: status needs the OP_WORKFLOW binding.");
+	const instance = await env.OP_WORKFLOW.get(instanceId);
+	return instance.status();
+}
+
+/**
+ * Answer an `ask` gate an instance is paused on. `prompt` must match the op tree's
+ * `ask(prompt, …)` text exactly — the durable interpreter waits on event type
+ * `ask:${prompt}` (durable.ts), so this sends that same event to release the wait.
+ * `payload` is handed straight to the waiting `ask` node; omit it (or pass
+ * `{approved: true}`) to just unblock, or pass `{approved: false, ...}` to reject
+ * the gate (interpretDurable throws AskRejectedError, stopping the run).
+ */
+export async function answerVerb(instanceId: string, prompt: string, payload: unknown, env: RtEnv): Promise<void> {
+	if (!env.OP_WORKFLOW) throw new Error("run: answer needs the OP_WORKFLOW binding.");
+	const instance = await env.OP_WORKFLOW.get(instanceId);
+	await instance.sendEvent({ type: `ask:${prompt}`, payload: payload === undefined ? { approved: true } : payload });
+}
+
+/** Terminate a running/paused durable instance. Throws if it's already errored/terminated/complete. */
+export async function cancelVerb(instanceId: string, env: RtEnv): Promise<void> {
+	if (!env.OP_WORKFLOW) throw new Error("run: cancel needs the OP_WORKFLOW binding.");
+	const instance = await env.OP_WORKFLOW.get(instanceId);
+	await instance.terminate();
+}
+
 export const run: Fn = {
 	name: "run",
 	surface: "front",
@@ -98,7 +127,7 @@ export const run: Fn = {
 	// so it must never be served from cache.
 	cacheable: false,
 	description:
-		"Run a composable op (a named suxlib Op tree) by id. {op}: the registered op id (call with a bad id to see the list; MVP ships `echo`). {input}: the op's input value (any JSON). {mode}: auto (default — inline for a simple pure/effect pipe, durable when the op fans out (map) or pauses for a human (ask)) | inline (force in-request; returns the op's output) | durable (force a Workflow; returns {instanceId} to poll). The durable runtime persists every step, so a run survives isolate eviction, retries, and multi-day approval pauses. Durable mode needs the OP_WORKFLOW binding. {action}: \"list\" enumerates durable run instances started from this connector (instanceId, opId, startedAt, live status where available) instead of starting/running an op — use it to discover paused `ask` gates without already holding an instanceId.",
+		"Run a composable op (a named suxlib Op tree) by id. {op}: the registered op id (call with a bad id to see the list; MVP ships `echo`). {input}: the op's input value (any JSON). {mode}: auto (default — inline for a simple pure/effect pipe, durable when the op fans out (map) or pauses for a human (ask)) | inline (force in-request; returns the op's output) | durable (force a Workflow; returns {instanceId} to poll). The durable runtime persists every step, so a run survives isolate eviction, retries, and multi-day approval pauses. Durable mode needs the OP_WORKFLOW binding. {action}: \"list\" enumerates durable run instances started from this connector (instanceId, opId, startedAt, live status where available) instead of starting/running an op — use it to discover paused `ask` gates without already holding an instanceId. \"status\" returns a durable {instanceId}'s live status (plus error/output once terminal). \"answer\" delivers a payload to an `ask` gate the instance is paused on — needs {instanceId} and {prompt} (the op tree's exact `ask(prompt, ...)` text); {payload} defaults to {approved:true}, pass {approved:false} to reject the gate and stop the run. \"cancel\" terminates a durable instance.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -112,9 +141,12 @@ export const run: Fn = {
 			},
 			action: {
 				type: "string",
-				enum: ["list"],
-				description: "list: enumerate durable run instances (most recent first) instead of running an op.",
+				enum: ["list", "status", "answer", "cancel"],
+				description: "list: enumerate durable run instances (most recent first). status: fetch {instanceId}'s live status. answer: deliver a payload to an `ask` gate ({instanceId}+{prompt}, optional {payload}). cancel: terminate {instanceId}. Omit to run an op.",
 			},
+			instanceId: { type: "string", description: "Durable instance id (from a prior durable run or `action:list`). Required for status/answer/cancel." },
+			prompt: { type: "string", description: "The op tree's exact `ask(prompt, ...)` text — targets the right gate when an instance has more than one. Required for `answer`." },
+			payload: { description: "Payload delivered to the waiting `ask` node. Defaults to {approved:true}; {approved:false} rejects the gate. Only used by `answer`." },
 		},
 	},
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -125,7 +157,27 @@ export const run: Fn = {
 			const runs = await listDurableRuns(env);
 			return ok(oj({ action, count: runs.length, runs }));
 		}
-		if (action) return failWith("bad_input", `run: unknown action '${action}'. Use 'list', or omit to run an op.`);
+		if (action === "status" || action === "answer" || action === "cancel") {
+			const instanceId = a?.instanceId ? String(a.instanceId) : "";
+			if (!instanceId) return failWith("bad_input", `run ${action} requires an \`instanceId\`.`);
+			try {
+				if (action === "status") {
+					const status = await statusVerb(instanceId, env);
+					return ok(oj({ action, instanceId, ...status }));
+				}
+				if (action === "answer") {
+					const prompt = a?.prompt ? String(a.prompt) : "";
+					if (!prompt) return failWith("bad_input", "run answer requires a `prompt` matching the op tree's `ask(prompt, ...)` text.");
+					await answerVerb(instanceId, prompt, a?.payload, env);
+					return ok(oj({ action, instanceId, prompt, sent: true }));
+				}
+				await cancelVerb(instanceId, env);
+				return ok(oj({ action, instanceId, cancelled: true }));
+			} catch (e) {
+				return failWith("upstream_error", `run ${action} ${instanceId} failed: ${errMsg(e)}`);
+			}
+		}
+		if (action) return failWith("bad_input", `run: unknown action '${action}'. Use 'list', 'status', 'answer', 'cancel', or omit to run an op.`);
 
 		const opId = a?.op ? String(a.op) : "";
 		if (!opId) return failWith("bad_input", "run requires an `op` (a registered op id).");
