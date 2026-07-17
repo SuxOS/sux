@@ -442,10 +442,11 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 	// in it is already `led.seen` and gets skipped, never advancing into older backlog mail. A
 	// sweep instead pages through `position` (mail_search's own per-call cap, see mail-mcp.ts)
 	// until the mailbox is exhausted (a short page), `max` total messages are scanned, or the
-	// wall-clock budget runs out. A normal (non-sweep) cycle is unaffected: MAX_PAGES caps it to
-	// the same single page as before.
+	// wall-clock budget runs out. A normal (non-sweep) cycle also pages whenever `max` exceeds
+	// mail_search's own PAGE_SIZE cap (mail-mcp.ts clamps `limit` to 1..50 server-side) — a
+	// single oversized request would otherwise silently truncate to 50 with no error.
 	const PAGE_SIZE = 50;
-	const MAX_PAGES = sweepBacklog ? 40 : 1;
+	const MAX_PAGES = sweepBacklog ? 40 : Math.ceil(max / PAGE_SIZE);
 	let position = 0;
 	let pages = 0;
 	sweep: while (pages < MAX_PAGES && scanned < max) {
@@ -453,7 +454,7 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			truncated = true;
 			break;
 		}
-		const pageLimit = sweepBacklog ? PAGE_SIZE : max;
+		const pageLimit = Math.min(PAGE_SIZE, max);
 		const msgs = await deps.search(env, { mailbox, unread, limit: pageLimit, position });
 		pages++;
 		if (!msgs.length) break; // backlog exhausted

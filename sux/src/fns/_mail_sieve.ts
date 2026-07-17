@@ -23,9 +23,9 @@
 //     (transaction/receipt/important/personal) stays a Worker-side, full-context decision.
 import { errMsg } from "./_util";
 
-export type SieveCategory = "junk" | "mailing_list" | "service_notification" | "notification";
+export type SieveCategory = "junk" | "mailing_list" | "service_notification" | "notification" | "spam";
 
-export const ALL_SIEVE_CATEGORIES: readonly SieveCategory[] = ["junk", "mailing_list", "service_notification", "notification"];
+export const ALL_SIEVE_CATEGORIES: readonly SieveCategory[] = ["junk", "mailing_list", "service_notification", "notification", "spam"];
 
 /** A single coarse rule: the Sieve boolean-test expression (already Sieve syntax) used by
  *  `compileSieve`, AND a JS predicate over {from, subject, hasListUnsubscribe} used by
@@ -63,6 +63,11 @@ const SERVICE_SENDERS: Array<{ domain: string; flag: string }> = [
 // Mirrors _mail_triage.ts NOTIFY_FROM's non-overlapping remainder (service senders above already
 // claim github/gitlab/vercel/circleci, so this is the generic automated-sender catch-all).
 const NOTIFY_FROM_CUES = ["no-reply", "noreply", "do-not-reply", "donotreply", "notifications@", "automated@"];
+
+// Mirrors _mail_triage.ts SPAM_SUBJECT_CUE — literal-substring subset only (that regex's digit-
+// percentage and alternation-with-punctuation branches have no Sieve `:contains` equivalent, so
+// only the plain-text phrases are compiled here).
+const SPAM_SUBJECT_CUES = ["percent off", "limited time", "flash sale", "clearance", "exclusive deal", "act now", "buy now", "free trial", "special offer", "discount code", "shop now", "last chance"];
 
 function allRules(): CoarseRule[] {
 	const rules: CoarseRule[] = [];
@@ -102,6 +107,13 @@ function allRules(): CoarseRule[] {
 		sieveTest: `address :contains :all "from" ${qlist(NOTIFY_FROM_CUES)}`,
 		flags: ["notification"],
 		matches: (m) => containsAny(String(m.from ?? "").toLowerCase(), NOTIFY_FROM_CUES),
+	});
+	rules.push({
+		category: "spam",
+		comment: "Promo-spam subject cues (mirrors _mail_triage SPAM_SUBJECT_CUE, literal substrings only).",
+		sieveTest: `header :contains "subject" ${qlist(SPAM_SUBJECT_CUES)}`,
+		flags: ["spam"],
+		matches: (m) => containsAny(String(m.subject ?? "").toLowerCase(), SPAM_SUBJECT_CUES),
 	});
 	return rules;
 }

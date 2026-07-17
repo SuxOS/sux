@@ -68,6 +68,13 @@ describe("compileSieve — category coverage", () => {
 		expect(rule_count).toBe(1);
 	});
 
+	it("spam: emits a subject :contains test with addflag \"spam\"", () => {
+		const { script, rule_count } = compileSieve(["spam"]);
+		expect(script).toContain('header :contains "subject"');
+		expect(script).toContain('addflag "spam";');
+		expect(rule_count).toBe(1);
+	});
+
 	it("default (no categories passed) includes every category's rules", () => {
 		const all = compileSieve();
 		const summed = ALL_SIEVE_CATEGORIES.reduce((n, c) => n + compileSieve([c]).rule_count, 0);
@@ -121,6 +128,10 @@ describe("matchCoarseCategories — backfill's JS mirror of the Sieve rules", ()
 
 	it("matches the generic notify-from catch-all", () => {
 		expect(matchCoarseCategories({ from: "no-reply@somesaas.example" })).toContain("notification");
+	});
+
+	it("matches a promo-spam subject cue", () => {
+		expect(matchCoarseCategories({ subject: "Flash sale — 24 hours only, shop now" })).toContain("spam");
 	});
 
 	it("returns no flags for an unremarkable personal message", () => {
