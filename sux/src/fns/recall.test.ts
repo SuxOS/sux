@@ -14,18 +14,18 @@ vi.mock("./obsidian", async () => {
 });
 vi.mock("./web_search", () => ({ webSearch: { run: vi.fn() }, defaultEngine: vi.fn(() => "ddg") }));
 vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
-vi.mock("./_dropbox-full", () => ({ hasDropboxFull: vi.fn(() => false), searchFull: vi.fn(), readFull: vi.fn() }));
+vi.mock("./_dropbox-full", () => ({ hasDropboxFull: vi.fn(() => false), searchFull: vi.fn(), readFull: vi.fn(), listFullChanges: vi.fn() }));
 // Keep parseICal real (recall parses the ical reportObjects returns) — mock only the CalDAV I/O + the gate.
 vi.mock("./_caldav", async () => {
 	const actual = await vi.importActual<any>("./_caldav");
 	return { ...actual, hasCalDav: vi.fn(() => false), listCalendars: vi.fn(), reportObjects: vi.fn() };
 });
 
-import { recall } from "./recall";
+import { gatherRecall, recall } from "./recall";
 import { obsidian } from "./obsidian";
 import { webSearch } from "./web_search";
 import { jmap } from "./jmap";
-import { hasDropboxFull, readFull, searchFull } from "./_dropbox-full";
+import { hasDropboxFull, listFullChanges, readFull, searchFull } from "./_dropbox-full";
 import { hasCalDav, listCalendars, reportObjects } from "./_caldav";
 
 const okR = (text: string) => ({ content: [{ type: "text", text }] });
@@ -38,6 +38,7 @@ const mail = jmap.run as unknown as ReturnType<typeof vi.fn>;
 const dbxHas = hasDropboxFull as unknown as ReturnType<typeof vi.fn>;
 const dbxSearch = searchFull as unknown as ReturnType<typeof vi.fn>;
 const dbxRead = readFull as unknown as ReturnType<typeof vi.fn>;
+const dbxListChanges = listFullChanges as unknown as ReturnType<typeof vi.fn>;
 const calHas = hasCalDav as unknown as ReturnType<typeof vi.fn>;
 const calList = listCalendars as unknown as ReturnType<typeof vi.fn>;
 const calReport = reportObjects as unknown as ReturnType<typeof vi.fn>;
@@ -146,6 +147,36 @@ describe("recall", () => {
 		expect(dbxSearch).not.toHaveBeenCalled();
 		expect(out.sources.files).toBe("no matches");
 		expect(out.sources.vault).toBe("1 hit(s)"); // the other source still answers
+	});
+
+	it("files' semantic leg (_files_semantic.ts) merges in a hit the keyword search (searchFull) missed", async () => {
+		dbxHas.mockReturnValue(true);
+		dbxSearch.mockResolvedValue({ matches: [] }); // keyword search finds nothing
+		dbxListChanges.mockResolvedValue({ entries: [{ ".tag": "file", kind: "file", name: "labs.md", path: "/Health/labs.md", size: 500 }], deleted: [], has_more: false, cursor: "c1" });
+		dbxRead.mockResolvedValue({ path: "/Health/labs.md", text: "CA-125 trending down per Dr. Chen." });
+		// Keyword-shaped embeddings so the semantic hit ranks unambiguously (mirrors the git-backend
+		// vault_semantic test's embedVec pattern).
+		aiRun = vi.fn(async (model: string, inputs: any) => {
+			if (!model.includes("bge")) return { response: "labs note [files:/Health/labs.md]." };
+			const embedVec = (t: string) => [t.toLowerCase().includes("labs") || t.toLowerCase().includes("ca-125") ? 1 : 0, 0.1];
+			return { data: (inputs.text as string[]).map(embedVec) };
+		});
+		const out = parse(await recall.run(env(), { question: "labs?", sources: ["files"] }));
+		expect(dbxListChanges).toHaveBeenCalled(); // the semantic index was built (no keyword hits to short-circuit it)
+		expect(dbxRead).toHaveBeenCalledWith(expect.anything(), "/Health/labs.md");
+		expect(out.sources.files).toBe("1 hit(s)");
+		expect(out.citations).toEqual(["files:/Health/labs.md"]);
+		const user = aiRun.mock.calls.find((c: any) => !String(c[0]).includes("bge"))![1].messages[1].content;
+		expect(user).toContain("CA-125 trending down"); // the semantic hit's text rode the fenced data
+	});
+
+	it("files' semantic leg is never attempted when hasAI(env) is false — the keyword leg's result stands alone", async () => {
+		dbxHas.mockReturnValue(true);
+		dbxSearch.mockResolvedValue({ matches: [] });
+		const out = await gatherRecall({} as any, "labs?", ["files"]);
+		expect(dbxSearch).toHaveBeenCalled(); // the keyword leg has no AI gate — it still ran
+		expect(dbxListChanges).not.toHaveBeenCalled(); // but the semantic leg (gated on hasAI) never touched Dropbox
+		expect(out.status.files).toBe("no matches");
 	});
 
 	it("honors the sources filter (personal-only skips the web)", async () => {
