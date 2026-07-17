@@ -15,6 +15,7 @@
 
 import { timingSafeEqual } from "./crypto-util";
 import { keyedSerialize } from "./keyed-serialize";
+import { hmacHex } from "./proxy";
 import type { RtEnv } from "./registry";
 
 // The only actions the box will ever act on. STRINGS ONLY — the Worker never
@@ -46,16 +47,8 @@ export type SignedCommand = { action: RecoveryAction; args: Record<string, unkno
 
 type StoredStatus = { node_id: string; timestamp: number; health: unknown; received_at: number };
 
-const enc = new TextEncoder();
-
 const json = (obj: unknown, status = 200): Response =>
 	new Response(JSON.stringify(obj, null, 2), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
-
-async function hmacHex(secret: string, msg: string): Promise<string> {
-	const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-	const mac = await crypto.subtle.sign("HMAC", key, enc.encode(msg));
-	return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 // The exact bytes the box signs and the box verifies a command against. Pinning a
 // canonical form (not "the JSON") keeps signer and verifier byte-identical without

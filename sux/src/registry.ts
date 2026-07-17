@@ -308,6 +308,15 @@ export type RtEnv = Env &
 		// a redeploy; unset → cf-render's tracked default.
 		STEALTH_CHROME_MAJOR?: string;
 
+		// Standalone Mac-local iMessage service (chat.db read + AppleScript send) —
+		// its own launchd process/plist (sux/imessage-service/), unrelated to the
+		// now-removed mac-render tier (#742 dropped mac-render entirely in favor of
+		// cf-residential render; iMessage never rode that server). Same Funnel+HMAC
+		// transport shape mac-render used, fail-closed identically: unset → the
+		// `imessage` fn reports not_configured rather than erroring.
+		IMESSAGE_URL?: string;
+		IMESSAGE_SECRET?: string;
+
 		// UW Person Web Service (PWS) mutual-TLS tier for the `uw` fn. An
 		// `mtls_certificates` binding (a Fetcher that presents the client cert) to
 		// ws.admin.washington.edu — grants the richer, student-inclusive record that
