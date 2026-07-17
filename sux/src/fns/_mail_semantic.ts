@@ -135,7 +135,7 @@ async function buildFull(env: RtEnv): Promise<MailSemanticIndex> {
  *  only the changed ids, drop the destroyed/stale ones from the cached chunk set. Returns null
  *  when the server can't diff from `cached.state` anymore (cannotCalculateChanges) — the caller's
  *  cue to fall back to buildFull, same as a vault HEAD mismatch triggering a rebuild. */
-async function applyChanges(env: RtEnv, cached: MailSemanticIndex): Promise<MailSemanticIndex | null> {
+async function applyChanges(env: RtEnv, cached: MailSemanticIndex): Promise<{ index: MailSemanticIndex; changed: boolean } | null> {
 	let state = cached.state;
 	const created = new Set<string>();
 	const updated = new Set<string>();
@@ -153,7 +153,10 @@ async function applyChanges(env: RtEnv, cached: MailSemanticIndex): Promise<Mail
 		state = String(c.value?.newState ?? state);
 		if (!c.value?.hasMoreChanges) break;
 	}
-	if (!created.size && !updated.size && !destroyed.size) return { ...cached, state, at: Date.now() };
+	// Nothing to persist: same chunk set, so a re-serialize + KV `put` of a blob that can approach
+	// KV's 25 MiB cap would buy nothing but a bumped `at`. `changed: false` tells the caller to skip
+	// the write; the next call simply re-diffs from the same (still-valid) `cached.state`.
+	if (!created.size && !updated.size && !destroyed.size) return { index: cached, changed: false };
 	for (const id of destroyed) {
 		created.delete(id);
 		updated.delete(id);
@@ -171,8 +174,13 @@ async function applyChanges(env: RtEnv, cached: MailSemanticIndex): Promise<Mail
 	const kept = cached.chunks.filter((c) => !destroyed.has(c.id) && !freshIds.has(c.id));
 	let chunks = [...kept, ...fresh];
 	const truncated = cached.truncated || chunks.length > INDEX_MAX;
-	if (chunks.length > INDEX_MAX) chunks = chunks.slice(chunks.length - INDEX_MAX);
-	return { state, version: VERSION, at: Date.now(), total: Math.max(0, cached.total + created.size - destroyed.size), truncated, chunks };
+	// Keep the newest INDEX_MAX by receivedAt, not the array *tail* — `kept` isn't guaranteed
+	// oldest-first (JMAP doesn't order Email/get results), so a tail slice could evict recent-but-
+	// not-newest mail while retaining genuinely old mail. Mirrors buildFull's "most recent N" intent.
+	if (chunks.length > INDEX_MAX) {
+		chunks = [...chunks].sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : a.receivedAt > b.receivedAt ? -1 : 0)).slice(0, INDEX_MAX);
+	}
+	return { index: { state, version: VERSION, at: Date.now(), total: Math.max(0, cached.total + created.size - destroyed.size), truncated, chunks }, changed: true };
 }
 
 /** The mail semantic index — incrementally maintained (Email/changes) against the cached state,
@@ -185,11 +193,13 @@ export async function mailSemanticIndex(env: RtEnv): Promise<MailSemanticIndex |
 	if (isStoredMailSemanticIndex(storedCached) && storedCached.version === VERSION) {
 		const cached = fromStored(storedCached);
 		try {
-			const updated = await applyChanges(env, cached);
-			if (updated) {
-				const wrote = await writeBlob(env, toStored(updated));
-				if (!wrote) console.log("mail_semantic: incremental index write dropped (over KV's 25MiB cap or a codec error) — next call re-diffs from the same state");
-				return updated;
+			const result = await applyChanges(env, cached);
+			if (result) {
+				if (result.changed) {
+					const wrote = await writeBlob(env, toStored(result.index));
+					if (!wrote) console.log("mail_semantic: incremental index write dropped (over KV's 25MiB cap or a codec error) — next call re-diffs from the same state");
+				}
+				return result.index;
 			}
 		} catch (e) {
 			console.log(`mail_semantic: incremental update failed (${e instanceof Error ? e.message : String(e)}) — falling back to a full rebuild`);

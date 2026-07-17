@@ -4,6 +4,7 @@ vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
 
 import { jmap } from "./jmap";
 import { mailSemanticIndex, topKMailByCosine } from "./_mail_semantic";
+import { encodeEmbedding } from "./_embed";
 
 const okR = (v: unknown) => ({ content: [{ type: "text", text: JSON.stringify(v) }] });
 const errR = (text: string) => ({ content: [{ type: "text", text }], isError: true });
@@ -173,6 +174,49 @@ describe("_mail_semantic", () => {
 		});
 		const idx2 = await mailSemanticIndex(env);
 		expect(idx2).toBeTruthy(); // recovered via full rebuild instead of throwing
+	});
+
+	it("a no-op incremental pass (no created/updated/destroyed) skips the KV write entirely", async () => {
+		const env = aiEnv();
+		mockBatch({
+			"Email/query": () => ["Email/query", { ids: ["e1"], total: 1 }],
+			"Email/get": (a) => ["Email/get", { state: "s1", list: (a.ids as string[]).map((id) => EMAILS[id]) }],
+		});
+		const idx1 = await mailSemanticIndex(env);
+		const putCallsAfterBuild = env.OAUTH_KV.put.mock.calls.length;
+
+		mockBatch({ "Email/changes": (a) => ["Email/changes", { oldState: a.sinceState, newState: "s1", hasMoreChanges: false, created: [], updated: [], destroyed: [] }] });
+		const idx2 = await mailSemanticIndex(env);
+		expect(idx2?.chunks.map((c) => c.id)).toEqual(idx1?.chunks.map((c) => c.id));
+		expect(env.OAUTH_KV.put.mock.calls.length).toBe(putCallsAfterBuild); // no re-serialize + put for an unchanged index
+	});
+
+	it("truncation past INDEX_MAX evicts the oldest mail by receivedAt, not whatever lands at the array's front", async () => {
+		const env = aiEnv();
+		// Front-load `kept` (the cached chunk set) with a few RECENT chunks, then a large block of
+		// genuinely OLD chunks — reproducing JMAP's "no guaranteed order" so a naive tail-slice would
+		// evict the front (the recent chunks) instead of the actual oldest mail.
+		const recentChunks = [0, 1, 2].map((i) => ({ id: `recent${i}`, subject: "r", from: "f", receivedAt: `B${String(i).padStart(4, "0")}`, text: "t", embedding: [0, 0, 0.1] }));
+		const oldChunks = Array.from({ length: 996 }, (_, i) => ({ id: `old${String(i).padStart(4, "0")}`, subject: "o", from: "f", receivedAt: `A${String(i).padStart(4, "0")}`, text: "t", embedding: [0, 0, 0.1] }));
+		const cached = { state: "s1", version: 1, at: 0, total: 999, truncated: false, chunks: [...recentChunks, ...oldChunks] };
+		const stored = { ...cached, chunks: cached.chunks.map((c) => ({ ...c, embedding: encodeEmbedding(c.embedding) })) };
+		env.OAUTH_KV.store.set("sux:mail:semantic", JSON.stringify(stored));
+
+		const NEW_IDS = [0, 1, 2, 3, 4].map((i) => `new${i}`);
+		const NEW_EMAILS: Record<string, { id: string; subject: string; from: { email: string }[]; receivedAt: string; preview: string }> = Object.fromEntries(
+			NEW_IDS.map((id) => [id, { id, subject: "fresh", from: [{ email: "x@example.com" }], receivedAt: `C${id}`, preview: "brand new" }]),
+		);
+		mockBatch({
+			"Email/changes": (a) => ["Email/changes", { oldState: a.sinceState, newState: "s2", hasMoreChanges: false, created: NEW_IDS, updated: [], destroyed: [] }],
+			"Email/get": (a) => ["Email/get", { list: (a.ids as string[]).map((id) => NEW_EMAILS[id]) }],
+		});
+		const idx2 = await mailSemanticIndex(env);
+		const ids = new Set(idx2?.chunks.map((c) => c.id));
+		expect(ids.size).toBe(1000); // 1004 combined, evicted down to INDEX_MAX
+		for (const c of recentChunks) expect(ids.has(c.id)).toBe(true); // recent chunks survive despite sitting at the array's front
+		for (const id of NEW_IDS) expect(ids.has(id)).toBe(true); // brand new chunks always survive
+		for (let i = 0; i < 4; i++) expect(ids.has(`old${String(i).padStart(4, "0")}`)).toBe(false); // the 4 genuinely oldest are evicted
+		expect(ids.has("old0004")).toBe(true); // just inside the newest-996 boundary
 	});
 
 	it("topKMailByCosine ranks by cosine similarity and skips chunks with no embedding", () => {
