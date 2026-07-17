@@ -527,38 +527,38 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 					try {
 						const d = await deps.draftReply!(env, { reply_to: m.id, text: body });
 						acted.push({ id: m.id, label: c.label, confidence: c.confidence, op: "draft-reply", to: `draft:${d.id}` });
-						entry = { cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, at: Date.now(), op: "draft-reply", draft_id: d.id };
+						entry = { cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, preview: m.preview, from: m.from, at: Date.now(), op: "draft-reply", draft_id: d.id };
 						markSeen = true; // drafted successfully → don't reprocess
 					} catch (e) {
 						const reason = `draft reply failed: ${errMsg(e)}`;
 						suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
-						entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, op: "draft-reply", at: Date.now() };
+						entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, preview: m.preview, from: m.from, op: "draft-reply", at: Date.now() };
 						// draft-save FAILED (transient) → leave unseen so the next cycle retries.
 					}
 				} else {
 					const why = canDraft ? "no safe auto-draft (tone/PII gate)" : "draft staging unavailable";
 					const reason = `${c.reason} — reply-worthy; ${why}, suggest a manual reply`;
 					suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
-					entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, op: "draft-reply", at: Date.now() };
+					entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, preview: m.preview, from: m.from, op: "draft-reply", at: Date.now() };
 					markSeen = true; // definitive (won't draft this) → don't re-suggest daily
 				}
 			} else if (wouldAct && actAllowed) {
 				try {
 					await deps.act(env, [m.id], op!);
 					acted.push({ id: m.id, label: c.label, confidence: c.confidence, op: rec!.log.op ?? op!.kind, to: rec!.to });
-					entry = { cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, at: Date.now(), ...rec!.log };
+					entry = { cycle, id: m.id, action: "acted", label: c.label, confidence: c.confidence, reason: c.reason, subject: m.subject, preview: m.preview, from: m.from, at: Date.now(), ...rec!.log };
 					markSeen = true; // acted successfully → don't reprocess
 				} catch (e) {
 					const reason = `act ${rec!.to} failed: ${errMsg(e)}`;
 					suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
-					entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, at: Date.now() };
+					entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, preview: m.preview, from: m.from, at: Date.now() };
 					// act FAILED → leave unseen so the next cycle retries.
 				}
 			} else {
 				const why = sensitive ? "sensitive sender: suggest-only" : !op ? `${c.label}: no auto-action` : c.confidence < bar ? `low confidence ${c.confidence.toFixed(2)} < ${bar}` : "act path disabled (suggest-only)";
 				const reason = `${c.reason} — ${why}${rec ? `; suggest ${rec.to}` : ""}`;
 				suggested.push({ id: m.id, label: c.label, confidence: c.confidence, reason });
-				entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, ...(rec ? rec.log : {}), at: Date.now() };
+				entry = { cycle, id: m.id, action: "suggested", label: c.label, confidence: c.confidence, reason, subject: m.subject, preview: m.preview, from: m.from, ...(rec ? rec.log : {}), at: Date.now() };
 				// Mark seen only on a definitive no-act decision while ACT is enabled (so daily
 				// re-runs don't re-suggest). In pure suggest-only mode, leave it unseen so that
 				// turning ACT on later still actions the existing inbox.

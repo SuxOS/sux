@@ -233,6 +233,30 @@ one set.
 
 ---
 
+## 5c. Ledger-cache cross-loop wiring — loop B consumes loop A's findings
+
+**What.** When one cron loop's findings need to feed another loop as a new "sense" (agenda's
+W5 wiring, `_agenda.ts:390-442`, consuming consolidate + weekly_recall — #746), the reusable
+shape is: loop A caches its own last successful cycle's findings under a small, bounded key in
+its OWN ledger namespace (`_consolidate.ts:52` `LAST_REPORT_KEY = "last-report"`, capped to
+`MAX_CACHED_FINDINGS`), and exposes a read-only accessor (`lastConsolidateFindings`,
+`_consolidate.ts:119`) that reads that cache via `ledger(env, "<loop>").get(...)` — never
+re-scanning the vault/mailbox. Loop B dynamically imports that accessor and calls it directly.
+
+**Why not the alternatives.** Two heavier approaches were deliberately avoided: (1) loop B
+re-scanning the vault or re-running loop A's own logic itself — wasteful and duplicates work
+already done this cycle; (2) threading live return values through `index.ts`'s `runSubJob`
+(`cron-heartbeat.ts:57-72`) — `runSubJob` fires cron sub-jobs and discards/swallows their
+return values by design, so it isn't a channel for passing data between loops.
+
+**Reuse this** for any future loop-consumes-loop wiring — W7 (Monarch → agenda) and W6
+(MyChart → agenda) both need exactly this shape per
+`docs/superpowers/specs/2026-07-17-personal-agent-remaining-workstreams-design.md`. Give the
+producing loop its own bounded `last-report`-style key + accessor rather than reaching for
+`runSubJob` or a re-scan.
+
+---
+
 ## 6. Compression / transform — gzip default, token-pack for LLMs
 
 **Storage compression** (`fns/_gzip.ts`). Every persistent store (R2 CAS, user KV, Dropbox
