@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, detectDrops, type EventRef, type MailRef, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, detectDrops, detectKnowledgeDrops, type EventRef, type MailRef, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 
 function kvStub() {
@@ -24,6 +24,8 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	calEvents: vi.fn(async () => EVENTS),
 	digestAppend: vi.fn(async () => {}),
 	sendDigest: vi.fn(async () => {}),
+	consolidateFindings: vi.fn(async () => null),
+	weeklyRecallFindings: vi.fn(async () => null),
 	...over,
 });
 
@@ -53,6 +55,25 @@ describe("agenda — detectors", () => {
 		const drops = detectDrops(MAIL, EVENTS);
 		expect(drops[0].urgency).toBe("today");
 		expect(drops[drops.length - 1].urgency).toBe("fyi"); // the unanswered personal note
+	});
+
+	it("wires consolidate + weekly_recall findings in as fyi drops, deduped per week", () => {
+		const drops = detectKnowledgeDrops(
+			{ week: "2026-W28", stale: [{ path: "Foo.md", reason: "no last_verified marker" }], duplicate_candidates: [{ a: "Foo.md", b: "Foo (2).md", key: "foo" }] },
+			{ week: "2026-W28", questions: 3 },
+		);
+		const kinds = drops.map((d) => d.kind);
+		expect(kinds).toEqual(["consolidate_stale", "consolidate_dupes", "weekly_recall_ready"]);
+		for (const d of drops) {
+			expect(d.urgency).toBe("fyi");
+			expect(d.dedupe).toContain("2026-W28");
+			expect(d.action.fn).toBe("todoist");
+		}
+	});
+
+	it("no knowledge drops when there's nothing to report", () => {
+		expect(detectKnowledgeDrops(null, null)).toHaveLength(0);
+		expect(detectKnowledgeDrops({ week: "2026-W28", stale: [], duplicate_candidates: [] }, { week: "2026-W28", questions: 0 })).toHaveLength(0);
 	});
 });
 
@@ -120,5 +141,16 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, deps({ calEvents: vi.fn(async () => { throw new Error("caldav down"); }) }));
 		expect(r.sources.calendar).toMatch(/unavailable/);
 		expect(r.proposed).toBeGreaterThan(0); // mail drops still recorded
+	});
+
+	it("proposes a drop from consolidate/weekly_recall's cached findings alongside mail+calendar", async () => {
+		const e = env();
+		const d = deps({
+			consolidateFindings: vi.fn(async () => ({ week: "2026-W28", stale: [{ path: "Foo.md", reason: "no last_verified marker" }], duplicate_candidates: [] })),
+			weeklyRecallFindings: vi.fn(async () => ({ week: "2026-W28", questions: 3 })),
+		});
+		const r = await runAgenda(e, {}, d);
+		expect(r.proposed).toBe(9); // 7 mail/cal + consolidate_stale + weekly_recall_ready
+		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["consolidate_stale", "weekly_recall_ready"]));
 	});
 });

@@ -71,6 +71,27 @@ export type WeeklyRecallOpts = { week?: string; force?: boolean };
 
 export type WeeklyRecallSection = { question: string; answer: string; citations: string[] };
 
+/** The ledger key holding the most recent successful cycle's findings — lets a read-only
+ *  consumer (the agenda loop, W5) know a digest is ready without re-running recall. */
+const LAST_REPORT_KEY = "last-report";
+
+export type WeeklyRecallFindings = { week: string; questions: number };
+
+/** The most recent successful cycle's findings, read from the ledger cache — never re-runs
+ *  recall. Returns null if weekly_recall has never completed a cycle (dormant, KV
+ *  unavailable, or a corrupt/missing cache entry). */
+export async function lastWeeklyRecallFindings(env: RtEnv): Promise<WeeklyRecallFindings | null> {
+	const raw = await ledger(env, "weekly_recall").get(LAST_REPORT_KEY);
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed.week !== "string" || typeof parsed.questions !== "number") return null;
+		return { week: parsed.week, questions: parsed.questions };
+	} catch {
+		return null;
+	}
+}
+
 export type WeeklyRecallReport = {
 	week?: string;
 	dormant?: boolean;
@@ -130,6 +151,7 @@ export async function runWeeklyRecall(env: RtEnv, opts: WeeklyRecallOpts, deps: 
 	try {
 		await deps.digestAppend(env, `Weekly/${week}.md`, buildDigest(week, sections));
 		await led.mark(key); // mark AFTER a successful write so a failed append retries next tick
+		await led.mark(LAST_REPORT_KEY, JSON.stringify({ week, questions: questions.length }));
 		return { week, questions: questions.length, digest_written: true };
 	} catch (e) {
 		return { week, questions: questions.length, digest_written: false, error: `vault append failed: ${errMsg(e)}` };

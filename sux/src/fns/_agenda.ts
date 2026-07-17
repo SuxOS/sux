@@ -27,8 +27,10 @@
 import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
 import { propose } from "../proposals";
+import type { ConsolidateFindings } from "./_consolidate";
 import { classifyMessage } from "./_mail_triage";
 import { errMsg, vaultToday } from "./_util";
+import type { WeeklyRecallFindings } from "./_weekly_recall";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 const flagOn = (v: string | undefined): boolean => {
@@ -62,6 +64,9 @@ export type Drop = {
 };
 
 const task = (content: string, due?: string): Drop["action"] => ({ fn: "todoist", args: { action: "add", content, ...(due ? { due_string: due } : {}) } });
+
+const URGENCY_RANK: Record<Urgency, number> = { today: 0, soon: 1, fyi: 2 };
+const sortByUrgency = (drops: Drop[]): Drop[] => [...drops].sort((a, b) => URGENCY_RANK[a.urgency] - URGENCY_RANK[b.urgency]);
 
 // ── Detectors (rung-0 rules over the mail + calendar stream) ─────────────────────
 // Each is a pure function: (mail|events) → Drop[]. Ordered most-consequential first.
@@ -131,8 +136,52 @@ export function detectDrops(mail: MailRef[], events: EventRef[]): Drop[] {
 		}
 	}
 
-	const rank: Record<Urgency, number> = { today: 0, soon: 1, fyi: 2 };
-	return drops.sort((a, b) => rank[a.urgency] - rank[b.urgency]);
+	return sortByUrgency(drops);
+}
+
+/** Turn consolidate's + weekly_recall's cached findings (W5) into drops — the same
+ *  read-only-sense/reversible-propose contract as the mail+calendar detectors above, just
+ *  fed from the two knowledge loops' last completed cycle instead of a live fan-out. Each
+ *  loop already runs at most once per ISO week; the dedupe key includes that week so a
+ *  finding surfaces as exactly one proposal per week, not once per daily agenda tick. */
+export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, weeklyRecall: WeeklyRecallFindings | null): Drop[] {
+	const drops: Drop[] = [];
+	if (consolidate) {
+		if (consolidate.stale.length) {
+			drops.push({
+				kind: "consolidate_stale",
+				urgency: "fyi",
+				dedupe: `consolidate::stale::${consolidate.week}`,
+				title: `${consolidate.stale.length} stale vault note(s) need review`,
+				emoji: "🗂️",
+				action: task(`Review ${consolidate.stale.length} stale vault note(s) — see Consolidation/${consolidate.week}.md`),
+				evidence: { week: consolidate.week, paths: consolidate.stale.map((s) => s.path) },
+			});
+		}
+		if (consolidate.duplicate_candidates.length) {
+			drops.push({
+				kind: "consolidate_dupes",
+				urgency: "fyi",
+				dedupe: `consolidate::dupes::${consolidate.week}`,
+				title: `${consolidate.duplicate_candidates.length} possible duplicate vault note(s)`,
+				emoji: "🗂️",
+				action: task(`Review ${consolidate.duplicate_candidates.length} possible duplicate vault note(s) — see Consolidation/${consolidate.week}.md`),
+				evidence: { week: consolidate.week, pairs: consolidate.duplicate_candidates },
+			});
+		}
+	}
+	if (weeklyRecall && weeklyRecall.questions > 0) {
+		drops.push({
+			kind: "weekly_recall_ready",
+			urgency: "fyi",
+			dedupe: `weekly_recall::${weeklyRecall.week}`,
+			title: `Weekly recall digest ready (${weeklyRecall.questions} question${weeklyRecall.questions === 1 ? "" : "s"})`,
+			emoji: "🧠",
+			action: task(`Read this week's recall digest — see Weekly/${weeklyRecall.week}.md`),
+			evidence: { week: weeklyRecall.week },
+		});
+	}
+	return drops;
 }
 
 // ── Digest (the email interface) ─────────────────────────────────────────────────
@@ -180,6 +229,12 @@ export type AgendaDeps = {
 	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
 	/** Send the digest to Colin's own primary address. The one send this loop can do. */
 	sendDigest: (env: RtEnv, subject: string, body: string) => Promise<void>;
+	/** The vault-consolidation loop's most recent findings (W5) — a ledger-cache read, never a
+	 *  fresh vault scan. */
+	consolidateFindings: (env: RtEnv) => Promise<ConsolidateFindings | null>;
+	/** The weekly-recall loop's most recent findings (W5) — a ledger-cache read, never a fresh
+	 *  recall fan-out. */
+	weeklyRecallFindings: (env: RtEnv) => Promise<WeeklyRecallFindings | null>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -234,6 +289,8 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	const status: Record<string, string> = {};
 	let mail: MailRef[] = [];
 	let events: EventRef[] = [];
+	let consolidateFindings: ConsolidateFindings | null = null;
+	let weeklyRecallFindings: WeeklyRecallFindings | null = null;
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
@@ -247,9 +304,21 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.calendar = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			consolidateFindings = await deps.consolidateFindings(env);
+			status.consolidate = consolidateFindings ? `week ${consolidateFindings.week}` : "no findings yet";
+		})().catch((e) => {
+			status.consolidate = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
+			weeklyRecallFindings = await deps.weeklyRecallFindings(env);
+			status.weekly_recall = weeklyRecallFindings ? `week ${weeklyRecallFindings.week}` : "no findings yet";
+		})().catch((e) => {
+			status.weekly_recall = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
-	const drops = detectDrops(mail, events);
+	const drops = sortByUrgency([...detectDrops(mail, events), ...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings)]);
 
 	// Propose each NEW drop (idempotent per dedupe key). dry_run records nothing.
 	const led = ledger(env, "agenda_drop");
@@ -318,6 +387,8 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 export async function defaultDeps(): Promise<AgendaDeps> {
 	const mail = await import("../mail-mcp");
 	const { obsidian } = await import("./obsidian");
+	const { lastConsolidateFindings } = await import("./_consolidate");
+	const { lastWeeklyRecallFindings } = await import("./_weekly_recall");
 	const tool = (name: string) => mail.MAIL_TOOLS.find((t) => t.name === name);
 
 	return {
@@ -367,5 +438,7 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			const sr = await sendTool.run(env, { to: [self], subject, text: body, force: true });
 			if (sr.isError) throw new Error(sr.content?.[0]?.text ?? "mail_send failed");
 		},
+		consolidateFindings: lastConsolidateFindings,
+		weeklyRecallFindings: lastWeeklyRecallFindings,
 	};
 }
