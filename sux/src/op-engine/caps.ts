@@ -91,7 +91,54 @@ function makeSinks(env: RtEnv): Record<string, SinkTarget> {
 			return input;
 		},
 	});
-	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/") };
+	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env) };
+}
+
+// The `mail-triage-plan` op's terminal (registry.ts): applies a batch of {id, label, add}
+// proposals — already approved by the `ask` gate — as reversible JMAP keyword patches via the
+// EXISTING mail-mcp labelMessages verb. Dynamically imported so op-engine's non-mail ops (echo,
+// assimilate-pdfs) never pull mail-mcp's JMAP dependency graph into their module load. Grouped
+// by (label, add) so N proposals for the same label become one chunked labelMessages call
+// instead of N. An empty batch (everything classified below the confidence bar, or a sensitive
+// sender) is a no-op — never an error.
+function mailLabelsSink(env: RtEnv): SinkTarget {
+	return {
+		name: "mail-labels",
+		async write(input: any): Promise<any> {
+			const items: Array<{ id?: unknown; label?: unknown; add?: unknown }> = Array.isArray(input) ? input : [];
+			const groups = new Map<string, string[]>();
+			for (const it of items) {
+				if (!it?.id || !it?.label) continue;
+				const key = `${it.add === false ? "-" : "+"}${String(it.label)}`;
+				const ids = groups.get(key) ?? [];
+				ids.push(String(it.id));
+				groups.set(key, ids);
+			}
+			if (!groups.size) return { labeled: 0, groups: 0 };
+			const { labelMessages } = await import("../mail-mcp.js");
+			let labeled = 0;
+			let failed = 0;
+			for (const [key, ids] of groups) {
+				const add = key.startsWith("+");
+				const label = key.slice(1);
+				const r = await labelMessages(env, ids, label, add);
+				if (r.isError) throw new Error(`run: the mail-labels sink failed applying '${label}': ${r.content?.[0]?.text ?? "unknown error"}`);
+				// labelMessages can PARTIALLY fail (some ids updated, some not) while still
+				// returning isError:false — read its actual `labeled`/`failed` counts rather than
+				// assuming every id in the group succeeded (that would silently over-report success).
+				let parsed: { labeled?: unknown; failed?: unknown } = {};
+				try {
+					parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+				} catch {
+					// unparseable response body: fall through and count the whole group as labeled,
+					// matching prior (pre-fix) behavior rather than under-reporting on a shape we can't read.
+				}
+				labeled += typeof parsed.labeled === "number" ? parsed.labeled : ids.length;
+				failed += typeof parsed.failed === "number" ? parsed.failed : 0;
+			}
+			return { labeled, groups: groups.size, ...(failed ? { failed } : {}) };
+		},
+	};
 }
 
 export function makeCaps(env: RtEnv): Caps {
