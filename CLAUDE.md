@@ -173,6 +173,16 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   so a fresh `wrangler types` run silently DROPS fields like `TS_OAUTH_CLIENT_ID`/`DROPBOX_FULL_*`
   from `Env` instead of adding to it (#219/#220). Add a new binding's type directly to `RtEnv` in
   `registry.ts` instead (`R2Bucket`'s hand-rolled override is the existing precedent for this).
+- **An issue that's `blocked-by` another still-open issue in GitHub's native issue-relation
+  field is not independently buildable, no matter how small its own label says it is** — the
+  issue-build queue selects on labels/staleness, not on that relation, so it keeps re-serving
+  the blocked issue every cycle until a human (or this file) intervenes. `#806`/`#807` (both
+  targeting `computeSavingsRate`/`detectSavingsRateDrop`/`monarchCashflow`, code that only
+  exists once `#803`, effort:large, lands) went through **5+ no-op build cycles** before anyone
+  wrote this down (`#808`). Before starting real work on any issue: check its `blocked-by` field
+  (`gh issue view <n>`) and, if set, grep for the symbols/files it references — if they don't
+  exist yet, release the claim immediately as a no-op rather than spending a full session
+  re-confirming the same absence.
 
 ## House style
 
