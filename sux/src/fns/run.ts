@@ -67,6 +67,28 @@ export async function listDurableRuns(env: RtEnv): Promise<Array<RunIndexEntry &
 	);
 }
 
+export type AskDescriptor = { path: string; prompt: string; timeout: string; onTimeout: "proceed" | "fail" };
+
+// Op trees are a static shape per opId (registry factories are pure — see registry.ts's
+// header comment), so walking a freshly-built tree finds every `ask` gate the op COULD
+// pause on without ever starting a run. `path` mirrors durable.ts's step-naming scheme
+// (`pipe` → `.${i}`, `map` → `.m${i}`) so a prompt can be lined up with the durable step
+// that's actually waiting on it. Recurses into `map`'s inner op too, since a fan-out
+// item's own tree can contain an `ask` (durable.ts's `waitForEvent` keys purely on
+// `node.prompt`, so nested asks resolve the same way as top-level ones).
+export function describeAsks(node: Op, path = "root"): AskDescriptor[] {
+	switch (node.tag) {
+		case "ask":
+			return [{ path, prompt: node.prompt, timeout: node.timeout, onTimeout: node.onTimeout }];
+		case "pipe":
+			return node.steps.flatMap((s, i) => describeAsks(s, `${path}.${i}`));
+		case "map":
+			return describeAsks(node.op, `${path}.m`);
+		default:
+			return [];
+	}
+}
+
 // `auto` routes to the durable runtime exactly when the op needs it: a fan-out (`map`,
 // to run items concurrently under retries) or an `ask` (a human pause that must survive
 // isolate eviction). A flat pure/effect pipe has neither, so it runs inline in-request
@@ -103,7 +125,7 @@ export const run: Fn = {
 	// so it must never be served from cache.
 	cacheable: false,
 	description:
-		"Run a composable op (a named suxlib Op tree) by id. {op}: the registered op id (call with a bad id to see the list; MVP ships `echo`). {input}: the op's input value (any JSON). {mode}: auto (default — inline for a simple pure/effect pipe, durable when the op fans out (map) or pauses for a human (ask)) | inline (force in-request; returns the op's output) | durable (force a Workflow; returns {instanceId} to poll). The durable runtime persists every step, so a run survives isolate eviction, retries, and multi-day approval pauses. Durable mode needs the OP_WORKFLOW binding. {action}: \"list\" enumerates durable run instances started from this connector (instanceId, opId, startedAt, live status where available) instead of starting/running an op — use it to discover paused `ask` gates without already holding an instanceId.",
+		"Run a composable op (a named suxlib Op tree) by id. {op}: the registered op id (call with a bad id to see the list; MVP ships `echo`). {input}: the op's input value (any JSON). {mode}: auto (default — inline for a simple pure/effect pipe, durable when the op fans out (map) or pauses for a human (ask)) | inline (force in-request; returns the op's output) | durable (force a Workflow; returns {instanceId} to poll). The durable runtime persists every step, so a run survives isolate eviction, retries, and multi-day approval pauses. Durable mode needs the OP_WORKFLOW binding. {action}: \"list\" enumerates durable run instances started from this connector (instanceId, opId, startedAt, live status where available) instead of starting/running an op — use it to discover paused `ask` gates without already holding an instanceId. \"describe\" (needs {op}) walks that op's tree and returns every `ask` gate's exact prompt text (+ path, timeout, onTimeout) up front, so an answer can target the right gate without first reading the op's source.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -117,8 +139,9 @@ export const run: Fn = {
 			},
 			action: {
 				type: "string",
-				enum: ["list"],
-				description: "list: enumerate durable run instances (most recent first) instead of running an op.",
+				enum: ["list", "describe"],
+				description:
+					"list: enumerate durable run instances (most recent first) instead of running an op. describe: given {op}, return every `ask` gate in that op's tree (path, prompt, timeout, onTimeout) — the exact prompt text a paused instance can be answered with, discoverable before ever starting a run.",
 			},
 		},
 	},
@@ -130,7 +153,15 @@ export const run: Fn = {
 			const runs = await listDurableRuns(env);
 			return ok(oj({ action, count: runs.length, runs }));
 		}
-		if (action) return failWith("bad_input", `run: unknown action '${action}'. Use 'list', or omit to run an op.`);
+		if (action === "describe") {
+			const opId = a?.op ? String(a.op) : "";
+			if (!opId) return failWith("bad_input", "run action:describe requires an `op` (a registered op id).");
+			const build = registry[opId];
+			if (!build) return failWith("not_found", `run: unknown op '${opId}'. Known ops: ${Object.keys(registry).join(", ") || "(none)"}.`);
+			const asks = describeAsks(build());
+			return ok(oj({ action, op: opId, asks }));
+		}
+		if (action) return failWith("bad_input", `run: unknown action '${action}'. Use 'list'|'describe', or omit to run an op.`);
 
 		const opId = a?.op ? String(a.op) : "";
 		if (!opId) return failWith("bad_input", "run requires an `op` (a registered op id).");

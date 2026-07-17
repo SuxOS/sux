@@ -1,5 +1,5 @@
 import { test, expect, vi } from "vitest";
-import { listDurableRuns, runVerb } from "./run.js";
+import { describeAsks, listDurableRuns, run, runVerb } from "./run.js";
 
 // A minimal in-memory KVNamespace — just enough of put/get/list for the run index.
 // Records the opts each put() was called with so tests can assert on expirationTtl.
@@ -64,6 +64,34 @@ test("indexing a durable run sets an expirationTtl so the index self-evicts inst
 
 	expect(kv.putCalls).toHaveLength(1);
 	expect(kv.putCalls[0].opts?.expirationTtl).toBeGreaterThan(0);
+});
+
+test("describeAsks finds the assimilate-pdfs op's single ask gate with its exact prompt", async () => {
+	const { registry } = await import("../op-engine/registry.js");
+	const asks = describeAsks(registry["assimilate-pdfs"]());
+	expect(asks).toEqual([{ path: "root.3", prompt: "review master?", timeout: "24 hour", onTimeout: "proceed" }]);
+});
+
+test("describeAsks finds no ask gates on a plain pure op", async () => {
+	const { registry } = await import("../op-engine/registry.js");
+	expect(describeAsks(registry.echo())).toEqual([]);
+});
+
+test("run action:describe surfaces an op's ask prompts without starting a run", async () => {
+	const res = await run.run({} as any, { action: "describe", op: "assimilate-pdfs" });
+	expect(res.isError).toBeFalsy();
+	const body = JSON.parse(res.content[0].text as string);
+	expect(body.asks).toEqual([{ path: "root.3", prompt: "review master?", timeout: "24 hour", onTimeout: "proceed" }]);
+});
+
+test("run action:describe rejects an unknown op", async () => {
+	const res = await run.run({} as any, { action: "describe", op: "nope" });
+	expect(res.isError).toBe(true);
+});
+
+test("run action:describe requires an op", async () => {
+	const res = await run.run({} as any, { action: "describe" });
+	expect(res.isError).toBe(true);
 });
 
 test("listDurableRuns returns the newest run first and reports 'unknown' when a status lookup fails", async () => {
