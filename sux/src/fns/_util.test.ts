@@ -35,6 +35,7 @@ import {
 	fetchTextOkEscalating,
 	fromB64,
 	isHttpUrl,
+	isHttpUrlString,
 	loadBytes,
 	loadHtml,
 	noCacheOn4xx,
@@ -303,6 +304,11 @@ describe("_util", () => {
 		expect(isHttpUrl("https://x.com")).toBe(true);
 		expect(isHttpUrl("ftp://x")).toBe(false);
 		expect(isHttpUrl(42)).toBe(false);
+	});
+
+	it("isHttpUrlString agrees with isHttpUrl for already-string input", () => {
+		expect(isHttpUrlString("https://x.com")).toBe(true);
+		expect(isHttpUrlString("ftp://x")).toBe(false);
 	});
 
 	it("clamp marks truncation", () => {

@@ -2,7 +2,7 @@ import { hasAI } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { appendOnWhitelist } from "./_kb";
 import { hasDropboxFull, normFull, readFull } from "./_dropbox-full";
-import { errMsg, fromB64, isHttpUrl, loadBytes, oj } from "./_util";
+import { errMsg, fromB64, isHttpUrlString, loadBytes, oj } from "./_util";
 import { KV_PREFIX, loadKb, learnTopic, oracle, type Whitelist } from "./oracle";
 
 // study — the WHITELISTED-KNOWLEDGE verb. You hand sux material you OWN or have the right to
@@ -36,7 +36,7 @@ const MAX_SEGMENTS = 8;
  *  a leading-slash/~ file path or a bare *.pdf name → pdf (a vault/Dropbox upload), else inline text. */
 function detectKind(source: string): "text" | "url" | "pdf" {
 	const s = source.trim();
-	if (isHttpUrl(s)) return /\.pdf(\?|#|$)/i.test(s) ? "pdf" : "url";
+	if (isHttpUrlString(s)) return /\.pdf(\?|#|$)/i.test(s) ? "pdf" : "url";
 	if (/^[/~]/.test(s) || /\.pdf$/i.test(s)) return "pdf";
 	return "text";
 }
@@ -76,7 +76,7 @@ async function extractDocText(env: RtEnv, source: string): Promise<{ text: strin
 	let bytes: Uint8Array;
 	let name: string;
 
-	if (isHttpUrl(s)) {
+	if (isHttpUrlString(s)) {
 		const loaded = await loadBytes(env, { url: s });
 		bytes = loaded.bytes;
 		try {
@@ -212,7 +212,7 @@ export const study: Fn = {
 				const ex = await extractDocText(env, rawSource);
 				material = ex.text;
 				extractedName = ex.name;
-				sourceLabel = isHttpUrl(rawSource) ? rawSource.trim() : `dropbox:${normFull(rawSource)}`;
+				sourceLabel = isHttpUrlString(rawSource) ? rawSource.trim() : `dropbox:${normFull(rawSource)}`;
 			} else {
 				material = rawSource;
 				sourceLabel = `inline text (${material.length} chars)`;

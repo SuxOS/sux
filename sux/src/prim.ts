@@ -12,9 +12,19 @@ export const errMsg = (e: unknown): string => String((e as Error)?.message ?? e)
  * /metrics,/logs,/feedback) stay pretty-printed and don't use this. */
 export const oj = (x: unknown): string => JSON.stringify(x);
 
-/** True for an absolute http(s) URL. */
+/** True for an absolute http(s) URL. Written for an `unknown` caller (its whole point is
+ *  narrowing an untyped value); a caller that already HAS a `string` and branches on the
+ *  negative case (`if (isHttpUrl(s)) {...} else {...}`) sees TS narrow `s` to `never` in the
+ *  else branch — `!(x is string)` on a value already known to be `string` excludes the type
+ *  from itself (#791). Use `isHttpUrlString` below for an already-`string` input instead. */
 export function isHttpUrl(u: unknown): u is string {
 	return typeof u === "string" && /^https?:\/\//i.test(u);
+}
+
+/** Same test as isHttpUrl, for a caller that already has a `string` (not `unknown`) — a plain
+ *  boolean, so branching on the negative case keeps `s` typed as `string`, not narrowed to `never`. */
+export function isHttpUrlString(s: string): boolean {
+	return /^https?:\/\//i.test(s);
 }
 
 /** Shared cap: index.ts's checkArgs rejects tools/call args nested deeper than
