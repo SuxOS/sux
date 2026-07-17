@@ -46,6 +46,8 @@ export const hasAgendaEmail = (env: RtEnv): boolean => hasAgenda(env) && flagOn(
 // ── Types ──────────────────────────────────────────────────────────────────────
 export type MailRef = { id: string; from?: string; subject?: string; preview?: string; date?: string };
 export type EventRef = { summary?: string; start?: string; end?: string; all_day?: boolean; location?: string };
+export type MonarchAccountRef = { id: string; name?: string; balance?: number; type?: string; subtype?: string };
+export type MonarchTxnRef = { id: string; amount?: number; date?: string; pending?: boolean; merchant?: string; category?: string; account?: string };
 
 export type Urgency = "today" | "soon" | "fyi";
 
@@ -131,8 +133,94 @@ export function detectDrops(mail: MailRef[], events: EventRef[]): Drop[] {
 		}
 	}
 
+	return rankDrops(drops);
+}
+
+/** Stable urgency sort (today → soon → fyi), shared by every detector so combining
+ *  multiple senses' drops (mail/calendar + Monarch, …) still yields one coherent order. */
+export function rankDrops(drops: Drop[]): Drop[] {
 	const rank: Record<Urgency, number> = { today: 0, soon: 1, fyi: 2 };
 	return drops.sort((a, b) => rank[a.urgency] - rank[b.urgency]);
+}
+
+/** rankDrops, but within each urgency tier a kind's learned weight (W8 — approve/reject
+ *  history, see fns/_learning.ts) breaks ties: a repeatedly-approved kind surfaces first,
+ *  a repeatedly-rejected one sinks toward the bottom of its tier. Urgency stays the
+ *  primary sort — this only reorders WITHIN "today"/"soon"/"fyi", never promotes a "soon"
+ *  ahead of a "today". Never suppresses a kind entirely (the hard no-self-arm constraint
+ *  applies to this too — it only ever reorders what's shown, nothing more). */
+export async function rankDropsLearned(env: RtEnv, drops: Drop[]): Promise<Drop[]> {
+	if (!drops.length) return drops;
+	const { getKindWeight } = await import("./_learning");
+	const rank: Record<Urgency, number> = { today: 0, soon: 1, fyi: 2 };
+	const weighted = await Promise.all(drops.map(async (d) => ({ d, w: await getKindWeight(env, d.kind) })));
+	weighted.sort((a, b) => rank[a.d.urgency] - rank[b.d.urgency] || b.w - a.w);
+	return weighted.map((x) => x.d);
+}
+
+// ── Detector: Monarch financial signals (W7, read-only) ──────────────────────────
+// Bill-due / unusual-charge / low-balance, over the SAME rung-0 rule pattern as the
+// mail/calendar detectors above — no model, no money movement (monarch.ts is a
+// read-only adapter by construction; this detector only ever reads accounts/txns and
+// proposes a reversible Todoist task, same as every other drop).
+const BILL_CATEGORY_CUE = /\b(bills?|utilit|insurance|subscription|rent|mortgage|loan)/i;
+const LOW_BALANCE_THRESHOLD = 100; // USD — a depository account below this is a "about to slip" drop
+const UNUSUAL_CHARGE_THRESHOLD = 500; // USD — a single transaction at/above this magnitude
+
+const money = (n: number): string => `$${Math.abs(n).toFixed(2)}`;
+
+/** From gathered Monarch accounts + recent transactions, detect: a depository account
+ *  running low, a single unusually large charge, and a pending bill-shaped charge about
+ *  to post. Pure and unit-testable, mirroring detectDrops. */
+export function detectMonarchDrops(accounts: MonarchAccountRef[], transactions: MonarchTxnRef[]): Drop[] {
+	const drops: Drop[] = [];
+
+	for (const a of accounts) {
+		const type = (a.type ?? "").toLowerCase();
+		if (type !== "depository" && type !== "checking" && type !== "savings") continue;
+		if (typeof a.balance !== "number" || !Number.isFinite(a.balance)) continue;
+		if (a.balance >= LOW_BALANCE_THRESHOLD) continue;
+		const name = a.name || "an account";
+		drops.push({
+			kind: "low_balance",
+			urgency: "today",
+			dedupe: `lowbal::${a.id}`,
+			title: `Low balance: ${name} at ${money(a.balance)}`,
+			emoji: "🪙",
+			action: task(`Check low balance on ${name} (${money(a.balance)})`, "today"),
+			evidence: { accountId: a.id, balance: a.balance },
+		});
+	}
+
+	for (const t of transactions) {
+		if (typeof t.amount !== "number" || !Number.isFinite(t.amount)) continue;
+		const who = t.merchant || t.category || "a transaction";
+		if (Math.abs(t.amount) >= UNUSUAL_CHARGE_THRESHOLD) {
+			drops.push({
+				kind: "unusual_charge",
+				urgency: "today",
+				dedupe: `unusual::${t.id}`,
+				title: `Unusual charge: ${who} for ${money(t.amount)}`,
+				emoji: "⚠️",
+				action: task(`Review unusual charge — ${who} (${money(t.amount)})`, "today"),
+				evidence: { txnId: t.id, amount: t.amount, merchant: t.merchant },
+			});
+			continue; // one drop per transaction — unusual-charge wins over bill-due
+		}
+		if (t.pending && t.category && BILL_CATEGORY_CUE.test(t.category)) {
+			drops.push({
+				kind: "bill_due",
+				urgency: "soon",
+				dedupe: `billpending::${t.id}`,
+				title: `Bill about to post: ${who} for ${money(t.amount)}`,
+				emoji: "🧾",
+				action: task(`Confirm pending bill — ${who} (${money(t.amount)})`),
+				evidence: { txnId: t.id, amount: t.amount, category: t.category },
+			});
+		}
+	}
+
+	return rankDrops(drops);
 }
 
 // ── Digest (the email interface) ─────────────────────────────────────────────────
@@ -180,6 +268,10 @@ export type AgendaDeps = {
 	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
 	/** Send the digest to Colin's own primary address. The one send this loop can do. */
 	sendDigest: (env: RtEnv, subject: string, body: string) => Promise<void>;
+	/** Monarch accounts + recent transactions (W7) — read-only, optional (Monarch may be
+	 *  unconfigured). Absent deps.monarchSignals ⇒ the sense is simply skipped, same as any
+	 *  other unconfigured source; it never fails the cycle. */
+	monarchSignals?: (env: RtEnv) => Promise<{ accounts: MonarchAccountRef[]; transactions: MonarchTxnRef[] }>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -234,6 +326,8 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	const status: Record<string, string> = {};
 	let mail: MailRef[] = [];
 	let events: EventRef[] = [];
+	let monarchAccounts: MonarchAccountRef[] = [];
+	let monarchTxns: MonarchTxnRef[] = [];
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
@@ -247,9 +341,18 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.calendar = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			if (!deps.monarchSignals) return; // not wired / not configured — silently skipped
+			const s = await deps.monarchSignals(env);
+			monarchAccounts = s.accounts;
+			monarchTxns = s.transactions;
+			status.monarch = `${monarchAccounts.length} account(s), ${monarchTxns.length} txn(s)`;
+		})().catch((e) => {
+			status.monarch = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
-	const drops = detectDrops(mail, events);
+	const drops = await rankDropsLearned(env, [...detectDrops(mail, events), ...detectMonarchDrops(monarchAccounts, monarchTxns)]);
 
 	// Propose each NEW drop (idempotent per dedupe key). dry_run records nothing.
 	const led = ledger(env, "agenda_drop");
@@ -318,6 +421,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 export async function defaultDeps(): Promise<AgendaDeps> {
 	const mail = await import("../mail-mcp");
 	const { obsidian } = await import("./obsidian");
+	const { monarch, hasMonarch } = await import("./monarch");
 	const tool = (name: string) => mail.MAIL_TOOLS.find((t) => t.name === name);
 
 	return {
@@ -366,6 +470,17 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			if (!self) throw new Error("no primary identity to send the digest to");
 			const sr = await sendTool.run(env, { to: [self], subject, text: body, force: true });
 			if (sr.isError) throw new Error(sr.content?.[0]?.text ?? "mail_send failed");
+		},
+		monarchSignals: async (env) => {
+			if (!hasMonarch(env)) return { accounts: [], transactions: [] };
+			const ar = await monarch.run(env, { op: "accounts" });
+			if (ar.isError) throw new Error(ar.content?.[0]?.text ?? "monarch accounts failed");
+			const accounts = (JSON.parse(ar.content?.[0]?.text ?? "{}").accounts ?? []) as Array<{ id: string; name?: string; balance?: number; type?: string; subtype?: string }>;
+			const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+			const tr = await monarch.run(env, { op: "transactions", start: since, limit: 100 });
+			if (tr.isError) throw new Error(tr.content?.[0]?.text ?? "monarch transactions failed");
+			const transactions = (JSON.parse(tr.content?.[0]?.text ?? "{}").transactions ?? []) as MonarchTxnRef[];
+			return { accounts, transactions };
 		},
 	};
 }

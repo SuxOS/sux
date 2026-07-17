@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, detectDrops, type EventRef, type MailRef, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, detectDrops, detectMonarchDrops, type EventRef, type MailRef, type MonarchAccountRef, type MonarchTxnRef, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 
 function kvStub() {
@@ -53,6 +53,42 @@ describe("agenda — detectors", () => {
 		const drops = detectDrops(MAIL, EVENTS);
 		expect(drops[0].urgency).toBe("today");
 		expect(drops[drops.length - 1].urgency).toBe("fyi"); // the unanswered personal note
+	});
+});
+
+describe("agenda — Monarch detectors (W7)", () => {
+	const ACCOUNTS: MonarchAccountRef[] = [
+		{ id: "chk1", name: "Everyday Checking", balance: 42.13, type: "depository", subtype: "checking" },
+		{ id: "sav1", name: "Emergency Savings", balance: 5000, type: "depository", subtype: "savings" },
+		{ id: "cc1", name: "Rewards Card", balance: -300, type: "credit" },
+	];
+	const TXNS: MonarchTxnRef[] = [
+		{ id: "t1", amount: -812.5, date: "2026-07-16", merchant: "Unknown Electronics Co" },
+		{ id: "t2", amount: -45, date: "2026-07-16", pending: true, category: "Bills & Utilities", merchant: "City Power" },
+		{ id: "t3", amount: -12.5, date: "2026-07-16", merchant: "Coffee Shop" },
+	];
+
+	it("flags a depository account below the low-balance threshold, ignores credit + healthy accounts", () => {
+		const drops = detectMonarchDrops(ACCOUNTS, []);
+		expect(drops).toHaveLength(1);
+		expect(drops[0].kind).toBe("low_balance");
+		expect(drops[0].dedupe).toBe("lowbal::chk1");
+	});
+
+	it("flags a single large charge as unusual, and a pending bill-shaped charge as bill_due", () => {
+		const drops = detectMonarchDrops([], TXNS);
+		const kinds = drops.map((d) => d.kind);
+		expect(kinds).toContain("unusual_charge");
+		expect(kinds).toContain("bill_due");
+		expect(kinds).not.toContain("noise"); // the coffee charge raises nothing
+		expect(drops).toHaveLength(2);
+	});
+
+	it("every Monarch drop's action is a reversible Todoist add", () => {
+		for (const d of detectMonarchDrops(ACCOUNTS, TXNS)) {
+			expect(d.action.fn).toBe("todoist");
+			expect(d.action.args).toMatchObject({ action: "add" });
+		}
 	});
 });
 
@@ -120,5 +156,27 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, deps({ calEvents: vi.fn(async () => { throw new Error("caldav down"); }) }));
 		expect(r.sources.calendar).toMatch(/unavailable/);
 		expect(r.proposed).toBeGreaterThan(0); // mail drops still recorded
+	});
+
+	it("merges Monarch drops in when monarchSignals is wired, and degrades independently on failure", async () => {
+		const e = env();
+		const r = await runAgenda(e, {}, deps({
+			monarchSignals: vi.fn(async () => ({
+				accounts: [{ id: "chk1", name: "Checking", balance: 10, type: "depository" }],
+				transactions: [],
+			})),
+		}));
+		expect(r.sources.monarch).toMatch(/1 account/);
+		expect(r.proposed).toBe(8); // 7 mail/calendar drops + 1 low-balance drop
+
+		const r2 = await runAgenda(env(), {}, deps({ monarchSignals: vi.fn(async () => { throw new Error("monarch down"); }) }));
+		expect(r2.sources.monarch).toMatch(/unavailable/);
+		expect(r2.proposed).toBeGreaterThan(0);
+	});
+
+	it("skips Monarch entirely when monarchSignals is not wired (no source entry, no throw)", async () => {
+		const e = env();
+		const r = await runAgenda(e, {}, deps());
+		expect(r.sources.monarch).toBeUndefined();
 	});
 });
