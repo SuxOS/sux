@@ -96,7 +96,14 @@ function isCandidate(e: any): e is { kind: "file"; path: string; size: number } 
 /** Page list_folder(/continue) from `cursor` (undefined ⇒ a fresh whole-account listing),
  *  collecting up to MAX_FILES matching-criteria file paths across at most MAX_LIST_PAGES
  *  pages. `truncated` is set whenever the loop stopped short of exhausting the account
- *  (either cap hit) — a later incremental call picks up wherever this cursor left off. */
+ *  (either cap hit) — a later incremental call picks up wherever this cursor left off.
+ *  Returns EVERY candidate from the last page consumed, unsliced — `cursor` is only ever
+ *  advanced to just past a page whose candidates are all included in `files`, so a caller
+ *  that persists `cursor` never skips a file. Slicing to MAX_FILES here would drop the
+ *  overshoot of a single big page while the returned cursor already points past it, and a
+ *  later incremental pass resumes AFTER that cursor and never re-encounters them (#763). The
+ *  overshoot this allows is bounded to at most one page, since the loop stops STARTING new
+ *  pages once `files.length >= MAX_FILES`. */
 async function collectCandidates(env: RtEnv, cursor?: string): Promise<{ files: string[]; cursor: string; truncated: boolean }> {
 	let cur = cursor;
 	let lastCursor = cursor ?? "";
@@ -114,7 +121,7 @@ async function collectCandidates(env: RtEnv, cursor?: string): Promise<{ files: 
 		if (!r.has_more) break;
 		if (page === MAX_LIST_PAGES - 1) truncated = true; // hit the page cap with more still pending
 	}
-	return { files: files.slice(0, MAX_FILES), cursor: lastCursor, truncated };
+	return { files, cursor: lastCursor, truncated };
 }
 
 /** Read + chunk one candidate file. A per-file readFull failure (deleted between listing and
@@ -194,9 +201,12 @@ async function applyChanges(env: RtEnv, cached: FilesSemanticIndex): Promise<{ i
 	const vecs = freshParts.length ? await embed(env, freshParts.map((p) => p.text)) : [];
 	const fresh: FilesSemanticChunk[] = freshParts.map((p, i) => ({ ...p, embedding: vecs[i] ?? [] }));
 	const keptOld = cached.chunks.filter((c) => !dropped.has(c.path));
-	let chunks = [...keptOld, ...fresh];
+	// `fresh` first, `keptOld` second: on a full-index eviction below, slicing to INDEX_MAX must
+	// keep the just-changed/new chunks over stale ones, mirroring mail's recency-ordered eviction
+	// (#734/#731) — files have no receivedAt to sort by, but "just touched" is the same signal.
+	let chunks = [...fresh, ...keptOld];
 	const truncated = cached.truncated || chunks.length > INDEX_MAX;
-	if (chunks.length > INDEX_MAX) chunks = chunks.slice(0, INDEX_MAX); // listing order, same simplification as buildFull
+	if (chunks.length > INDEX_MAX) chunks = chunks.slice(0, INDEX_MAX);
 	return { index: { cursor, version: VERSION, at: Date.now(), total: new Set(chunks.map((c) => c.path)).size, truncated, chunks }, changed: true };
 }
 

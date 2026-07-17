@@ -55,10 +55,25 @@ export const vault_consolidate_plan: Fn = {
 				}),
 			);
 			const { duplicate_candidates } = classifyNotes(paths, contents, cutoffIso(staleDays(env), new Date()), staleDays(env));
-			const clusters = duplicate_candidates
-				.filter((d) => contents.has(d.a) && contents.has(d.b))
+			// classifyNotes emits pairwise candidates (for the digest's "a ↔ b" display), but a
+			// duplicate GROUP of 3+ notes must become exactly ONE cluster — every pair sharing a
+			// key already names the same group, so collapse by key back into the full member set
+			// before handing it to the op (#764: pairwise clusters sharing a `keep` overwrote each
+			// other's merge one-by-one).
+			const keyToGroup = new Map<string, Set<string>>();
+			for (const d of duplicate_candidates) {
+				if (!contents.has(d.a) || !contents.has(d.b)) continue;
+				const group = keyToGroup.get(d.key) ?? new Set<string>();
+				group.add(d.a);
+				group.add(d.b);
+				keyToGroup.set(d.key, group);
+			}
+			const clusters = [...keyToGroup.entries()]
 				.slice(0, maxClusters)
-				.map((d) => ({ a: d.a, aContent: contents.get(d.a)!, b: d.b, bContent: contents.get(d.b)!, key: d.key }));
+				.map(([key, group]) => {
+					const groupPaths = [...group];
+					return { paths: groupPaths, contents: groupPaths.map((p) => contents.get(p)!), key };
+				});
 			if (!clusters.length) return ok(oj({ scanned: paths.length, candidates: 0, note: "no duplicate candidates found — nothing to merge" }));
 			const res = await runVerb({ op: "vault-consolidate-plan", input: clusters, mode: "durable" }, env);
 			return ok(
