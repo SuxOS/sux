@@ -103,3 +103,20 @@ test("mail-labels sink fails loud when labelMessages reports an error", async ()
 	const { sinks } = makeCaps({} as unknown as RtEnv);
 	await expect(sinks["mail-labels"].write([{ id: "1", label: "junk", add: true, confidence: 0.9, reason: "x" }], {} as Caps)).rejects.toThrow(/JMAP rejected the patch/);
 });
+
+test("mail-labels sink reads labelMessages' actual labeled/failed counts instead of assuming the whole group succeeded", async () => {
+	labelMessages.mockClear();
+	// A PARTIAL failure (2 of 3 ids updated) still comes back isError:false — only 1 of the
+	// 3 ids in this group should count as labeled, not all 3.
+	labelMessages.mockResolvedValueOnce({ content: [{ type: "text", text: JSON.stringify({ labeled: 1, keyword: "junk", add: true, failed: 2, errors: { "2": {}, "3": {} } }) }] });
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["mail-labels"].write(
+		[
+			{ id: "1", label: "junk", add: true, confidence: 0.9, reason: "x" },
+			{ id: "2", label: "junk", add: true, confidence: 0.9, reason: "y" },
+			{ id: "3", label: "junk", add: true, confidence: 0.9, reason: "z" },
+		],
+		{} as Caps,
+	);
+	expect(out).toEqual({ labeled: 1, groups: 1, failed: 2 });
+});

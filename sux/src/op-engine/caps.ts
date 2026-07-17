@@ -117,14 +117,26 @@ function mailLabelsSink(env: RtEnv): SinkTarget {
 			if (!groups.size) return { labeled: 0, groups: 0 };
 			const { labelMessages } = await import("../mail-mcp.js");
 			let labeled = 0;
+			let failed = 0;
 			for (const [key, ids] of groups) {
 				const add = key.startsWith("+");
 				const label = key.slice(1);
 				const r = await labelMessages(env, ids, label, add);
 				if (r.isError) throw new Error(`run: the mail-labels sink failed applying '${label}': ${r.content?.[0]?.text ?? "unknown error"}`);
-				labeled += ids.length;
+				// labelMessages can PARTIALLY fail (some ids updated, some not) while still
+				// returning isError:false — read its actual `labeled`/`failed` counts rather than
+				// assuming every id in the group succeeded (that would silently over-report success).
+				let parsed: { labeled?: unknown; failed?: unknown } = {};
+				try {
+					parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
+				} catch {
+					// unparseable response body: fall through and count the whole group as labeled,
+					// matching prior (pre-fix) behavior rather than under-reporting on a shape we can't read.
+				}
+				labeled += typeof parsed.labeled === "number" ? parsed.labeled : ids.length;
+				failed += typeof parsed.failed === "number" ? parsed.failed : 0;
 			}
-			return { labeled, groups: groups.size };
+			return { labeled, groups: groups.size, ...(failed ? { failed } : {}) };
 		},
 	};
 }
