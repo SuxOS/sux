@@ -1,6 +1,6 @@
 import { test, expect } from "vitest";
 import { MemoryStore, fixed, op, pipe, map, reconcile, sink, ask, stamp, type Caps } from "@suxos/lib";
-import { interpretDurable } from "./durable.js";
+import { AskRejectedError, interpretDurable } from "./durable.js";
 
 // A FAKE WorkflowStep: `do` runs the callback inline (so the interpreter's step
 // bodies execute in plain node vitest, no workerd), and `waitForEvent` records the
@@ -18,10 +18,10 @@ const fakeStep = (rec: { events: string[]; sinks?: string[] }): any => ({
 
 // A fake WorkflowStep whose waitForEvent always rejects — the seam an `ask` node's
 // try/catch is built to handle (a real Workflow throws once a wait's timeout elapses).
-const rejectingStep = (): any => ({
+const rejectingStep = (message = "waitForEvent timed out"): any => ({
 	do: async (_name: string, fn: any) => fn(),
 	waitForEvent: async (_name: string, _opts: { type: string }) => {
-		throw new Error("waitForEvent timed out");
+		throw new Error(message);
 	},
 	sleep: async () => {},
 });
@@ -75,6 +75,38 @@ test("interpretDurable's ask swallows a waitForEvent timeout when onTimeout is '
 
 	const fail = ask("ok?", { timeout: "1 hour", onTimeout: "fail" });
 	await expect(interpretDurable(fail, "unchanged", step, caps, "op4")).rejects.toThrow("waitForEvent timed out");
+});
+
+test("interpretDurable's ask rethrows a non-timeout waitForEvent error even when onTimeout is 'proceed'", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const step = rejectingStep("RPC transport disconnected");
+
+	const proceed = ask("ok?", { timeout: "1 hour", onTimeout: "proceed" });
+	await expect(interpretDurable(proceed, "unchanged", step, caps, "op7")).rejects.toThrow("RPC transport disconnected");
+});
+
+test("interpretDurable's ask throws AskRejectedError when answered with {approved: false}, even under onTimeout: 'proceed'", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const step: any = {
+		do: async (_name: string, fn: any) => fn(),
+		waitForEvent: async () => ({ payload: { approved: false, reason: "not ready" } }),
+		sleep: async () => {},
+	};
+
+	const proceed = ask("ok?", { timeout: "1 hour", onTimeout: "proceed" });
+	await expect(interpretDurable(proceed, "unchanged", step, caps, "op8")).rejects.toThrow(AskRejectedError);
+});
+
+test("interpretDurable's ask proceeds normally when answered with a payload that doesn't explicitly reject", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const step: any = {
+		do: async (_name: string, fn: any) => fn(),
+		waitForEvent: async () => ({ payload: { approved: true } }),
+		sleep: async () => {},
+	};
+
+	const proceed = ask("ok?", { timeout: "1 hour", onTimeout: "proceed" });
+	await expect(interpretDurable(proceed, "unchanged", step, caps, "op9")).resolves.toBe("unchanged");
 });
 
 test("interpretDurable propagates a map item's error and releases the concurrency limiter", async () => {

@@ -2,6 +2,7 @@ import { type Fn, fail, ok } from "../registry";
 import { smartFetch } from "../proxy";
 import { extractRpcFromText } from "../mcp-util";
 import { cfOriginHint, fromB64, toB64, oj, safeParseJson } from "./_util";
+import { maybeCompressString, maybeDecompressString } from "./_gzip";
 
 // Work with Obsidian markdown notes across two backends:
 //   git    (default) — a git-backed vault via the GitHub API (async, versioned).
@@ -61,16 +62,26 @@ const headKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:he
 const gitNoteKey = (cfg: VaultCfg, p: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:note:${cfg.inVault(normPath(p))}`;
 const gitListKey = (cfg: VaultCfg, filter: string) => `cache:vault:git:${cfg.repo}@${cfg.branch}:list:${filter || "/"}`;
 const gitIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:index`;
+const gitSemanticIndexKey = (cfg: VaultCfg) => `cache:vault:git:${cfg.repo}@${cfg.branch}:semantic`;
 const remoteNoteKey = (p: string) => `cache:vault:remote:note:${normPath(p)}`;
 
 async function cacheGet(env: any, key: string): Promise<any | null> {
 	const raw = await env.OAUTH_KV?.get(key).catch(() => null);
-	return safeParseJson(raw, null);
+	if (!raw) return null;
+	const decompressed = await maybeDecompressString(raw).catch(() => raw);
+	return safeParseJson(decompressed, null);
 }
-async function cachePut(env: any, key: string, value: unknown): Promise<void> {
+async function cachePut(env: any, key: string, value: unknown): Promise<boolean> {
 	try {
-		await env.OAUTH_KV?.put(key, JSON.stringify(value));
-	} catch {}
+		await env.OAUTH_KV?.put(key, await maybeCompressString(JSON.stringify(value)));
+		return true;
+	} catch (e) {
+		// Best-effort cache — a write hiccup must never fail the request it's caching for.
+		// Logged (not swallowed silently) since a dropped write otherwise looks identical to
+		// a healthy cache miss, e.g. an over-25MiB KV value silently never persisting (#717).
+		console.log(`obsidian: cache write for ${key} failed: ${e instanceof Error ? e.message : String(e)}`);
+		return false;
+	}
 }
 async function cacheDel(env: any, key: string): Promise<void> {
 	try {
@@ -84,8 +95,18 @@ async function cacheDel(env: any, key: string): Promise<void> {
 export async function readVaultIndexBlob(env: any, cfg: VaultCfg): Promise<any | null> {
 	return cacheGet(env, gitIndexKey(cfg));
 }
-export async function writeVaultIndexBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<void> {
+export async function writeVaultIndexBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<boolean> {
 	return cachePut(env, gitIndexKey(cfg), blob);
+}
+
+// Same HEAD-keyed cache/invalidation contract as the derived-scan index above, but a
+// DISTINCT key (and shape: chunk text + embeddings, not {path,fm,tags,links}) — owned by
+// _vault_semantic.ts's chunk+embed index, kept opaque here for the same reason.
+export async function readVaultSemanticBlob(env: any, cfg: VaultCfg): Promise<any | null> {
+	return cacheGet(env, gitSemanticIndexKey(cfg));
+}
+export async function writeVaultSemanticBlob(env: any, cfg: VaultCfg, blob: unknown): Promise<boolean> {
+	return cachePut(env, gitSemanticIndexKey(cfg), blob);
 }
 
 export async function vaultHead(env: any, cfg: VaultCfg): Promise<string | null> {
@@ -380,9 +401,16 @@ export const obsidian: Fn = {
 		const backend = String(args?.backend ?? "git").trim().toLowerCase();
 		// Guard EVERY path-taking action, both backends, before dispatch — a `read`
 		// (or any verb) with a '..'/dot segment is arbitrary-file disclosure on the
-		// remote Local REST API, not just an infra-write risk (§592).
-		if (["read", "append", "write", "edit", "delete"].includes(action)) {
-			const p0 = String(args?.path ?? "").trim();
+		// remote Local REST API, not just an infra-write risk (§592). `list` enumerates
+		// a directory on the remote backend (`encPath` doesn't escape '.'), so a
+		// dot-prefixed path there discloses .obsidian/ infra just like a bad `read`
+		// path would (§702); `search` takes no path but is included defensively.
+		if (["list", "read", "search", "append", "write", "edit", "delete"].includes(action)) {
+			const raw = String(args?.path ?? "").trim();
+			// `list`'s own dispatch (both backends) strips leading/trailing slashes before
+			// treating the path as a folder filter/dir — mirror that here so 'Area/' or the
+			// root listing ('/') isn't misread as a bad trailing-empty segment.
+			const p0 = action === "list" ? raw.replace(/^\/+|\/+$/g, "") : raw;
 			const bad = p0 ? badVaultPath(p0) : null;
 			if (bad) return fail(bad);
 		}

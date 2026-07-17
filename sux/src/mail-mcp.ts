@@ -1,7 +1,10 @@
 import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
+import { hasAI } from "./ai";
 import { staged } from "./stage";
 import { jmap } from "./fns/jmap";
 import { doUpload, downloadBlobBytes, jstr, scopeProbe, submissionMaxDelayedSend } from "./fns/_jmap";
+import { embedOne } from "./fns/_embed";
+import { mailSemanticIndex, topKMailByCosine } from "./fns/_mail_semantic";
 import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, dateProp, hasCalDav, icalDateToIso, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./fns/_caldav";
 import { htmlToMd } from "./fns/_markup";
 import { errMsg, putBlob, storeBase } from "./fns/_util";
@@ -45,6 +48,36 @@ function resultFor(resp: { methodResponses: any[] }, method: string, callId?: st
 }
 
 const clamp = (v: unknown, lo: number, hi: number, dflt: number): number => Math.min(hi, Math.max(lo, Number(v) || dflt));
+
+// Fastmail's maxObjectsInSet (fns/_jmap.ts's coreLimits reads it off the Session but
+// nothing enforces it for a Set) is 500 — an Email/set update over that many ids is
+// rejected outright by the server. Chunk any bulk update to this size so a caller can
+// pass an arbitrarily large `ids` array without hitting the cap (mail_sieve_backfill's
+// end-of-run label call is the sharp case: a single flag easily exceeds 500 matches).
+const JMAP_MAX_OBJECTS_IN_SET = 500;
+
+function chunked<T>(arr: T[], size: number): T[][] {
+	const out: T[][] = [];
+	for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+	return out;
+}
+
+/** Run an Email/set `update` over `ids` in ≤JMAP_MAX_OBJECTS_IN_SET-id chunks, accumulating
+ *  updated/notUpdated across every chunk so the caller decides success/failure once, over the
+ *  whole id list — not per chunk. `patchFor` builds each id's per-message patch. */
+async function chunkedEmailSetUpdate(env: RtEnv, ids: string[], patchFor: (id: string) => Record<string, unknown>): Promise<{ updated: string[]; notUpdated: Record<string, unknown> }> {
+	const updated: string[] = [];
+	const notUpdated: Record<string, unknown> = {};
+	for (const batch of chunked(ids, JMAP_MAX_OBJECTS_IN_SET)) {
+		const update: Record<string, unknown> = {};
+		for (const id of batch) update[id] = patchFor(id);
+		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
+		const setResult = resultFor(resp, "Email/set");
+		updated.push(...Object.keys(setResult?.updated ?? {}));
+		Object.assign(notUpdated, setResult?.notUpdated ?? {});
+	}
+	return { updated, notUpdated };
+}
 
 // --- mail_push (JMAP PushSubscription) — one KV record, keyed by a fixed key since sux
 // only ever needs one live subscription (one Fastmail account). The URL path segment
@@ -444,6 +477,7 @@ async function buildFilter(env: RtEnv, a: any): Promise<Record<string, unknown>>
 		// id just yields no matches) — only the mutating verbs (move/rename/delete) hard-fail on it.
 		conds.inMailbox = resolveMailboxId(map, String(a.mailbox)) ?? String(a.mailbox);
 	}
+	if (a?.label) conds.hasKeyword = keywordFor(String(a.label));
 	if (a?.unread === true) {
 		// unread = NOT $seen. JMAP composes with an operator node.
 		return { operator: "AND", conditions: [conds, { operator: "NOT", conditions: [{ hasKeyword: "$seen" }] }] };
@@ -458,7 +492,7 @@ const ok = (v: unknown): ToolResult => ({ content: [{ type: "text", text: jstr(v
 const TOOLS: MailTool[] = [
 	{
 		name: "mail_search",
-		description: "Search mail — returns message references (id, subject, from, preview), never bodies. Filter by query text, mailbox (role like inbox/archive or a name), from, subject, unread, after/before (ISO dates). Page past the first 50 with `position` (0-based offset into the result set); flip to oldest-first with `ascending:true`. Returns total (full match count) + position so you can page. Read one with mail_read.",
+		description: "Search mail — returns message references (id, subject, from, preview), never bodies. Filter by query text, mailbox (role like inbox/archive or a name), from, subject, label (a keyword applied by mail_label, e.g. junk/mailing_list/notification), unread, after/before (ISO dates). Page past the first 50 with `position` (0-based offset into the result set); flip to oldest-first with `ascending:true`. Returns total (full match count) + position so you can page. Read one with mail_read.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -467,6 +501,7 @@ const TOOLS: MailTool[] = [
 				mailbox: { type: "string", description: "Mailbox role (inbox, archive, sent, drafts, trash, junk) or display name." },
 				from: { type: "string", description: "Filter by sender." },
 				subject: { type: "string", description: "Filter by subject." },
+				label: { type: "string", description: "Only messages carrying this keyword/label (as applied by mail_label or mail_sieve_backfill), e.g. 'junk', 'mailing_list'." },
 				unread: { type: "boolean", description: "Only unread messages." },
 				after: { type: "string", description: "Only messages after this ISO date/time." },
 				before: { type: "string", description: "Only messages before this ISO date/time." },
@@ -541,6 +576,35 @@ const TOOLS: MailTool[] = [
 				});
 				const emails = (resultFor(resp, "Email/get")?.list ?? []).slice().sort(byReceived(true)); // chronological thread order
 				return ok({ threadId, count: emails.length, messages: emails.map(shapeRef) });
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "mail_semantic",
+		description:
+			"Semantic search over mail via Workers-AI embeddings — finds messages by MEANING, not keyword (complements mail_search's server-side JMAP text filter). Brute-force cosine kNN over the most recent messages' subject+preview, chunked+embedded and KV-cached, INCREMENTALLY maintained against JMAP's Email state (Email/changes adds new mail and drops deleted, rather than re-embedding the whole mailbox each call). Returns the top-k matching messages with their id (mail_read to open one). Needs the Workers-AI binding.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["q"],
+			properties: {
+				q: { type: "string", description: "Natural-language query." },
+				k: { type: "integer", minimum: 1, maximum: 50, description: "How many messages to return (default 8)." },
+			},
+		},
+		run: async (env, a) => {
+			const q = typeof a?.q === "string" ? a.q.trim() : "";
+			if (!q) return failWith("bad_input", "mail_semantic requires a non-empty `q`.");
+			if (!hasAI(env)) return failWith("not_configured", 'Workers AI binding not configured (add "ai" to wrangler) — needed to embed the mailbox and the query.');
+			try {
+				const idx = await mailSemanticIndex(env);
+				if (!idx) return failWith("not_configured", "Fastmail JMAP not configured — needed to build/read the mail semantic index.");
+				const vec = await embedOne(env, q);
+				const k = Math.min(50, Math.max(1, Number(a?.k) || 8));
+				const hits = topKMailByCosine(vec, idx.chunks, k);
+				return ok({ q, count: hits.length, hits, scanned: idx.chunks.length, total: idx.total, truncated: idx.truncated });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
@@ -812,6 +876,21 @@ const TOOLS: MailTool[] = [
 		description: "Move messages to a mailbox (by role like inbox/archive/junk/trash, a display name, or a raw id). Reversible.",
 		inputSchema: { type: "object", additionalProperties: false, required: ["ids", "mailbox"], properties: { ids: { type: "array", items: { type: "string" } }, mailbox: { type: "string" } } },
 		run: async (env, a) => moveMessages(env, a?.ids, String(a?.mailbox ?? "")),
+	},
+	{
+		name: "mail_label",
+		description: "Add or remove a keyword ('label') on messages — a flag toggle, not a move; the message stays exactly where it is. Fully reversible (add then remove is a no-op). Same op mail_sieve_backfill uses to apply its coarse tags; use mail_search with `label` to find which messages currently carry one.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["ids", "label"],
+			properties: {
+				ids: { type: "array", items: { type: "string" }, description: "Email ids." },
+				label: { type: "string", description: "The keyword to toggle, e.g. 'junk', 'mailing_list'." },
+				add: { type: "boolean", default: true, description: "true (default) applies the label; false removes it." },
+			},
+		},
+		run: async (env, a) => labelMessages(env, a?.ids, String(a?.label ?? ""), a?.add !== false),
 	},
 	{
 		name: "mail_masked",
@@ -1470,12 +1549,8 @@ export async function moveMessages(env: RtEnv, ids: unknown, target: string | st
 		}
 		// A MOVE sets mailboxIds to EXACTLY the target set — the additive `mailboxIds/<id>:true`
 		// patch left the message in its origin mailbox too (move-to-trash stayed in the Inbox).
-		const update: Record<string, unknown> = {};
-		for (const id of list) update[id] = { mailboxIds: Object.fromEntries(targetIds.map((tid) => [tid, true])) };
-		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
-		const setResult = resultFor(resp, "Email/set");
-		const moved = Object.keys(setResult?.updated ?? {});
-		const notUpdated = setResult?.notUpdated ?? {};
+		const mailboxIds = Object.fromEntries(targetIds.map((tid) => [tid, true]));
+		const { updated: moved, notUpdated } = await chunkedEmailSetUpdate(env, list, () => ({ mailboxIds }));
 		const failed = Object.keys(notUpdated);
 		// Don't report a silent moved:0 — an invalid target / rejected patch surfaces as an error.
 		if (!moved.length && failed.length) return fail(`move to '${targets.join(", ")}' failed: ${JSON.stringify(notUpdated).slice(0, 300)}`);
@@ -1500,12 +1575,8 @@ export async function labelMessages(env: RtEnv, ids: unknown, label: string, add
 	const keyword = keywordFor(label);
 	if (!list.length || !label) return failWith("bad_input", "requires a non-empty `ids` array and a `label`.");
 	try {
-		const update: Record<string, unknown> = {};
-		for (const id of list) update[id] = { [`keywords/${keyword}`]: add ? true : null };
-		const resp = await jmapCall(env, { calls: [["Email/set", { update }, "u"]] });
-		const setResult = resultFor(resp, "Email/set");
-		const changed = Object.keys(setResult?.updated ?? {});
-		const notUpdated = setResult?.notUpdated ?? {};
+		const patch = { [`keywords/${keyword}`]: add ? true : null };
+		const { updated: changed, notUpdated } = await chunkedEmailSetUpdate(env, list, () => patch);
 		const failed = Object.keys(notUpdated);
 		if (!changed.length && failed.length) return fail(`${add ? "add" : "remove"} label '${keyword}' failed: ${JSON.stringify(notUpdated).slice(0, 300)}`);
 		return ok({ labeled: changed.length, keyword, add, ...(failed.length ? { failed: failed.length, errors: notUpdated } : {}) });

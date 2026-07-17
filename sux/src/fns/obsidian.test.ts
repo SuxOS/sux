@@ -7,7 +7,7 @@ vi.mock("../proxy", () => ({
 	smartFetch: vi.fn(async (_env: any, url: string, init?: any) => routes.handler!(url, init)),
 }));
 
-import { obsidian } from "./obsidian";
+import { obsidian, readVaultIndexBlob, readVaultSemanticBlob, type VaultCfg, vaultCfg, writeVaultIndexBlob, writeVaultSemanticBlob } from "./obsidian";
 
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
 const ENV = { OBSIDIAN_VAULT_REPO: "me/vault" } as any;
@@ -552,6 +552,25 @@ describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
 		expect(fetchMock).not.toHaveBeenCalled(); // the traversal never reached the vault
 	});
 
+	it("refuses a dot-prefixed list before hitting the Local REST API (§702)", async () => {
+		const fetchMock = vi.fn(async () => new Response("SHOULD NOT BE REACHED", { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+		const r = await obsidian.run(REMOTE, { action: "list", path: ".obsidian", backend: "remote" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/Refusing vault path/);
+		expect(fetchMock).not.toHaveBeenCalled(); // .obsidian/ was never enumerated
+	});
+
+	it("still lists the root and slash-terminated folders on the remote backend (no false positive from the guard)", async () => {
+		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
+			expect(String(u)).toBe("https://vault.tailnet.ts.net/vault/Area/");
+			return new Response(JSON.stringify({ files: ["a.md"] }), { status: 200 });
+		}));
+		const r = await obsidian.run(REMOTE, { action: "list", path: "Area/", backend: "remote" });
+		expect(r.isError).toBeFalsy();
+		expect(JSON.parse(r.content[0].text)).toMatchObject({ dir: "Area", count: 1 });
+	});
+
 	it("reads a note as text", async () => {
 		vi.stubGlobal("fetch", vi.fn(async (u: string | URL) => {
 			expect(String(u)).toBe("https://vault.tailnet.ts.net/vault/notes/x.md");
@@ -698,5 +717,43 @@ describe("obsidian (remote backend — Funnel'd Local REST API)", () => {
 		const r = await obsidian.run({ ...REMOTE, OAUTH_KV: kv }, { action: "read", path: "notes/x.md", backend: "remote" });
 		expect(r.content[0].text).toBe("# Live");
 		expect(JSON.parse(kv.store.get("cache:vault:remote:note:notes/x.md")!)).toMatchObject({ body: "# Live", src: "remote" });
+	});
+});
+
+describe("obsidian's KV blob cache (index + semantic)", () => {
+	it("compresses a large blob on write and transparently decompresses it on read", async () => {
+		const kv = fakeKV();
+		const env = { ...ENV, OAUTH_KV: kv };
+		const cfg = vaultCfg(env) as VaultCfg;
+		const bigBlob = { chunks: Array.from({ length: 50 }, (_, i) => ({ path: `n${i}.md`, text: "x".repeat(200) })) };
+
+		const wrote = await writeVaultIndexBlob(env, cfg, bigBlob);
+		expect(wrote).toBe(true);
+		const raw = kv.store.get("cache:vault:git:me/vault@main:index")!;
+		expect(raw.length).toBeLessThan(JSON.stringify(bigBlob).length); // actually compressed, not stored raw
+		expect(() => JSON.parse(raw)).toThrow(); // the on-the-wire frame isn't plain JSON
+
+		await expect(readVaultIndexBlob(env, cfg)).resolves.toEqual(bigBlob);
+	});
+
+	it("readVaultSemanticBlob/writeVaultSemanticBlob round-trip through the same compressed cache", async () => {
+		const kv = fakeKV();
+		const env = { ...ENV, OAUTH_KV: kv };
+		const cfg = vaultCfg(env) as VaultCfg;
+		const blob = { sha: "abc", chunks: [{ path: "a.md", embedding: "base64==" }] };
+
+		expect(await writeVaultSemanticBlob(env, cfg, blob)).toBe(true);
+		expect(await readVaultSemanticBlob(env, cfg)).toEqual(blob);
+	});
+
+	it("a dropped write (KV put throws — e.g. over the 25MiB value cap) is logged, not swallowed silently", async () => {
+		const env = { ...ENV, OAUTH_KV: { get: async () => null, put: async () => { throw new Error("KV PUT failed: 413"); }, delete: async () => {} } };
+		const cfg = vaultCfg(env) as VaultCfg;
+		const warn = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const wrote = await writeVaultSemanticBlob(env, cfg, { chunks: [] });
+		expect(wrote).toBe(false);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/cache write .* failed.*KV PUT failed/));
+		warn.mockRestore();
 	});
 });

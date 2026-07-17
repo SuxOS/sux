@@ -34,6 +34,20 @@ const MAP_FANOUT_CEILING = 20_000;
 
 export type OpParams = { opId: string; input: any };
 
+/** Thrown when a human answers an `ask` gate with `{approved: false}` — a graceful
+ * reject-and-stop distinct from the wait simply timing out. `instance.status()` surfaces
+ * it via `error.name`/`error.message`, so a caller polling status can tell "the human
+ * said no" apart from any other run failure without needing a suxlib `Op` schema change. */
+export class AskRejectedError extends Error {
+	constructor(
+		public readonly prompt: string,
+		public readonly payload: unknown,
+	) {
+		super(`ask "${prompt}" was rejected by the answering payload`);
+		this.name = "AskRejectedError";
+	}
+}
+
 /**
  * Interpret one `Op` node against a durable `WorkflowStep`. `path` is the caller's
  * positional address of this node in the tree — the prefix every step name derives
@@ -81,14 +95,38 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 			// A human pause: block on an external event whose `type` an approver sends
 			// back (instance.sendEvent). `Op.timeout` is a looser `string` than the
 			// Workflow API's template-literal duration, so we assert the cast here.
+			let payload: any;
 			try {
-				await step.waitForEvent<any>(`${path}:ask`, { type: `ask:${node.prompt}`, timeout: node.timeout as WorkflowTimeoutDuration });
+				const event = await step.waitForEvent<any>(`${path}:ask`, { type: `ask:${node.prompt}`, timeout: node.timeout as WorkflowTimeoutDuration });
+				payload = event?.payload;
 			} catch (e) {
-				if (node.onTimeout === "fail") throw e;
+				// The Workers API gives no typed way to tell "the wait elapsed" apart
+				// from any other rejection (a transport error, a dropped RPC), so we
+				// go by message/name — the one signal a real timeout is guaranteed to
+				// carry. Anything that doesn't look like a timeout always propagates,
+				// even under onTimeout: "proceed": a non-timeout failure here must not
+				// silently auto-approve a human-review gate.
+				if (node.onTimeout === "fail" || !isWaitForEventTimeout(e)) throw e;
+				return input;
 			}
+			// A human can VETO the gate, not just unblock it, by answering with an
+			// explicit `{approved: false}` payload (run action:answer) — `onTimeout`
+			// only covers the wait elapsing, not an explicit "no", so without this an
+			// `ask` could only ever be delayed, never rejected, short of cancelling the
+			// whole instance.
+			if (payload && typeof payload === "object" && payload.approved === false) throw new AskRejectedError(node.prompt, payload);
 			return input;
 		}
+		default: {
+			const _exhaustive: never = node;
+			throw new Error(`interpretDurable: unhandled op tag: ${(node as Op).tag}`);
+		}
 	}
+}
+
+function isWaitForEventTimeout(e: unknown): boolean {
+	if (!(e instanceof Error)) return false;
+	return /timed?\s*out/i.test(e.name) || /timed?\s*out/i.test(e.message);
 }
 
 /**

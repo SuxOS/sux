@@ -61,6 +61,11 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   branch is held by another worktree, and a following rebase/push then operates on the WRONG
   branch. Drain/rebase PRs from a **detached scratch worktree** (`git worktree add --detach
   $SCRATCH origin/<br>` → rebase → `push HEAD:<br>`), never a plain checkout.
+- **A bot-build's starting branch can already be behind `origin/main`** — other builders'
+  PRs land while yours is queued/running, and an issue can reference a file a just-merged PR
+  added (e.g. #712 needed #708/#710's `_vault_semantic.ts`, absent from the branch's own base).
+  `git fetch origin main && git rebase origin/main` before assuming a referenced file/symbol
+  is missing or the issue is stale — it's often just that your branch hasn't caught up yet.
 - **When a code-audit finding hinges on the exact contents of a regex or other
   code containing non-printable/control characters, verify with `od -c`/`cat -A`
   (or execute the code against the claimed-failing input) before filing or
@@ -81,6 +86,66 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   unrelated files resolve; diff `npm test`'s failure set against the same stub on
   a clean `main` to prove your change adds nothing new, then trust real CI (which
   has the actual library) for those files' real behavior.
+- **Cloudflare Workflows' `step.waitForEvent` has no typed/distinguishable error
+  for "the wait timed out"** vs. any other rejection (transport error, dropped
+  RPC) — even Cloudflare's own docs just wrap the whole call in one blanket
+  try/catch. Code that treats *every* caught error as a timeout (e.g. to proceed
+  past a human-approval pause) fails OPEN on real failures, not just timeouts
+  (#682). `sux/src/op-engine/durable.ts`'s `isWaitForEventTimeout` sniffs
+  `error.name`/`.message` for a timeout-shaped string as the least-bad available
+  signal — reuse that heuristic rather than re-deriving it.
+- **A bot-build sandbox's `../suxlib` git remote is READ-only**, even though it's
+  cloned with an embedded `x-access-token` that looks like it could push — `git push`
+  there 403s ("Write access to repository not granted"). An issue phrased as "a
+  future build with suxlib write access should do X" is not buildable by an
+  automated session today; don't spend gate/turn budget implementing the suxlib-side
+  half only to find you can't land it — check `git push` (or just try it early)
+  before doing real work there, and drop the issue back to the queue instead.
+- **A feature that needs a NEW Cloudflare resource** (a Vectorize index, D1
+  database, extra R2 bucket/Queue, …) **beyond what's already bound in
+  `wrangler.jsonc` isn't buildable in one bot-build session** — provisioning it
+  needs a real `wrangler <resource> create` against the account, which a sandbox
+  has no credentials for; don't assume an adjacent primitive (e.g. `_embed.ts`'s
+  Workers-AI `embed()`/`cosine()`, used by `#701`'s `vault_semantic` gap) means
+  the rest is a small lift. Recognize effort-`L` issues of this shape early and
+  drop them back to the queue rather than half-building them.
+- **Correction to the bullet above's example: `vault_semantic` (#701/#708) turned out
+  buildable with zero new resources** — `_source.ts`/`_examples.ts` already prove the
+  brute-force-KV-cosine pattern needs only the existing `AI` + `OAUTH_KV` bindings; #701
+  was closed on a mistaken premise and rebuilt in #708. The general principle (a feature
+  needing a genuinely NEW Cloudflare resource isn't buildable in one session) still
+  holds — just verify the "needs Vectorize/D1/etc." premise before trusting it, don't
+  take a prior closing note at face value. Separately: Workers-AI's `bge-base-en-v1.5`
+  hard-caps a single `embed()`/`AI.run` call at **100 texts** (undocumented in this repo
+  before #708) — any call site batching an unbounded chunk count (e.g. a long document)
+  must slice into ≤100-sized batches or the call errors; see `_vault_semantic.ts`'s
+  `embedBatched()` for the shape.
+- **A durable op's leaf (`op(name, fn, opts)`) only ever receives `caps` (store/llm/clock/
+  sinks) — never `env`**, because `op-engine/registry.ts`'s factories are typed `() => Op`
+  (zero args, by design — see that file's replay-determinism note). A leaf that needs a
+  binding outside `caps` (mail/JMAP, KV, any other RtEnv secret) can't reach it directly.
+  Two ways around it, both used by `mail-triage-plan` (#718): do the env-needing fetch in the
+  CALLING fn before `run` even starts and pass the result in as the op's `input` (see
+  `mail_triage_plan.ts`), or add a new `caps.sinks[name]` target in `caps.ts`'s `makeSinks(env)`
+  — which DOES close over `env` already — for an env-needing terminal write (see `caps.ts`'s
+  `mailLabelsSink`). Don't widen the `Caps` type itself for this; it's defined in `@suxos/lib`,
+  a separate read-only-in-sandbox repo (see the `../suxlib` gotcha above).
+- **Bare `npx vitest run <path>` silently misbehaves in this repo** — the include glob and
+  the `cloudflare:workers` alias (needed because `op-engine/durable.ts`'s `OpWorkflow` value-
+  imports it, and `index.ts` re-exports `OpWorkflow`, pulling it into almost every test file's
+  import graph) both live in `sux/vitest.config.ts`, which only `npm test`/`npm run ci` pass
+  automatically. A bare invocation either reports "No test files found" (wrong cwd/glob) or
+  `Cannot find package 'cloudflare:workers'` (no alias) — neither means the code is broken.
+  For an ad hoc single-file run use `npx vitest run --config sux/vitest.config.ts <path>`.
+- **A JMAP per-call error (e.g. `Email/changes`'s `cannotCalculateChanges` when `sinceState`
+  has aged out server-side) comes back as a normal `["error", {type,...}, callId]` entry
+  INSIDE `methodResponses`** — `fns/jmap.ts`'s `jmap.run`/`_jmap.ts`'s `runBatch` only throw
+  for a REQUEST-level failure (auth, rate limit, transport); per-call errors are silent unless
+  the caller checks that callId's response for `mr[0] === "error"`. Code that assumes any
+  JMAP problem throws will silently treat an error response as an empty/absent result instead
+  of the specific failure it is — see `_mail_semantic.ts`'s `methodResult()` for the check
+  (used to fall back from an incremental `Email/changes` diff to a full rebuild on exactly
+  this error).
 
 ## House style
 

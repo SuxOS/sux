@@ -169,6 +169,64 @@ describe("mail_* ergonomic tools", () => {
 		expect(q).toMatchObject({ position: 50, calculateTotal: true, sort: [{ property: "receivedAt", isAscending: true }] });
 	});
 
+	it("mail_search filters by label via hasKeyword, using the same keyword mapping as mail_label", async () => {
+		const f = installFetch();
+		await tool("mail_search").run(env(), { label: "mailing_list", limit: 10 });
+		const body = JSON.parse(f.mock.calls.find((c: any) => String(c[0]).includes("/jmap/api"))![1].body);
+		const q = body.methodCalls.find((c: any) => c[0] === "Email/query")[1];
+		expect(q.filter).toMatchObject({ hasKeyword: "mailing_list" });
+	});
+
+	it("mail_label adds a keyword by default, and removes it with add:false — same op mail_sieve_backfill uses", async () => {
+		installFetch();
+		lastEmailSet = null;
+		await tool("mail_label").run(env(), { ids: ["e1"], label: "junk" });
+		expect(lastEmailSet.update.e1).toEqual({ "keywords/junk": true });
+
+		lastEmailSet = null;
+		await tool("mail_label").run(env(), { ids: ["e1"], label: "junk", add: false });
+		expect(lastEmailSet.update.e1).toEqual({ "keywords/junk": null });
+	});
+
+	it("mail_label requires ids and label", async () => {
+		const r = await tool("mail_label").run(env(), { ids: [] });
+		expect(r.isError).toBe(true);
+	});
+
+	// #707: Fastmail's maxObjectsInSet is 500 — an Email/set update over that many ids is
+	// rejected by the server outright. labelMessages/moveMessages must chunk, accumulating
+	// updated/notUpdated across chunks, so a caller (esp. mail_sieve_backfill's end-of-run
+	// label call) can pass an arbitrarily large ids array without hitting the cap.
+	function emailSetCalls(f: any): any[] {
+		return f.mock.calls
+			.filter((c: any) => String(c[0]).includes("/jmap/api"))
+			.map((c: any) => JSON.parse(c[1].body).methodCalls.find((m: any) => m[0] === "Email/set"))
+			.filter(Boolean);
+	}
+
+	it("mail_label chunks a bulk update to ≤500 ids per Email/set call, accumulating results across chunks (#707)", async () => {
+		const f = installFetch();
+		const ids = Array.from({ length: 1200 }, (_, i) => (i === 10 || i === 600 ? `bad${i}` : `e${i}`));
+		const out = parse(await tool("mail_label").run(env(), { ids, label: "junk" }));
+		expect(out.labeled).toBe(1198);
+		expect(out.failed).toBe(2);
+
+		const setCalls = emailSetCalls(f);
+		expect(setCalls).toHaveLength(3);
+		expect(setCalls.map((c: any) => Object.keys(c[1].update).length)).toEqual([500, 500, 200]);
+	});
+
+	it("mail_move chunks a bulk update to ≤500 ids per Email/set call (#707)", async () => {
+		const f = installFetch();
+		const ids = Array.from({ length: 600 }, (_, i) => `e${i}`);
+		const out = parse(await tool("mail_move").run(env(), { ids, mailbox: "archive" }));
+		expect(out.moved).toBe(600);
+
+		const setCalls = emailSetCalls(f);
+		expect(setCalls).toHaveLength(2);
+		expect(setCalls.map((c: any) => Object.keys(c[1].update).length)).toEqual([500, 100]);
+	});
+
 	it("mail_read returns the plain-text body", async () => {
 		installFetch();
 		const out = parse(await tool("mail_read").run(env(), { id: "e1" }));
@@ -214,6 +272,21 @@ describe("mail_* ergonomic tools", () => {
 		const out = parse(await tool("mail_thread").run(env(), { threadId: "t1" }));
 		expect(out.threadId).toBe("t1");
 		expect(out.messages).toHaveLength(1);
+	});
+
+	it("mail_semantic embeds+ranks the recent mailbox by meaning (KV-cached, state-keyed) and requires `q` + the Workers-AI binding", async () => {
+		installFetch();
+		const aiEnv = () => ({ ...env(), AI: { run: vi.fn(async (_m: string, inputs: any) => ({ data: inputs.text.map(() => [1, 0, 0]) })) } });
+		const r = parse(await tool("mail_semantic").run(aiEnv(), { q: "hello there" }));
+		expect(r.hits[0]).toMatchObject({ id: "e1", subject: "Hello" });
+		expect(r.scanned).toBe(1);
+
+		const missingQ = await tool("mail_semantic").run(aiEnv(), {});
+		expect(missingQ.isError).toBe(true);
+
+		const noAi = await tool("mail_semantic").run(env(), { q: "hello there" });
+		expect(noAi.isError).toBe(true);
+		expect(noAi.content[0].text).toMatch(/Workers AI/);
 	});
 
 	it("mail_draft creates a draft and returns the id", async () => {
