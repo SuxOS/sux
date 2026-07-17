@@ -4,6 +4,11 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-07-01",
 	"observability": { "enabled": true },
+	// No public workers.dev ingress: this Worker fronts a home-LAN VPC bridge and a
+	// privileged dind plane, so it must be reached only via an authenticated route.
+	// Stopgap from the v10 audit (2026-07-16); full auth gate is the pending hardening design.
+	"workers_dev": false,
+	"preview_urls": false,
 	"containers": [
 		{
 			"class_name": "SuxBox",
