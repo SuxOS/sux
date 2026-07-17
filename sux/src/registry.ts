@@ -258,6 +258,16 @@ export type RtEnv = Env &
 		AGENDA_ENABLED?: string;
 		AGENDA_EMAIL?: string;
 
+		// Agenda REPLY loop (fns/_agenda_reply.ts, W2.1) — the inbound half: parses
+		// approve/snooze/reject replies to the agenda digest and dispatches them through the
+		// W1 proposal kernel. Same two-stage fail-closed gate, ALSO requires AGENDA_ENABLED
+		// (replying to a digest presupposes the digest loop is armed). A command is only ever
+		// honored from a message whose From matches one of Colin's own mail_identities AND
+		// whose subject still carries the digest's `sux · ` thread prefix — anything else is
+		// ignored untouched, never parsed. Dispatch never bypasses the kernel's own locks
+		// (allow-listed reversible fns only, no force).
+		AGENDA_REPLY_ENABLED?: string;
+
 		// Ask-gate reminder (fns/_ask_gate_reminder.ts) — proactively surfaces durable
 		// `run` instances paused on a human `ask` gate (op-engine) instead of relying on
 		// someone remembering to poll `run {action:'list'}`. Rides the FREQUENT cron (same
