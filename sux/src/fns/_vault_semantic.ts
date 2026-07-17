@@ -12,7 +12,13 @@ import { type VaultCfg, readVaultSemanticBlob, vaultHead, writeVaultSemanticBlob
 // same as vault-mcp.ts's buildVaultIndex/vaultIndex. A separate full-body read pass (the
 // derived index only keeps a ~300-char excerpt per note, not enough to embed meaningfully).
 
-const VERSION = 1;
+// Bumped 1→2 (#722): #717 repacked chunk.embedding from a raw number[] to a base64
+// string (encodeEmbedding) WITHOUT bumping this, so a pre-#717 blob's version:1 passed
+// the cache-hit check below and fromStored's decodeEmbedding(number[]) threw atob()
+// InvalidCharacterError. Bumping invalidates any such stale blob so it rebuilds instead
+// of crashing; isStoredSemanticIndex is a second, permanent line of defense against the
+// same class of drift next time the persisted shape changes.
+const VERSION = 2;
 // Mirrors vault-mcp.ts's INDEX_MAX — bounds a pathological vault, well above the real ~500-note size.
 const INDEX_MAX = 5000;
 
@@ -32,6 +38,16 @@ function toStored(index: SemanticIndex): StoredSemanticIndex {
 
 function fromStored(stored: StoredSemanticIndex): SemanticIndex {
 	return { ...stored, chunks: stored.chunks.map((c) => ({ ...c, embedding: decodeEmbedding(c.embedding) })) };
+}
+
+/** Defensive second line against the exact #722 drift class: a cached blob whose shape
+ *  doesn't actually match StoredSemanticIndex (chunk.embedding must be a base64 string,
+ *  not a raw number[]) is treated as a cache miss and rebuilt, rather than trusted just
+ *  because its `version` field happened to match. */
+function isStoredSemanticIndex(v: unknown): v is StoredSemanticIndex {
+	if (!v || typeof v !== "object") return false;
+	const s = v as StoredSemanticIndex;
+	return Array.isArray(s.chunks) && s.chunks.every((c) => typeof c?.embedding === "string");
 }
 
 const titleOf = (path: string): string => (path.split("/").pop() ?? path).replace(/\.md$/i, "");
@@ -74,7 +90,7 @@ export async function vaultSemanticIndex(env: RtEnv, cfg: VaultCfg): Promise<Sem
 	const head = env.OAUTH_KV ? await vaultHead(env, cfg) : null;
 	if (!head) return null;
 	const storedCached = (await readVaultSemanticBlob(env, cfg)) as StoredSemanticIndex | null;
-	if (storedCached?.sha === head && storedCached?.version === VERSION && Array.isArray(storedCached.chunks)) return fromStored(storedCached);
+	if (storedCached?.sha === head && storedCached?.version === VERSION && isStoredSemanticIndex(storedCached)) return fromStored(storedCached);
 	const fresh = await buildVaultSemanticIndex(env, head, cfg);
 	const wrote = await writeVaultSemanticBlob(env, cfg, toStored(fresh));
 	if (!wrote) console.log(`vault_semantic: index write for ${cfg.repo}@${head} was dropped (over KV's 25MiB cap or a codec error) — every request will re-embed the vault until it fits`);
