@@ -10,6 +10,7 @@ import { classifyKnn, listExamples } from "./_examples";
 import { maybeDecompressString } from "./_gzip";
 import { topKByCosine, vaultSemanticIndex } from "./_vault_semantic";
 import { mailSemanticIndex, topKMailByCosine } from "./_mail_semantic";
+import { filesSemanticIndex, topKFilesByCosine } from "./_files_semantic";
 import { errMsg, oj } from "./_util";
 
 // recall — "what do I know about X?" answered from YOUR life. It fans out server-side
@@ -159,15 +160,25 @@ async function fromWeb(env: RtEnv, question: string): Promise<Gathered> {
 	return text && text !== "(no results)" ? { material: `[web results]\n${text.slice(0, 3500)}`, refs: ["web"] } : { material: "", refs: [] };
 }
 
-/** Files: whole-Dropbox (Mode B) content search — inline small textual hits, cite the rest by handle. */
+/** Files: whole-Dropbox (Mode B) content search — inline small textual hits, cite the rest by
+ *  handle, THEN (when Workers-AI is configured) rank the incrementally-maintained files semantic
+ *  index (_files_semantic.ts, the vault_semantic/mail_semantic pattern applied to Dropbox — keyed
+ *  by list_folder's cursor since Dropbox has neither a single content sha nor a mailbox `state`)
+ *  by MEANING and merge in whatever the keyword leg missed. Same complementary pairing as
+ *  fromVault/fromVaultSemantic and fromMail/its semantic leg: Dropbox's search_v2 is pure keyword,
+ *  so a report that says 'imaging results' but never 'scan' is invisible to it. A semantic hiccup
+ *  degrades silently (caught, not thrown) — the keyword leg already gives fromFiles a working
+ *  result without it. */
 async function fromFiles(env: RtEnv, question: string): Promise<Gathered> {
 	if (!hasDropboxFull(env)) return { material: "", refs: [] }; // Mode B not configured — nothing to search, degrade quietly
 	const res = await searchFull(env, { query: question, max_results: 6 });
 	const parts: string[] = [];
 	const refs: string[] = [];
+	const seen = new Set<string>();
 	for (const m of (res.matches ?? []).slice(0, 3)) {
 		const path = m?.path as string | undefined;
 		if (!path) continue;
+		seen.add(path);
 		// Inline only SMALL textual files; everything else (PDFs, images, big files) is cited
 		// by handle so bytes never bloat the synthesis prompt.
 		if (typeof m?.size === "number" && m.size <= 200_000 && /\.(md|txt|json|csv|tsv|ya?ml|xml|html?)$/i.test(path)) {
@@ -184,6 +195,23 @@ async function fromFiles(env: RtEnv, question: string): Promise<Gathered> {
 		}
 		parts.push(`[files:${path}] (${m?.size ?? "?"} bytes${m?.modified ? `, ${m.modified}` : ""})`);
 		refs.push(`files:${path}`);
+	}
+	if (hasAI(env)) {
+		try {
+			const idx = await filesSemanticIndex(env);
+			if (idx) {
+				const vec = await embedOne(env, question);
+				const hits = topKFilesByCosine(vec, idx.chunks, 5).filter((h) => !seen.has(h.path));
+				for (const h of hits) {
+					parts.push(`[files:${h.path}]\n${h.text.slice(0, 1500)}`);
+					refs.push(`files:${h.path}`);
+					seen.add(h.path);
+				}
+			}
+		} catch {
+			/* the keyword leg above already produced a (possibly empty) result — a semantic index
+			 * failure (Dropbox hiccup, embed error) must not sink fromFiles entirely. */
+		}
 	}
 	return { material: parts.join("\n\n"), refs };
 }

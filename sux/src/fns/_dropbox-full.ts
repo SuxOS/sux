@@ -88,6 +88,27 @@ export async function listFull(env: RtEnv, path: string, cursor?: string): Promi
 	return { entries: (r.json?.entries ?? []).map(fileEntry), has_more: !!r.json?.has_more, cursor: r.json?.has_more ? r.json?.cursor : undefined };
 }
 
+/** Whole-account change feed — RECURSIVE, INCLUDING deletions (unlike listFull, which hardcodes
+ *  recursive:false and drops deletions). Built for incremental corpus tracking (_files_semantic.ts's
+ *  cursor-keyed index), not browsing: a caller pages this the way it pages Email/changes, applying
+ *  `entries` (live, upserted) and `deleted` (removed paths) to its own derived state. Unlike
+ *  searchFull/listFull's has_more-gated cursor, list_folder/list_folder_continue's result ALWAYS
+ *  carries a cursor (ListFolderResult/ListFolderContinueResult), so it's returned unconditionally —
+ *  a caller anchors its next incremental call on it regardless of has_more. */
+export async function listFullChanges(env: RtEnv, cursor?: string): Promise<{ entries: any[]; deleted: string[]; has_more: boolean; cursor?: string }> {
+	const r = cursor
+		? await fullRpc(env, "/files/list_folder/continue", { cursor })
+		: await fullRpc(env, "/files/list_folder", { path: "", recursive: true, include_deleted: true, include_mounted_folders: true, include_non_downloadable_files: false });
+	if (r.status >= 400) throw new Error(`Dropbox list error: ${r.json?.error_summary ?? `HTTP ${r.status}`}`);
+	const raw: any[] = r.json?.entries ?? [];
+	const entries = raw.filter((m) => m?.[".tag"] !== "deleted").map(fileEntry);
+	const deleted = raw
+		.filter((m) => m?.[".tag"] === "deleted")
+		.map((m) => m?.path_display ?? m?.path_lower)
+		.filter((p): p is string => typeof p === "string" && p.length > 0);
+	return { entries, deleted, has_more: !!r.json?.has_more, cursor: r.json?.cursor };
+}
+
 /** Read one file at an absolute path. Oversize → a TEMPORARY (expiring, NON-public) link, never a permanent share.
  *  ONE reference (the plain path `p`) gates AND downloads — never a rev/id that could point elsewhere. Reading a
  *  specific revision is intentionally NOT supported: it would let the size gate check one object and the download
