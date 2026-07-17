@@ -75,6 +75,6 @@ describe("MCP e2e: sux (real dispatch, general fn registry)", () => {
 	it("yaml: bad input (missing data) fails with a typed error, not a silent empty result", async () => {
 		const r = await h.callTool("yaml", {});
 		expect(r.isError).toBe(true);
-		expect(r.content[0].text).toMatch(/data.*required/i);
+		expect(r.content[0].text).toMatch(/missing required field.*data/i);
 	});
 });
