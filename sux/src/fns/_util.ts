@@ -14,7 +14,7 @@ import { smartFetch } from "../proxy";
 import { errMsg, isHttpUrl, oj } from "../prim";
 import { storeRefUuid, getBlob } from "./_util/store-ref";
 import { fetchDedupActive, fetchCacheGet, fetchCacheSet, FETCH_CACHE_MAX_TEXT } from "./_util/fetch-cache";
-import { fromB64 } from "./_util/bytes";
+import { fromB64, clampBytes } from "./_util/bytes";
 
 // Re-exported for the ~100 fns that import these alongside the blob-store/registry
 // helpers below — the definitions themselves live in ../prim (dependency-free,
@@ -115,7 +115,7 @@ export async function readBodyBytes(resp: Response, maxBytes: number): Promise<U
 /** Read a response body as text, streaming, and cancel the stream once
  * `maxBytes` have been consumed — so a huge body is never fully buffered. */
 async function readBodyText(resp: Response, maxBytes: number): Promise<string> {
-	if (!resp.body) return (await resp.text()).slice(0, maxBytes);
+	if (!resp.body) return clampBytes(await resp.text(), maxBytes);
 	const reader = resp.body.getReader();
 	const decoder = new TextDecoder();
 	let out = "";
@@ -153,7 +153,7 @@ export async function fetchText(
 		const blob = await getBlob(env, uuid);
 		if (!blob) return { status: 404, text: `No stored object for '${uuid}'.`, headers: new Headers(), url };
 		const text = new TextDecoder().decode(blob.bytes);
-		return { status: 200, text: text.slice(0, maxBytes), headers: new Headers({ "content-type": blob.contentType }), url };
+		return { status: 200, text: clampBytes(text, maxBytes), headers: new Headers({ "content-type": blob.contentType }), url };
 	}
 	// Dedup GET fetches within the isolate (bodyless, method GET/undefined only —
 	// never cache a POST or a request with a body). A hit skips the whole proxy
@@ -171,7 +171,7 @@ export async function fetchText(
 	const resp = await smartFetch(env, url, { method: init?.method, headers: init?.headers, body: init?.body });
 	const text = await readBodyText(resp, maxBytes);
 	// Only cache successful, reasonably-sized bodies (never an error page).
-	if (dedupKey && resp.status < 400 && text.length <= FETCH_CACHE_MAX_TEXT) {
+	if (dedupKey && resp.status < 400 && new TextEncoder().encode(text).length <= FETCH_CACHE_MAX_TEXT) {
 		fetchCacheSet(dedupKey, { at: Date.now(), status: resp.status, text, headers: Object.fromEntries(resp.headers), url });
 	}
 	return { status: resp.status, text, headers: resp.headers, url };
