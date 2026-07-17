@@ -47,6 +47,14 @@ export const MAX_NOTES_PER_SWEEP = 500;
  *  it survives across weeks and keeps advancing. */
 const CURSOR_KEY = "sweep-offset";
 
+/** The ledger key holding the most recent successful sweep's findings (bounded), so a
+ *  read-only consumer (the agenda loop, W5) can pick them up without re-scanning the vault. */
+const LAST_REPORT_KEY = "last-report";
+
+/** Caps how many stale/duplicate entries the cached last-report carries — enough for a
+ *  digest line, not a full report (the full lists already live in the vault digest itself). */
+const MAX_CACHED_FINDINGS = 20;
+
 /** Takes up to `size` items starting at `offset`, wrapping around the end of `items` — so a
  *  vault bigger than one sweep's cap gets covered in full over several sweeps instead of the
  *  same leading slice forever. Returns the window plus the offset the *next* sweep should
@@ -101,6 +109,27 @@ function duplicateKey(path: string): string {
 		.replace(/\(\d+\)$/, "")
 		.replace(/[\s_-]+/g, " ")
 		.trim();
+}
+
+export type ConsolidateFindings = { week: string; stale: StaleNote[]; duplicate_candidates: DuplicateCandidate[] };
+
+/** The most recent successful sweep's findings (bounded to MAX_CACHED_FINDINGS per bucket),
+ *  read from the ledger cache — never re-scans the vault. Returns null if consolidate has
+ *  never completed a sweep (dormant, KV unavailable, or a corrupt/missing cache entry). */
+export async function lastConsolidateFindings(env: RtEnv): Promise<ConsolidateFindings | null> {
+	const raw = await ledger(env, "consolidate").get(LAST_REPORT_KEY);
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed.week !== "string") return null;
+		return {
+			week: parsed.week,
+			stale: Array.isArray(parsed.stale) ? parsed.stale : [],
+			duplicate_candidates: Array.isArray(parsed.duplicate_candidates) ? parsed.duplicate_candidates : [],
+		};
+	} catch {
+		return null;
+	}
 }
 
 export type ClassifyResult = { stale: StaleNote[]; duplicate_candidates: DuplicateCandidate[]; scanned: number };
@@ -209,6 +238,7 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 		await deps.digestAppend(env, `Consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
 		await led.mark(key);
 		await led.mark(CURSOR_KEY, String(nextOffset));
+		await led.mark(LAST_REPORT_KEY, JSON.stringify({ week, stale: stale.slice(0, MAX_CACHED_FINDINGS), duplicate_candidates: duplicate_candidates.slice(0, MAX_CACHED_FINDINGS) }));
 		return { week, scanned, truncated, window_offset: windowOffset, next_offset: nextOffset, stale, duplicate_candidates, digest_written: true };
 	} catch (e) {
 		const msg = `vault append failed: ${errMsg(e)}`;
