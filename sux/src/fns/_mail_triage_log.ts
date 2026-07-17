@@ -28,6 +28,11 @@ export type TriageEntry = {
 	confidence: number;
 	reason: string;
 	subject?: string;
+	/** Preview text and sender, carried alongside `subject` so a downstream semantic index
+	 *  (classifyByHistory) can embed a richer composite than subject alone — the live TriageMsg
+	 *  being classified always has both in hand at the append call sites (see _mail_triage.ts). */
+	preview?: string;
+	from?: string;
 	op?: TriageOpKind;
 	from_mailbox?: string;
 	/** Full pre-move mailboxIds set (as names/roles), captured at archive/unarchive/undelete time —

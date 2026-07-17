@@ -65,6 +65,14 @@ function isTrainable(e: TriageEntry): e is TriageEntry & { subject: string } {
 	return e.action === "acted" && typeof e.subject === "string" && e.subject.trim().length > 0 && e.label !== "unknown";
 }
 
+/** The text actually embedded for a filing: subject alone is ambiguous across senders (two
+ *  "Your receipt" subjects from different vendors), so fold in `from`/`preview` when the log
+ *  entry has them (older entries pre-dating #777 may not) — a richer composite tightens kNN
+ *  precision without changing the embedding model or index shape. */
+function embedText(e: { subject: string; from?: string; preview?: string }): string {
+	return [e.from, e.subject, e.preview].filter((s) => typeof s === "string" && s.trim().length > 0).join("\n");
+}
+
 /** The embedded index of Colin's own past filings — incrementally maintained against the
  *  triage log (only entries missing from the cache, or whose label CHANGED since last
  *  embedded, e.g. after a manual re-file, are re-embedded), bounded to CAP. Returns null when
@@ -80,7 +88,7 @@ export async function triageSemanticIndex(env: RtEnv): Promise<TriageSemanticEnt
 	const toEmbed = eligible.filter((e) => cachedById.get(e.id)?.label !== e.label);
 	let fresh: StoredEntry[] = [];
 	if (toEmbed.length) {
-		const vecs = await embed(env, toEmbed.map((e) => e.subject));
+		const vecs = await embed(env, toEmbed.map(embedText));
 		fresh = toEmbed.map((e, i) => ({ id: e.id, label: e.label as TriageLabel, embedding: encodeEmbedding(vecs[i] ?? []) }));
 	}
 	const freshIds = new Set(fresh.map((e) => e.id));
@@ -92,10 +100,10 @@ export async function triageSemanticIndex(env: RtEnv): Promise<TriageSemanticEnt
 }
 
 /** classify() seam: vote the message's label from the K nearest past filings by cosine
- *  similarity over the subject embedding. Returns null (never throws) on any failure, no AI,
- *  no/too-little history, or a vote too weak to trust (< MIN_VOTES agreeing, or every
- *  neighbor below MIN_SCORE) — the caller's rules-stub result stands untouched. Confidence is
- *  bounded below classifySpamAmbiguous's floor-confidence tiers so a kNN guess never outranks
+ *  similarity over a subject+preview+sender embedding. Returns null (never throws) on any
+ *  failure, no AI, no/too-little history, or a vote too weak to trust (< MIN_VOTES agreeing, or
+ *  every neighbor below MIN_SCORE) — the caller's rules-stub result stands untouched. Confidence
+ *  is bounded below classifySpamAmbiguous's floor-confidence tiers so a kNN guess never outranks
  *  a rule that actually fired. */
 export async function classifyByHistory(env: RtEnv, msg: TriageMsg): Promise<Classification | null> {
 	const subject = String(msg.subject ?? "").trim();
@@ -103,7 +111,7 @@ export async function classifyByHistory(env: RtEnv, msg: TriageMsg): Promise<Cla
 	try {
 		const index = await triageSemanticIndex(env);
 		if (!index || index.length < MIN_VOTES) return null;
-		const [qvec] = await embed(env, [subject]);
+		const [qvec] = await embed(env, [embedText({ subject, from: msg.from, preview: msg.preview })]);
 		if (!qvec?.length) return null;
 		const neighbors = index
 			.map((e) => ({ label: e.label, score: cosine(qvec, e.embedding) }))
