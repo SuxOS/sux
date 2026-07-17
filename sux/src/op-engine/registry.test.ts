@@ -63,13 +63,13 @@ test("vault-consolidate-plan: proposes a faithful-union merge per cluster, asks 
 		sinks: { "vault-notes": { name: "vault-notes", write: async (input: any) => (written.push(input), { merged: input.length, groups: input.length }) } },
 	} as unknown as Caps;
 
-	const clusters = [{ a: "Archive/Project Alpha (2).md", aContent: "alpha body", b: "Projects/project-alpha.md", bContent: "alpha body plus more", key: "project alpha" }];
+	const clusters = [{ paths: ["Archive/Project Alpha (2).md", "Projects/project-alpha.md"], contents: ["alpha body", "alpha body plus more"], key: "project alpha" }];
 
 	const out = await interpretDurable(registry["vault-consolidate-plan"](), clusters, fakeStep(rec), caps, "root");
 
 	expect(rec.events).toEqual(["ask:apply these note merges?"]);
 	expect(written).toHaveLength(1);
-	expect(written[0]).toEqual([{ keep: "Archive/Project Alpha (2).md", archive: "Projects/project-alpha.md", mergedContent: expect.stringContaining("alpha body"), key: "project alpha" }]);
+	expect(written[0]).toEqual([{ keep: "Archive/Project Alpha (2).md", archives: ["Projects/project-alpha.md"], mergedContent: expect.stringContaining("alpha body"), key: "project alpha" }]);
 	expect(out).toEqual(written[0]);
 });
 
@@ -83,7 +83,7 @@ test("vault-consolidate-plan: a veto ({approved:false}) rejects the gate and nev
 		sinks: { "vault-notes": { name: "vault-notes", write: async (input: any) => (written.push(input), input) } },
 	} as unknown as Caps;
 
-	const clusters = [{ a: "A.md", aContent: "x", b: "B.md", bContent: "y", key: "k" }];
+	const clusters = [{ paths: ["A.md", "B.md"], contents: ["x", "y"], key: "k" }];
 
 	await expect(interpretDurable(registry["vault-consolidate-plan"](), clusters, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
 	expect(written).toHaveLength(0);

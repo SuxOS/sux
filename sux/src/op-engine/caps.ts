@@ -142,19 +142,22 @@ function mailLabelsSink(env: RtEnv): SinkTarget {
 }
 
 // The `vault-consolidate-plan` op's terminal (registry.ts): applies a batch of already-
-// approved {keep, archive, mergedContent} merge proposals via the EXISTING obsidian fn's
+// approved {keep, archives, mergedContent} merge proposals via the EXISTING obsidian fn's
 // git-backed write/append actions. Dynamically imported for the same reason mailLabelsSink
 // is — op-engine's non-vault ops (echo, mail-triage-plan) never pull obsidian's GitHub-API
-// dependency graph into their module load. Deliberately NON-DESTRUCTIVE: `keep` gets a
-// `write` (overwrite with the merged content), `archive` gets an `append` (a pointer back to
-// `keep`, its own content left intact) — never a `delete` — so a wrong merge judgment is
-// always undoable by hand or `git revert`. A malformed item (missing keep/archive/content) is
-// skipped, not a hard failure; an empty batch is a no-op.
+// dependency graph into their module load. Deliberately NON-DESTRUCTIVE: `keep` gets ONE
+// `write` (overwrite with the whole group's merged content), each of `archives` gets an
+// `append` (a pointer back to `keep`, its own content left intact) — never a `delete` — so a
+// wrong merge judgment is always undoable by hand or `git revert`. One `keep` is written once
+// per item (proposeMerge already composed the whole group into `mergedContent`, so there's
+// never more than one item per `keep` — see #764, where per-PAIR items sharing a `keep` used
+// to overwrite each other). A malformed item (missing keep/archives/content) is skipped, not
+// a hard failure; an empty batch is a no-op.
 function vaultNotesSink(env: RtEnv): SinkTarget {
 	return {
 		name: "vault-notes",
 		async write(input: any, caps: Caps): Promise<any> {
-			const items: Array<{ keep?: unknown; archive?: unknown; mergedContent?: unknown }> = Array.isArray(input) ? input : [];
+			const items: Array<{ keep?: unknown; archives?: unknown; mergedContent?: unknown }> = Array.isArray(input) ? input : [];
 			if (!items.length) return { merged: 0 };
 			const { obsidian } = await import("../fns/obsidian.js");
 			const stamp = new Date(caps.clock.now()).toISOString().slice(0, 10);
@@ -162,9 +165,9 @@ function vaultNotesSink(env: RtEnv): SinkTarget {
 			let failed = 0;
 			for (const it of items) {
 				const keep = typeof it?.keep === "string" ? it.keep : "";
-				const archive = typeof it?.archive === "string" ? it.archive : "";
+				const archives = Array.isArray(it?.archives) ? it.archives.filter((a: unknown): a is string => typeof a === "string" && a.length > 0) : [];
 				const mergedContent = typeof it?.mergedContent === "string" ? it.mergedContent : "";
-				if (!keep || !archive || !mergedContent) continue;
+				if (!keep || !archives.length || !mergedContent) continue;
 				const w = await obsidian.run(env, { action: "write", path: keep, content: mergedContent, backend: "git" });
 				if (w.isError) {
 					failed++;
@@ -175,16 +178,19 @@ function vaultNotesSink(env: RtEnv): SinkTarget {
 				// The write above is idempotent (same deterministic mergedContent every retry), but
 				// append is NOT — a step.do retry after a mid-batch eviction (durable.ts's `sink`
 				// step wraps this whole loop as ONE memoized step) would otherwise double the
-				// merge-pointer block in `archive`. Skip the append if that note already carries a
-				// pointer to this `keep` from a prior attempt (#740).
-				const r = await obsidian.run(env, { action: "read", path: archive, backend: "git" });
-				const already = !r.isError && typeof r.content?.[0]?.text === "string" && r.content[0].text.includes(pointer);
-				if (!already) {
+				// merge-pointer block in each `archive`. Skip an archive's append if it already
+				// carries a pointer to this `keep` from a prior attempt (#740).
+				let archiveFailed = false;
+				for (const archive of archives) {
+					const r = await obsidian.run(env, { action: "read", path: archive, backend: "git" });
+					const already = !r.isError && typeof r.content?.[0]?.text === "string" && r.content[0].text.includes(pointer);
+					if (already) continue;
 					const a = await obsidian.run(env, { action: "append", path: archive, content: note, backend: "git" });
-					if (a.isError) {
-						failed++;
-						continue;
-					}
+					if (a.isError) archiveFailed = true;
+				}
+				if (archiveFailed) {
+					failed++;
+					continue;
 				}
 				merged++;
 			}

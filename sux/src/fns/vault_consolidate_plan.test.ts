@@ -39,17 +39,45 @@ describe("vault_consolidate_plan", () => {
 
 		const res = await freshFn.run({ CONSOLIDATE_ENABLED: "1" } as any, {});
 
-		expect(runVerb).toHaveBeenCalledWith(
-			{
-				op: "vault-consolidate-plan",
-				input: [{ a: "Projects/project-alpha.md", aContent: notes["Projects/project-alpha.md"], b: "Archive/Project Alpha (2).md", bContent: notes["Archive/Project Alpha (2).md"], key: "project alpha" }],
-				mode: "durable",
-			},
-			{ CONSOLIDATE_ENABLED: "1" },
-		);
+		expect(runVerb).toHaveBeenCalledTimes(1);
+		const call = runVerb.mock.calls[0][0];
+		expect(call.op).toBe("vault-consolidate-plan");
+		expect(call.mode).toBe("durable");
+		expect(call.input).toHaveLength(1);
+		expect(call.input[0].key).toBe("project alpha");
+		expect(new Set(call.input[0].paths)).toEqual(new Set(["Projects/project-alpha.md", "Archive/Project Alpha (2).md"]));
 		expect(res.isError).toBeUndefined();
 		const body = JSON.parse(res.content[0].text);
 		expect(body).toMatchObject({ scanned: 3, candidates: 1, instanceId: "abc123" });
+	});
+
+	it("collapses a 3+ note duplicate group into ONE cluster instead of one per pair", async () => {
+		const notes: Record<string, string> = {
+			"Project.md": fm("title: project"),
+			"Project (1).md": fm("title: project 1"),
+			"Project (2).md": fm("title: project 2"),
+		};
+		vi.doMock("./obsidian", () => ({
+			obsidian: {
+				run: async (_env: any, a: any) => {
+					if (a.action === "list") return { content: [{ type: "text", text: JSON.stringify({ notes: Object.keys(notes) }) }] };
+					if (a.action === "read") return { content: [{ type: "text", text: notes[a.path] }] };
+					throw new Error(`unexpected action ${a.action}`);
+				},
+			},
+		}));
+		vi.resetModules();
+		const { vault_consolidate_plan: freshFn } = await import("./vault_consolidate_plan");
+		runVerb.mockResolvedValueOnce({ instanceId: "grp1" });
+
+		const res = await freshFn.run({ CONSOLIDATE_ENABLED: "1" } as any, {});
+
+		expect(runVerb).toHaveBeenCalledTimes(1);
+		const call = runVerb.mock.calls[0][0];
+		expect(call.input).toHaveLength(1); // one cluster for the whole group, not 3 pairs
+		expect(new Set(call.input[0].paths)).toEqual(new Set(Object.keys(notes)));
+		const body = JSON.parse(res.content[0].text);
+		expect(body).toMatchObject({ scanned: 3, candidates: 1, instanceId: "grp1" });
 	});
 
 	it("skips starting a run when there are no duplicate candidates", async () => {

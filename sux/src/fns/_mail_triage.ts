@@ -2,8 +2,10 @@
 // log → digest loop, orchestrating the EXISTING mail verbs (mail_search / moveMessages)
 // rather than re-implementing JMAP. Two things live here: the fail-closed GATES and the
 // rules-stub CLASSIFIER, both structured so the autonomous surface stays dormant until
-// Colin flips a flag and so a real learning classifier (chunk 03's embeddings/kNN, not
-// built yet) can drop in behind the same `classify()` seam without touching the loop.
+// Colin flips a flag and so a real learning classifier can drop in behind the same
+// `classify()` seam without touching the loop — chunk 03's kNN-over-embeddings classifier
+// (_mail_triage_semantic.ts's classifyByHistory) now does exactly that, as a best-effort
+// tier behind the rules stub's `unknown`.
 //
 // SAFETY (fail-closed, two-stage):
 //   • MAIL_TRIAGE_ENABLED unset  → the whole loop is a total no-op (dormant). The fn and
@@ -33,6 +35,7 @@ import { ledger } from "../ledger";
 import { passesDraftGate } from "./_briefing";
 import { errMsg, vaultToday } from "./_util";
 import { appendTriageEntries, type TriageEntry } from "./_mail_triage_log";
+import { classifyByHistory } from "./_mail_triage_semantic";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 // A dedicated toggle var (not a credential): FASTMAIL_TOKEN is required for mail to
@@ -57,7 +60,7 @@ export type TriageLabel = "junk" | "spam" | "transaction" | "receipt" | "amazon_
  *  used by service-notification classification to attach a type-specific label keyword (e.g.
  *  `gh:ci-fail`) instead of the label's blanket action. It is still funnelled through the same
  *  auto-act allow-list + confidence gate, so an override can never smuggle a non-reversible op. */
-type Classification = { label: TriageLabel; confidence: number; reason: string; op?: TriageOp };
+export type Classification = { label: TriageLabel; confidence: number; reason: string; op?: TriageOp };
 /** `mailboxes` is the message's full pre-move mailboxIds set (names/roles, from mail_search's
  *  `labels`) — captured so a move op can log the WHOLE set for undo, not just the one mailbox
  *  it's headed to/from (#465: an archive→undo must restore every mailbox the message belonged to,
@@ -301,11 +304,16 @@ async function classifySpamAmbiguous(env: RtEnv, msg: TriageMsg, base: Classific
 
 /** The pluggable classify SEAM. The rules stub runs first; an `unknown` result with a weak
  *  promotional cue gets one Workers-AI best-effort pass to resolve it as spam or not (cost-
- *  controlled — see `classifySpamAmbiguous`). When chunk 03's learning substrate (embeddings +
- *  kNN over Colin's own filing history) lands, branch here on its presence — the loop below
- *  never needs to change. */
+ *  controlled — see `classifySpamAmbiguous`). Still `unknown` after that gets one more
+ *  best-effort pass: a kNN vote over Colin's own past filing history (_mail_triage_semantic.ts's
+ *  classifyByHistory — chunk 03's learning substrate), same best-effort shape as the spam
+ *  pass — a cold start (no history yet) or any embed/KV failure just falls back to the rules
+ *  stub's `unknown`. */
 export async function classify(env: RtEnv, msg: TriageMsg): Promise<Classification> {
-	return classifySpamAmbiguous(env, msg, classifyMessage(msg));
+	const base = await classifySpamAmbiguous(env, msg, classifyMessage(msg));
+	if (base.label !== "unknown") return base;
+	const learned = await classifyByHistory(env, msg);
+	return learned ?? base;
 }
 
 // ── Draft-reply rule (attention-INCREASING, never sends) ────────────────────────

@@ -124,16 +124,31 @@ test("mail-labels sink reads labelMessages' actual labeled/failed counts instead
 	expect(out).toEqual({ labeled: 1, groups: 1, failed: 2 });
 });
 
-test("vault-notes sink writes the merged content to `keep` and appends a pointer to `archive` — never a delete", async () => {
+test("vault-notes sink writes the merged content to `keep` and appends a pointer to each `archive` — never a delete", async () => {
 	obsidianRun.mockClear();
 	const { sinks } = makeCaps({} as unknown as RtEnv);
 	const out = await sinks["vault-notes"].write(
-		[{ keep: "Projects/project-alpha.md", archive: "Archive/Project Alpha (2).md", mergedContent: "merged body", key: "project alpha" }],
+		[{ keep: "Projects/project-alpha.md", archives: ["Archive/Project Alpha (2).md"], mergedContent: "merged body", key: "project alpha" }],
 		{ clock: { now: () => 0 } } as unknown as Caps,
 	);
 	expect(obsidianRun).toHaveBeenCalledWith({}, { action: "write", path: "Projects/project-alpha.md", content: "merged body", backend: "git" });
 	expect(obsidianRun).toHaveBeenCalledWith({}, { action: "append", path: "Archive/Project Alpha (2).md", content: expect.stringContaining("Merged into [[Projects/project-alpha.md]]"), backend: "git" });
 	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "delete" }));
+	expect(out).toEqual({ merged: 1, groups: 1 });
+});
+
+test("vault-notes sink applies a 3+ note group's single composed merge with ONE write to `keep` and an append to every archive", async () => {
+	obsidianRun.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["vault-notes"].write(
+		[{ keep: "Project (1).md", archives: ["Project (2).md", "Project.md"], mergedContent: "composed body", key: "project" }],
+		{ clock: { now: () => 0 } } as unknown as Caps,
+	);
+	const writeCalls = obsidianRun.mock.calls.filter((c: any[]) => c[1].action === "write");
+	expect(writeCalls).toHaveLength(1);
+	expect(writeCalls[0][1]).toEqual({ action: "write", path: "Project (1).md", content: "composed body", backend: "git" });
+	expect(obsidianRun).toHaveBeenCalledWith({}, { action: "append", path: "Project (2).md", content: expect.stringContaining("Merged into [[Project (1).md]]"), backend: "git" });
+	expect(obsidianRun).toHaveBeenCalledWith({}, { action: "append", path: "Project.md", content: expect.stringContaining("Merged into [[Project (1).md]]"), backend: "git" });
 	expect(out).toEqual({ merged: 1, groups: 1 });
 });
 
@@ -152,7 +167,7 @@ test("vault-notes sink skips the append on a retry — `archive` already carries
 		return { content: [{ type: "text", text: "{}" }] };
 	});
 	const { sinks } = makeCaps({} as unknown as RtEnv);
-	const out = await sinks["vault-notes"].write([{ keep: "A.md", archive: "B.md", mergedContent: "x", key: "k" }], { clock: { now: () => 0 } } as unknown as Caps);
+	const out = await sinks["vault-notes"].write([{ keep: "A.md", archives: ["B.md"], mergedContent: "x", key: "k" }], { clock: { now: () => 0 } } as unknown as Caps);
 	expect(out).toEqual({ merged: 1, groups: 1 });
 	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "append" }));
 });
@@ -161,7 +176,7 @@ test("vault-notes sink skips (doesn't throw) an item whose write fails, and coun
 	obsidianRun.mockClear();
 	obsidianRun.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: "conflict" }] });
 	const { sinks } = makeCaps({} as unknown as RtEnv);
-	const out = await sinks["vault-notes"].write([{ keep: "A.md", archive: "B.md", mergedContent: "x", key: "k" }], { clock: { now: () => 0 } } as unknown as Caps);
+	const out = await sinks["vault-notes"].write([{ keep: "A.md", archives: ["B.md"], mergedContent: "x", key: "k" }], { clock: { now: () => 0 } } as unknown as Caps);
 	expect(out).toEqual({ merged: 0, groups: 1, failed: 1 });
 	expect(obsidianRun).toHaveBeenCalledTimes(1); // the append never runs once the write itself failed
 });
