@@ -92,7 +92,11 @@ def h_threads(body):
             JOIN message m ON m.ROWID = cmj.message_id
         """
         params = []
-        where = []
+        # Tapbacks/reactions (associated_message_type != 0) and group system events
+        # (item_type != 0) are real rows here with their own `date` — left unfiltered,
+        # a tapback with no new text bumps last_date/message_count as if it were a
+        # real message (#876).
+        where = ["m.associated_message_type = 0", "m.item_type = 0"]
         if contact:
             where.append("c.chat_identifier LIKE ?")
             params.append(f"%{contact}%")
@@ -131,7 +135,7 @@ def h_messages(body):
             FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON h.ROWID = m.handle_id
-            WHERE cmj.chat_id = ?
+            WHERE cmj.chat_id = ? AND m.associated_message_type = 0 AND m.item_type = 0
             ORDER BY m.date DESC LIMIT ?
             """,
             (thread, limit),

@@ -698,7 +698,10 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	// Advance the "since last check" baseline every successful Monarch fetch, regardless of
 	// whether anything crossed a threshold this cycle — dry_run must never persist state.
 	if (!dryRun && monarchOk) {
-		await saveMonarchSnapshot(env, { date, allocation: computePortfolioAllocation(monarchHoldings), savingsRate: currentSavingsRate });
+		// A transient/incomplete cashflow response yields an undefined currentSavingsRate for
+		// this cycle only — fall back to the prior snapshot's rate so one bad cycle doesn't
+		// clobber the known-good baseline detectSavingsRateDrop compares against (#874).
+		await saveMonarchSnapshot(env, { date, allocation: computePortfolioAllocation(monarchHoldings), savingsRate: currentSavingsRate ?? priorMonarchSnapshot?.savingsRate });
 	}
 
 	// Propose each NEW drop (idempotent per dedupe key). dry_run records nothing.
