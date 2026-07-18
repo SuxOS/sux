@@ -27,6 +27,14 @@ function serveNotes(notes: Record<string, string>) {
 
 const get = (env: any, path: string, init?: RequestInit) => handlePortalRoutes(new URL(`https://portal.test${path}`), new Request(`https://portal.test${path}`, init), env);
 
+// The real portal.suxos.net hostname (routed at this Worker via a Cloudflare
+// custom domain/route — infra, not this repo) serves the portal at root, not
+// under /portal — simulate that by setting the Host header explicitly, since
+// a self-constructed Request doesn't set one from its URL the way a real
+// incoming Worker request does.
+const getHost = (env: any, host: string, path: string, init?: RequestInit) =>
+	handlePortalRoutes(new URL(`https://${host}${path}`), new Request(`https://${host}${path}`, { ...init, headers: { ...init?.headers, host } }), env);
+
 const NOTES = {
 	"Public/hello.md": "---\ntitle: Hello World\n---\n#portal\n\nWelcome! See [[Private Note]] for more.",
 	"Private Note.md": "This is secret.",
@@ -99,5 +107,32 @@ describe("portal", () => {
 		serveNotes(NOTES);
 		const env = { ...ENV, OBS_RATE_LIMITER: { limit: async () => ({ success: false }) } };
 		expect((await get(env, "/portal"))!.status).toBe(429);
+	});
+
+	it("serves the index at root on the default portal.suxos.net Host, no /portal prefix needed", async () => {
+		serveNotes(NOTES);
+		const res = await getHost(ENV, "portal.suxos.net", "/");
+		expect(res!.status).toBe(200);
+		const body = await res!.text();
+		expect(body).toContain("Hello World");
+	});
+
+	it("serves a note at root-relative path on the default portal.suxos.net Host", async () => {
+		serveNotes(NOTES);
+		const res = await getHost(ENV, "portal.suxos.net", "/hello");
+		expect(res!.status).toBe(200);
+		expect(await res!.text()).toContain("Welcome!");
+	});
+
+	it("respects a configured PORTAL_HOST override instead of the default", async () => {
+		serveNotes(NOTES);
+		const env = { ...ENV, PORTAL_HOST: "portal.example.com" };
+		expect(await getHost(env, "portal.suxos.net", "/")).toBeNull();
+		const res = await getHost(env, "portal.example.com", "/");
+		expect(res!.status).toBe(200);
+	});
+
+	it("returns null for an unrelated Host on a non-/portal path", async () => {
+		expect(await getHost(ENV, "example.com", "/")).toBeNull();
 	});
 });

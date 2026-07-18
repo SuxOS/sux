@@ -27,6 +27,8 @@ import type { RtEnv } from "./registry";
 import { scanVault, type VaultRecord } from "./vault-mcp";
 import { noteBasename } from "./vault-graph";
 
+const DEFAULT_PORTAL_HOST = "portal.suxos.net";
+
 const PORTAL_TAG = "portal";
 // Well above any real vault's note count (mirrors vault-mcp.ts's own INDEX_MAX) —
 // this is a "give me the whole vault" scan, not a folder-scoped/paginated one.
@@ -115,12 +117,32 @@ function renderNote(record: VaultRecord, body: string): Response {
 	return page(title, `<h1>${esc(title)}</h1>${renderBody(body)}<a class="back" href="/portal">&larr; portal</a>`);
 }
 
+/** Maps a request's (host, path) onto the /portal-prefixed path portal.ts's
+ * rendering logic below expects. The real portal.suxos.net hostname (routed at
+ * this Worker via a Cloudflare custom domain/route — infra step, not this repo)
+ * serves the portal at its ROOT, not under a /portal path prefix, so a request
+ * to that Host needs "/" -> "/portal" and "/<basename>" -> "/portal/<basename>"
+ * rewritten before the path-based logic below runs. The /portal path prefix
+ * keeps working unconditionally on ANY host (incl. this Worker's own dev/preview
+ * hostnames) for back-compat and local testing. Returns null when this request
+ * belongs to neither. */
+function hostToPortalPath(url: URL, request: Request, env: RtEnv): string | null {
+	if (url.pathname === "/portal" || url.pathname.startsWith("/portal/")) return url.pathname;
+	const host = (request.headers.get("host") ?? "").split(":")[0].trim().toLowerCase();
+	const portalHost = (env.PORTAL_HOST?.trim() || DEFAULT_PORTAL_HOST).toLowerCase();
+	if (!host || host !== portalHost) return null;
+	return url.pathname === "/" ? "/portal" : `/portal${url.pathname}`;
+}
+
 /** GET /portal (index of portal-visible notes) + GET /portal/<basename> (one
  * note, or a private stub when the basename resolves to a real but non-portal
- * note). Returns null for paths it doesn't own — the pre-gate handler contract
- * (see index.ts). Dormant (404) unless PORTAL_ENABLED and the vault is configured. */
+ * note) — reached either via that path prefix on any host, or at ROOT on the
+ * real portal hostname (see hostToPortalPath). Returns null for requests it
+ * doesn't own — the pre-gate handler contract (see index.ts). Dormant (404)
+ * unless PORTAL_ENABLED and the vault is configured. */
 export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv): Promise<Response | null> {
-	if (url.pathname !== "/portal" && !url.pathname.startsWith("/portal/")) return null;
+	const path = hostToPortalPath(url, request, env);
+	if (path === null) return null;
 	if (request.method !== "GET") return new Response("method not allowed", { status: 405 });
 	if (!flagOn(env.PORTAL_ENABLED)) return new Response("not found", { status: 404 });
 
@@ -139,11 +161,11 @@ export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv)
 		return new Response(`portal: vault scan failed: ${String((e as Error)?.message ?? e)}`, { status: 502 });
 	}
 
-	if (url.pathname === "/portal" || url.pathname === "/portal/") {
+	if (path === "/portal" || path === "/portal/") {
 		return renderIndex(records.filter(isPortalVisible));
 	}
 
-	const reqBasename = noteBasename(decodeURIComponent(url.pathname.slice("/portal/".length)));
+	const reqBasename = noteBasename(decodeURIComponent(path.slice("/portal/".length)));
 	const match = records.find((r) => noteBasename(r.path) === reqBasename);
 	if (!match) return new Response("not found", { status: 404 });
 	if (!isPortalVisible(match)) return renderStub();
