@@ -210,6 +210,11 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   gap-fill question loop, writing into the REAL vault (not life_wiki's regenerable sandbox)
   — but reuses the same underlying `recall.gatherRecall` fan-out; check both before adding a
   third overlapping synthesis path.
+- **`imessage.ts`'s `messages` action returns messages in ASCENDING (oldest-first) order** —
+  `imessage-service/imessage_server.py`'s `h_messages` queries chat.db `ORDER BY m.date DESC`
+  (for the `LIMIT`) then calls `messages.reverse()` before returning, undocumented in either
+  file. A consumer wanting the THREAD'S LATEST message (e.g. `_agenda.ts`'s `unanswered_text`
+  detector, #849) must read the LAST array element, not the first.
 
 ## House style
 

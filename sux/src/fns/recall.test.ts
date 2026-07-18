@@ -14,6 +14,7 @@ vi.mock("./obsidian", async () => {
 });
 vi.mock("./web_search", () => ({ webSearch: { run: vi.fn() }, defaultEngine: vi.fn(() => "ddg") }));
 vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
+vi.mock("./imessage", () => ({ imessage: { run: vi.fn() }, hasImessage: vi.fn(() => false) }));
 vi.mock("./_dropbox-full", () => ({ hasDropboxFull: vi.fn(() => false), searchFull: vi.fn(), readFull: vi.fn(), listFullChanges: vi.fn() }));
 // Keep parseICal real (recall parses the ical reportObjects returns) — mock only the CalDAV I/O + the gate.
 vi.mock("./_caldav", async () => {
@@ -25,6 +26,7 @@ import { gatherRecall, recall } from "./recall";
 import { obsidian } from "./obsidian";
 import { webSearch } from "./web_search";
 import { jmap } from "./jmap";
+import { hasImessage, imessage } from "./imessage";
 import { hasDropboxFull, listFullChanges, readFull, searchFull } from "./_dropbox-full";
 import { hasCalDav, listCalendars, reportObjects } from "./_caldav";
 
@@ -42,6 +44,8 @@ const dbxListChanges = listFullChanges as unknown as ReturnType<typeof vi.fn>;
 const calHas = hasCalDav as unknown as ReturnType<typeof vi.fn>;
 const calList = listCalendars as unknown as ReturnType<typeof vi.fn>;
 const calReport = reportObjects as unknown as ReturnType<typeof vi.fn>;
+const imgHas = hasImessage as unknown as ReturnType<typeof vi.fn>;
+const img = imessage.run as unknown as ReturnType<typeof vi.fn>;
 
 // A KV-backed HEAD sha for the git-backend semantic vault leg (vaultHead → smartFetch → this route).
 const HEAD = "head-1";
@@ -348,6 +352,28 @@ describe("recall", () => {
 		mail.mockResolvedValue(errR("[not_configured] Fastmail JMAP not configured."));
 		const out = parse(await recall.run(env(), { question: "who?", sources: ["contacts", "vault"] }));
 		expect(out.sources.contacts).toContain("unavailable");
+		expect(out.sources.vault).toBe("1 hit(s)");
+	});
+
+	it("adds `imessage` (#849) — keyword-filters recent thread messages and cites [imessage:contact]", async () => {
+		imgHas.mockReturnValue(true);
+		img.mockImplementation(async (_e: any, a: any) => {
+			if (a.action === "threads") return okR(JSON.stringify({ threads: [{ id: 1, contact: "+15551234", name: "Jeanne" }] }));
+			if (a.action === "messages") return okR(JSON.stringify({ messages: [{ id: 1, from_me: false, text: "did the oncologist call you back?", at: "2026-07-10T10:00:00Z" }] }));
+			return errR("unknown action");
+		});
+		const out = parse(await recall.run(env(), { question: "oncologist call", sources: ["imessage"] }));
+		expect(out.sources.imessage).toBe("1 hit(s)");
+		expect(out.citations).toEqual(["imessage:Jeanne"]);
+		const user = aiRun.mock.calls.find((c: any) => !String(c[0]).includes("bge"))![1].messages[1].content;
+		expect(user).toContain("did the oncologist call you back?");
+	});
+
+	it("`imessage` degrades to nothing when unconfigured (no IMESSAGE_URL/SECRET)", async () => {
+		imgHas.mockReturnValue(false);
+		const out = parse(await recall.run(env(), { question: "oncologist call", sources: ["imessage", "vault"] }));
+		expect(img).not.toHaveBeenCalled();
+		expect(out.sources.imessage).toBe("no matches");
 		expect(out.sources.vault).toBe("1 hit(s)");
 	});
 

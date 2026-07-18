@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, computeSavingsRate, type EventRef, type MailRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectPortfolioDrops, detectSavingsRateDrop, detectTextDrops, computeSavingsRate, type EventRef, type MailRef, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -32,6 +32,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	monarchBudgets: vi.fn(async () => []),
 	monarchCashflow: vi.fn(async () => null),
 	monarchHoldings: vi.fn(async () => []),
+	textThreads: vi.fn(async () => []),
 	...over,
 });
 
@@ -199,6 +200,26 @@ describe("agenda — detectors: portfolio drift + savings rate (W7.1, #803)", ()
 	});
 });
 
+describe("agenda — text detectors (iMessage, #849)", () => {
+	it("flags a thread whose last message was NOT from me", () => {
+		const threads: TextThreadRef[] = [
+			{ id: "1", contact: "+15551234", name: "Jeanne", lastText: "you around this weekend?", lastFromMe: false },
+			{ id: "2", contact: "+15555678", lastText: "sounds good, see you then", lastFromMe: true },
+		];
+		const drops = detectTextDrops(threads);
+		expect(drops.map((d) => d.kind)).toEqual(["unanswered_text"]);
+		expect(drops[0].dedupe).toBe("reply_text::1");
+		expect(drops[0].urgency).toBe("fyi");
+		expect(drops[0].action.fn).toBe("todoist");
+		expect(drops[0].action.args).toMatchObject({ action: "add" });
+	});
+
+	it("skips a thread whose last message is already from me, or whose sender is unknown (fail-closed)", () => {
+		expect(detectTextDrops([{ id: "1", lastFromMe: true }])).toHaveLength(0);
+		expect(detectTextDrops([{ id: "1" }])).toHaveLength(0); // lastFromMe undefined — can't tell, so skip
+	});
+});
+
 describe("agenda — learned ranking (W8)", () => {
 	const drop = (kind: string, urgency: "today" | "soon" | "fyi"): Drop => ({
 		kind,
@@ -327,6 +348,22 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, d);
 		expect(r.sources.monarch).toBe("not_configured");
 		expect(d.monarchAccounts).not.toHaveBeenCalled();
+	});
+
+	it("wires iMessage unanswered-text signals (#849) in only when IMESSAGE_URL/SECRET are set", async () => {
+		const e = env({ IMESSAGE_URL: "https://mac.ts.net", IMESSAGE_SECRET: "s".repeat(20) });
+		const d = deps({ textThreads: vi.fn(async () => [{ id: "t1", contact: "+15551234", name: "Jeanne", lastText: "you around?", lastFromMe: false }]) });
+		const r = await runAgenda(e, {}, d);
+		expect(r.proposals?.map((p) => p.kind)).toEqual(expect.arrayContaining(["unanswered_text"]));
+		expect(r.sources.imessage).toMatch(/thread/);
+	});
+
+	it("skips iMessage entirely (not_configured) when IMESSAGE_URL/SECRET are unset", async () => {
+		const e = env();
+		const d = deps();
+		const r = await runAgenda(e, {}, d);
+		expect(r.sources.imessage).toBe("not_configured");
+		expect(d.textThreads).not.toHaveBeenCalled();
 	});
 
 	it("wires Monarch portfolio + savings-rate signals (W7.1, #803) in only when MONARCH_TOKEN is set", async () => {
