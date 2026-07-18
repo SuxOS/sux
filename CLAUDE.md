@@ -201,6 +201,15 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   writing its own differently-shaped blob through those two functions directly — two shapes
   fighting over the same key thrash the cache (each write invalidates the other's `version`
   check) instead of sharing the one already-built index.
+- **Before building a "self-model"/"what does sux know about my life" capability, check
+  `fns/_life_wiki.ts`/`fns/life_wiki.ts` first** — it already fans `recall` inward across
+  vault/files/mail/learned into a synthesized profile (People/Health/Projects/Timeline/
+  Interests) and writes it as vault notes, dormant behind `LIFE_WIKI_ENABLED`. A filename
+  grep for `onboard`/`profile`/`self_model` (as #836's audit did) won't surface it. `onboard`
+  (#836) is a DIFFERENT, deliberately separate capability — interactive/user-invoked with a
+  gap-fill question loop, writing into the REAL vault (not life_wiki's regenerable sandbox)
+  — but reuses the same underlying `recall.gatherRecall` fan-out; check both before adding a
+  third overlapping synthesis path.
 
 ## House style
 
