@@ -14,6 +14,10 @@ import { maybeCompressString, maybeDecompressString } from "./_gzip";
 const GH = "https://api.github.com";
 const ghHeaders = { Accept: "application/vnd.github+json", "User-Agent": "sux-obsidian" };
 
+// content.length is UTF-16 code units, not encoded bytes — undercounts by up to
+// ~3x for emoji/CJK/accented text vs. the actual GitHub blob / vault file size.
+const byteLength = (s: string): number => new TextEncoder().encode(s).length;
+
 async function ghJson(env: any, url: string, init?: { method?: string; body?: string }): Promise<{ status: number; json: any }> {
 	const resp = await smartFetch(env, url, { method: init?.method, headers: { ...ghHeaders, ...(init?.body ? { "Content-Type": "application/json" } : {}) }, body: init?.body });
 	const json = await resp.json().catch(() => null);
@@ -327,7 +331,7 @@ async function runRemote(env: any, action: string, args: any) {
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "POST", headers: { "Content-Type": "text/markdown" }, body: content });
 			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}.${cfOriginHint(resp.status)}`);
 			await cacheDel(env, remoteNoteKey(p)); // merged body lives server-side; next read refills
-			return ok(oj({ ok: true, path: p, bytes: content.length }));
+			return ok(oj({ ok: true, path: p, bytes: byteLength(content) }));
 		}
 		if (action === "write") {
 			const p = String(args?.path ?? "").trim();
@@ -337,7 +341,7 @@ async function runRemote(env: any, action: string, args: any) {
 			const resp = await remoteFetch(env, `/vault/${encPath(p)}`, { method: "PUT", headers: { "Content-Type": "text/markdown" }, body: content });
 			if (resp.status >= 400) return fail(`Obsidian remote write error: HTTP ${resp.status}.${cfOriginHint(resp.status)}`);
 			await cachePut(env, remoteNoteKey(p), { body: content, sha: null, at: Date.now(), src: "remote" });
-			return ok(oj({ ok: true, path: p, bytes: content.length }));
+			return ok(oj({ ok: true, path: p, bytes: byteLength(content) }));
 		}
 		if (action === "edit") {
 			const p = String(args?.path ?? "").trim();
@@ -509,7 +513,7 @@ export const obsidian: Fn = {
 					if (sha === undefined && put.status === 422 && /sha/i.test(String(put.json?.message ?? ""))) continue;
 					if (put.status >= 400) return fail(`GitHub write error: ${put.json?.message ?? `HTTP ${put.status}`} (append needs a GITHUB_TOKEN with write access).`);
 					await noteWritten(env, cfg, p, merged, put.json?.commit?.sha);
-					return ok(oj({ ok: true, path: p, bytes: merged.length, commit: put.json?.commit?.sha, sha: put.json?.content?.sha }));
+					return ok(oj({ ok: true, path: p, bytes: byteLength(merged), commit: put.json?.commit?.sha, sha: put.json?.content?.sha }));
 				}
 				return fail(`append to ${p} lost the race to a concurrent writer ${RETRY_ATTEMPTS} times in a row — retry once more.`);
 			}
@@ -525,7 +529,7 @@ export const obsidian: Fn = {
 				const baseSha = typeof args?.base_sha === "string" && args.base_sha ? args.base_sha : undefined;
 				const r = await vaultPut(env, cfg, p, content, `sux: write ${p}`, baseSha !== undefined ? { sha: baseSha } : undefined);
 				if (!r.ok) return fail(r.error);
-				return ok(oj({ ok: true, path: p, bytes: content.length, created: r.created, commit: r.commit, sha: r.sha }));
+				return ok(oj({ ok: true, path: p, bytes: byteLength(content), created: r.created, commit: r.commit, sha: r.sha }));
 			}
 			if (action === "edit") {
 				const p = String(args?.path ?? "").trim();
