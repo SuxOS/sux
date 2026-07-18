@@ -62,6 +62,11 @@ export type RtEnv = Env &
 		// /portal (only #portal-tagged / visibility:portal notes) — dormant (404) unless
 		// set, since it's a NEW public surface over what's otherwise a private vault.
 		PORTAL_ENABLED?: string;
+		// Real hostname routed (via a Cloudflare custom domain/route) at this Worker
+		// for the portal view — requests to this Host serve /portal's content at
+		// root instead of needing the /portal path prefix. Defaults to
+		// "portal.suxos.net" when unset; see portal.ts's hostToPortalPath.
+		PORTAL_HOST?: string;
 		// Dropbox app-folder blob store (dropbox fn + ingest blob routing), all
 		// App-folder-scoped (can only see /Apps/<app>/). Durable path: a long-lived
 		// REFRESH token + app key/secret → short-lived access tokens minted &
