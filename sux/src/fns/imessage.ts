@@ -23,6 +23,11 @@ import { errMsg, oj } from "./_util";
 
 type ImessageResponse = { ok?: boolean; error?: string; [k: string]: unknown };
 
+/** The Mac-local iMessage spoke is configured. Same gate shape as hasMonarch/hasCalDav —
+ *  callers (recall's fromImessage, agenda's unanswered_text detector) degrade quietly
+ *  rather than call through to a fn that would just fail_with not_configured. */
+export const hasImessage = (env: RtEnv): boolean => Boolean(env.IMESSAGE_URL && env.IMESSAGE_SECRET);
+
 async function imessageCall(env: RtEnv, action: string, body: Record<string, unknown>): Promise<{ ok: true; data: ImessageResponse } | { ok: false; error: string }> {
 	if (!env.IMESSAGE_URL || !env.IMESSAGE_SECRET) {
 		return { ok: false, error: "iMessage backend not configured (IMESSAGE_URL / IMESSAGE_SECRET)." };

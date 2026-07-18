@@ -30,6 +30,7 @@ import { ledger } from "../ledger";
 import { propose } from "../proposals";
 import type { ConsolidateFindings } from "./_consolidate";
 import { classifyMessage } from "./_mail_triage";
+import { hasImessage, imessage } from "./imessage";
 import { hasMonarch, monarch } from "./monarch";
 import { errMsg, vaultToday } from "./_util";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
@@ -155,6 +156,30 @@ export function detectDrops(mail: MailRef[], events: EventRef[]): Drop[] {
 	return sortByUrgency(drops);
 }
 
+/** A recent iMessage thread's LAST message only (imessage.ts has no server-side search, so the
+ *  loop can't scan full history the way mailSearch does) — enough for the unanswered_text
+ *  detector below. `lastFromMe` undefined means "couldn't determine" (e.g. an unreadable
+ *  thread), which the detector treats the same as "already answered": fail-closed, same as
+ *  every other detector here. */
+export type TextThreadRef = { id: string; contact?: string; name?: string; lastText?: string; lastFromMe?: boolean; lastAt?: string };
+
+/** Texts are mail, structurally (#849): the same "unanswered personal note" cue detectDrops
+ *  applies to mail applies here — a thread whose last message was sent BY THE OTHER PERSON
+ *  (lastFromMe === false) is a text still waiting on a reply. `lastFromMe` anything other than
+ *  exactly `false` (undefined/true) is skipped — fail-closed, mirrors every other detector's
+ *  precision-over-recall stance (a missed drop is caught next tick; a false one is a junk task
+ *  one tap away). */
+export function detectTextDrops(threads: TextThreadRef[]): Drop[] {
+	const drops: Drop[] = [];
+	for (const t of threads) {
+		if (t.lastFromMe !== false) continue;
+		const who = t.name || t.contact || "someone";
+		const preview = (t.lastText || "(message)").slice(0, 120);
+		drops.push({ kind: "unanswered_text", urgency: "fyi", dedupe: `reply_text::${t.id}`, title: `Reply to ${who} (text): ${preview}`, emoji: "💬", action: task(`Reply to ${who} (text) — ${preview}`), evidence: { id: t.id, contact: t.contact } });
+	}
+	return sortByUrgency(drops);
+}
+
 /** A short, stable content fingerprint (FNV-1a) over a finding set — used to keep the agenda
  *  dedupe key sensitive to WHICH findings were proposed, not just which ISO week (#782): a
  *  forced consolidate re-run mid-week can overwrite the cache with a different slice of the
@@ -233,6 +258,9 @@ const BILL_GROUP_CUE = /\b(bills?|utilit\w*|subscriptions?|insurance|loans?|rent
 const BILL_DUE_WINDOW_DAYS = 7;
 // Recent-transactions window scanned for the unusual-charge detector (days back from `date`).
 const UNUSUAL_CHARGE_WINDOW_DAYS = 3;
+// Recent-threads window scanned for the unanswered_text detector — imessage.ts's `threads` has
+// no unread concept (unlike mailSearch's `unread:true`), so recency is the only cheap bound.
+const TEXT_LOOKBACK_DAYS = 3;
 // Trailing window (NOT calendar-month-to-date) for the cashflow-derived savings-rate detector —
 // a fixed calendar-month window reads sharply negative for the first few days of a month before
 // income posts (a biweekly/monthly paycheck lags the 1st), a pure timing artifact rather than a
@@ -512,6 +540,9 @@ export type AgendaDeps = {
 	monarchCashflow: (env: RtEnv, opts: { start: string; end: string }) => Promise<MonarchCashflowRef | null>;
 	/** Monarch investment holdings (W7.1, #803) — only called when hasMonarch(env). */
 	monarchHoldings: (env: RtEnv) => Promise<MonarchHoldingRef[]>;
+	/** Recent iMessage threads' last message, one per thread (#849) — only called when
+	 *  hasImessage(env). */
+	textThreads: (env: RtEnv, opts: { since: string }) => Promise<TextThreadRef[]>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -580,6 +611,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let monarchCashflow: MonarchCashflowRef | null = null;
 	let monarchHoldings: MonarchHoldingRef[] = [];
 	let monarchOk = false;
+	let textThreads: TextThreadRef[] = [];
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
@@ -628,6 +660,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.monarch = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			if (!hasImessage(env)) {
+				status.imessage = "not_configured";
+				return;
+			}
+			textThreads = await deps.textThreads(env, { since: addDays(date, -TEXT_LOOKBACK_DAYS) });
+			status.imessage = `${textThreads.length} thread(s)`;
+		})().catch((e) => {
+			status.imessage = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
 	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
@@ -639,6 +681,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	const currentSavingsRate = computeSavingsRate(monarchCashflow);
 	const drops = await rankDropsLearned(env, [
 		...detectDrops(mail, events),
+		...detectTextDrops(textThreads),
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectMonarchDrops(date, monarchAccounts, monarchTransactions, monarchBudgets, { lowBalanceThreshold, unusualChargeThreshold }),
 		...detectPortfolioDrops(date, monarchHoldings, priorMonarchSnapshot?.allocation ?? null, { concentrationThreshold: portfolioConcentrationThreshold, driftThreshold: portfolioDriftThreshold }),
@@ -807,6 +850,26 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "monarch holdings failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return (parsed.holdings ?? []).map((h: any) => ({ ticker: h?.ticker, name: h?.name, value: typeof h?.value === "number" ? h.value : undefined, quantity: typeof h?.quantity === "number" ? h.quantity : undefined }));
+		},
+		textThreads: async (env, o) => {
+			const tr = await imessage.run(env, { action: "threads", since: o.since });
+			if (tr.isError) throw new Error(tr.content?.[0]?.text ?? "imessage threads failed");
+			const threads = (JSON.parse(tr.content?.[0]?.text ?? "{}").threads ?? []) as Array<{ id?: number | string; contact?: string; name?: string }>;
+			const out: TextThreadRef[] = [];
+			for (const t of threads.slice(0, 15)) {
+				if (t?.id === undefined || t?.id === null) continue;
+				try {
+					const mr = await imessage.run(env, { action: "messages", thread: String(t.id), limit: 1 });
+					if (mr.isError) continue;
+					const msgs = (JSON.parse(mr.content?.[0]?.text ?? "{}").messages ?? []) as any[];
+					const last = msgs[msgs.length - 1];
+					if (!last) continue;
+					out.push({ id: String(t.id), contact: t.contact, name: t.name ?? undefined, lastText: last?.text, lastFromMe: Boolean(last?.from_me), lastAt: last?.at });
+				} catch {
+					/* skip a single unreadable thread */
+				}
+			}
+			return out;
 		},
 	};
 }
