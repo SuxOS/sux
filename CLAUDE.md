@@ -188,6 +188,11 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   whatever's since been superseded by other merged work (#749 found #747+#749's prior combined
   attempt this way — #747's half had since landed differently, but #749's `_learning.ts`/ranking
   half was untouched and reusable as-is).
+- **`docs/knowledge/patterns-and-conventions.md` contains one literal NUL byte** (§6's compression
+  section illustrates the KV `GZIP_MARKER` prefix as the raw byte, not the text "0x00") — `file`
+  reports the whole doc as "data", and a plain `grep`/`grep -n` over it silently returns ZERO
+  matches for anything, even unrelated terms, with no error. Don't take that as "this isn't
+  documented here"; use `grep -a` against this specific file (confirmed while building #803).
 
 ## House style
 
