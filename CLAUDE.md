@@ -215,6 +215,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   (for the `LIMIT`) then calls `messages.reverse()` before returning, undocumented in either
   file. A consumer wanting the THREAD'S LATEST message (e.g. `_agenda.ts`'s `unanswered_text`
   detector, #849) must read the LAST array element, not the first.
+- **An issue dropped 3+ times as too-large, with a companion "split this into sub-issues" issue
+  open alongside it (e.g. #863 next to #858), resolves cleanly with zero source changes**: file
+  the design doc's own natural seams as separate effort:medium issues via `gh issue create`,
+  close both the monolith and the split-request issue via `gh issue close --reason completed`
+  referencing the new numbers, and land a documentation-only commit (e.g. updating the design
+  doc's frontmatter to track the split) so the gates/PR mechanism still has something to check —
+  a real, PR-worthy resolution, not a non-answer (#858/#863 → #864-#868).
 
 ## House style
 
