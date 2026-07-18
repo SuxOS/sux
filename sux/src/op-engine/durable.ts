@@ -85,6 +85,26 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 			);
 			return out;
 		}
+		case "mapField": {
+			const obj = input as Record<string, unknown>;
+			const items = obj[node.arrayField] as any[];
+			const out = new Array(items.length);
+			await Promise.all(
+				items.map(async (it, i) => {
+					await node.concurrency.acquire();
+					try {
+						const value = await interpretDurable(node.op, (it as Record<string, unknown>)[node.elementField], step, caps, `${path}.f${i}`);
+						out[i] = { ...(it as Record<string, unknown>), [node.elementField]: value };
+						node.concurrency.release(true);
+					} catch (e) {
+						node.concurrency.release(false);
+						throw e;
+					}
+				}),
+			);
+			const { [node.arrayField]: _dropped, ...rest } = obj;
+			return { ...rest, [node.renameTo ?? node.arrayField]: out };
+		}
 		case "reconcile":
 			return step.do(`${path}:reconcile`, () => runReconcile(node.opts, input, caps.store));
 		case "sink": {

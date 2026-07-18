@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { MemoryStore, fixed, op, pipe, map, reconcile, sink, ask, stamp, type Caps } from "@suxos/lib";
+import { MemoryStore, fixed, op, pipe, map, mapField, reconcile, sink, ask, stamp, type Caps } from "@suxos/lib";
 import { AskRejectedError, interpretDurable } from "./durable.js";
 
 // A FAKE WorkflowStep: `do` runs the callback inline (so the interpreter's step
@@ -129,6 +129,22 @@ test("interpretDurable propagates a map item's error and releases the concurrenc
 
 	await expect(interpretDurable(tree, ["bad", "good"], fakeStep({ events: [] }), caps, "op5")).rejects.toThrow("leaf blew up");
 	await goodRanPromise;
+});
+
+test("interpretDurable runs mapField over one named field of each array element, passing the rest through and renaming the array field", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const double = op("double", async (n: number) => n * 2, { kind: "pure" });
+	const tree = mapField("entries", "handle", double, { concurrency: fixed(2), renameTo: "files" });
+
+	const out = await interpretDurable(
+		tree,
+		{ entries: [{ handle: 1, name: "a" }, { handle: 2, name: "b" }] },
+		fakeStep({ events: [] }),
+		caps,
+		"op10",
+	);
+
+	expect(out).toEqual({ files: [{ handle: 2, name: "a" }, { handle: 4, name: "b" }] });
 });
 
 test("interpretDurable dispatches reconcile modes — last-write-wins selects the newest stamped handle", async () => {
