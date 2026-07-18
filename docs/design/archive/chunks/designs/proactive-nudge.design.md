@@ -2,6 +2,7 @@
 title: Proactive-inference + nudge layer — private online learning over your own life
 status: reference — build gated-dormant, PR-only, inference edge-private
 source: design 2026-07-12 (Target case + contextual integrity + FTC health-app + GDPR Art.22; builds on learning-substrate-tech / automations-architecture / health-integrations)
+tracking: split into build issues #864 (signal-log + arm-flag) → #865 (centroid-drift detector) → #866 (cascading deletion) → #867 (nudge write) → #868 (suggest-only warm-up), in that dependency order; #858 (monolithic build attempt) and #863 (split planning) are both closed
 ---
 
 **Thesis.** Give sux the "Target-knew-I-was-pregnant" *capability* — infer life-events and
