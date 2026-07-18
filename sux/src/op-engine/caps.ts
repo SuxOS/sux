@@ -91,7 +91,7 @@ function makeSinks(env: RtEnv): Record<string, SinkTarget> {
 			return input;
 		},
 	});
-	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env), "vault-notes": vaultNotesSink(env) };
+	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env), "vault-notes": vaultNotesSink(env), "cross-semantic": crossSemanticSink(env) };
 }
 
 // The `mail-triage-plan` op's terminal (registry.ts): applies a batch of {id, label, add}
@@ -195,6 +195,46 @@ function vaultNotesSink(env: RtEnv): SinkTarget {
 				merged++;
 			}
 			return { merged, groups: items.length, ...(failed ? { failed } : {}) };
+		},
+	};
+}
+
+// The `cross-semantic-relate` op's terminal (registry.ts): applies a batch of already-
+// approved cross-domain candidates (fns/_cross_semantic.ts's computeCrossSemanticCandidates)
+// as an append-only "related" backlink pointer on the vault-side note only — mirrors
+// vaultNotesSink's idempotent-append guard (re-reads first, skips if the pointer's already
+// there, #740) but never a `write` (the vault note's own content is left untouched) and never
+// touches the mail/files side (no write path exists there — see _cross_semantic.ts's header).
+function crossSemanticSink(env: RtEnv): SinkTarget {
+	return {
+		name: "cross-semantic",
+		async write(input: any, caps: Caps): Promise<any> {
+			const items: Array<{ vaultPath?: unknown; relatedDomain?: unknown; relatedRef?: unknown; relatedTitle?: unknown }> = Array.isArray(input) ? input : [];
+			if (!items.length) return { related: 0 };
+			const { obsidian } = await import("../fns/obsidian.js");
+			const stamp = new Date(caps.clock.now()).toISOString().slice(0, 10);
+			let related = 0;
+			let failed = 0;
+			for (const it of items) {
+				const vaultPath = typeof it?.vaultPath === "string" ? it.vaultPath : "";
+				const relatedDomain = typeof it?.relatedDomain === "string" ? it.relatedDomain : "";
+				const relatedRef = typeof it?.relatedRef === "string" ? it.relatedRef : "";
+				const relatedTitle = typeof it?.relatedTitle === "string" ? it.relatedTitle : relatedRef;
+				if (!vaultPath || !relatedDomain || !relatedRef) continue;
+				const pointer = `Related ${relatedDomain}: ${relatedTitle} (${relatedRef})`;
+				const note = `> [!note] ${pointer} — found ${stamp} by cross-semantic-relate.`;
+				const r = await obsidian.run(env, { action: "read", path: vaultPath, backend: "git" });
+				const already = !r.isError && typeof r.content?.[0]?.text === "string" && r.content[0].text.includes(pointer);
+				if (!already) {
+					const a = await obsidian.run(env, { action: "append", path: vaultPath, content: note, backend: "git" });
+					if (a.isError) {
+						failed++;
+						continue;
+					}
+				}
+				related++;
+			}
+			return { related, groups: items.length, ...(failed ? { failed } : {}) };
 		},
 	};
 }

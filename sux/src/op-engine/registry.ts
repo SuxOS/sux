@@ -41,6 +41,17 @@ import type { TriageMsg } from "../fns/_mail_triage.js";
 // the WHOLE batch once, and only on approval does the `vault-notes` sink (caps.ts) apply them
 // — a `write` of the merged content to the canonical note plus an `append` pointer on the
 // duplicate, never a delete. onTimeout:'fail' — an unanswered gate applies nothing.
+//
+// `cross-semantic-relate` (#785) is a lighter, append-only variant of the same shape: input is
+// a batch of already-SCORED cross-domain candidate pairs (fns/_cross_semantic.ts's
+// computeCrossSemanticCandidates, run against the three existing vault/mail/files semantic
+// indices) already computed by the `cross_semantic_relate` fn — same fetch-in-the-calling-fn
+// reason as above, doubly so here since scoring needs THREE domain indices simultaneously, not
+// one. Unlike mail-triage-plan/vault-consolidate-plan there's no per-item `map` leaf: nothing
+// left to compute once the calling fn hands over pre-scored candidates, no caps.store/llm use
+// needed. The human approves the WHOLE batch once, and only on approval does the
+// `cross-semantic` sink (caps.ts) apply them — an `append`-only backlink pointer on the
+// vault-side note, never a `write`/delete. onTimeout:'fail' — an unanswered gate applies nothing.
 export const registry: Record<string, () => Op> = {
 	echo: () => op("echo", async (x: unknown) => x, { kind: "pure" }),
 	"assimilate-pdfs": () =>
@@ -65,5 +76,10 @@ export const registry: Record<string, () => Op> = {
 			op("compact", async (items: Array<MergePlanItem | null>) => compactMergePlan(items), { kind: "pure" }),
 			ask("apply these note merges?", { timeout: "24 hour", onTimeout: "fail" }),
 			sink("vault-notes"),
+		),
+	"cross-semantic-relate": () =>
+		pipe(
+			ask("append these related backlinks?", { timeout: "24 hour", onTimeout: "fail" }),
+			sink("cross-semantic"),
 		),
 };

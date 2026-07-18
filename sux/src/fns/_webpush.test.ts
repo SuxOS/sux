@@ -126,6 +126,14 @@ describe("subscribe / unsubscribe / listSubscriptions", () => {
 		const kv = fakeKV({ "sux:webpush:sub:deadbeef": "not json" });
 		expect(await listSubscriptions({ OAUTH_KV: kv } as any)).toEqual([]);
 	});
+
+	it("rejects a subscription whose endpoint targets a private/loopback/metadata host (#801)", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		for (const endpoint of ["http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:9999/push", "http://localhost/push", "http://[::1]/push"]) {
+			await expect(subscribe(env, await makeSubscription(endpoint))).rejects.toThrow();
+		}
+		expect(await listSubscriptions(env)).toEqual([]);
+	});
 });
 
 describe("encryptPayload round trip (RFC 8291/8188)", () => {
@@ -176,6 +184,15 @@ describe("sendToSubscription / notify", () => {
 		const ok = await sendToSubscription(env, sub, { title: "t", body: "b" });
 		expect(ok).toBe(false);
 		expect(await listSubscriptions(env)).toEqual([]);
+	});
+
+	it("refuses to POST to a blocked target even for a subscription already in KV (#801 defense in depth)", async () => {
+		const env = { OAUTH_KV: fakeKV(), ...(await makeVapidEnv()) } as any;
+		const sub = await makeSubscription("http://169.254.169.254/latest/meta-data/");
+		const fetchSpy = vi.fn(async () => new Response(null, { status: 201 }));
+		vi.stubGlobal("fetch", fetchSpy);
+		expect(await sendToSubscription(env, sub, { title: "t", body: "b" })).toBe(false);
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
 	it("notify aggregates sent/failed across subscriptions without throwing on a fetch error", async () => {

@@ -121,6 +121,7 @@ import { todoist } from "./todoist";
 import { voice } from "./voice";
 import { fontcase } from "./fontcase";
 import { recall } from "./recall";
+import { cross_semantic_relate } from "./cross_semantic_relate";
 import { get } from "./get";
 import { imessage } from "./imessage";
 import { mail_domain_backfill } from "./mail_domain_backfill";
@@ -249,6 +250,7 @@ export const FUNCTIONS: Fn[] = [
 	voice,
 	fontcase,
 	recall,
+	cross_semantic_relate,
 	get,
 	imessage,
 	mail_domain_backfill,

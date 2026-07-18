@@ -180,3 +180,42 @@ test("vault-notes sink skips (doesn't throw) an item whose write fails, and coun
 	expect(out).toEqual({ merged: 0, groups: 1, failed: 1 });
 	expect(obsidianRun).toHaveBeenCalledTimes(1); // the append never runs once the write itself failed
 });
+
+test("cross-semantic sink appends an append-only backlink pointer on the vault note — never a write/delete", async () => {
+	obsidianRun.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["cross-semantic"].write([{ vaultPath: "Notes/Insurance.md", relatedDomain: "mail", relatedRef: "m1", relatedTitle: "Policy renewal" }], { clock: { now: () => 0 } } as unknown as Caps);
+	expect(obsidianRun).toHaveBeenCalledWith({}, { action: "append", path: "Notes/Insurance.md", content: expect.stringContaining("Related mail: Policy renewal (m1)"), backend: "git" });
+	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "write" }));
+	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "delete" }));
+	expect(out).toEqual({ related: 1, groups: 1 });
+});
+
+test("cross-semantic sink is a no-op on an empty batch (never an error)", async () => {
+	obsidianRun.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["cross-semantic"].write([], { clock: { now: () => 0 } } as unknown as Caps);
+	expect(obsidianRun).not.toHaveBeenCalled();
+	expect(out).toEqual({ related: 0 });
+});
+
+test("cross-semantic sink skips the append on a retry — the note already carries this item's related pointer", async () => {
+	obsidianRun.mockClear();
+	obsidianRun.mockImplementation(async (_env: unknown, args: any) => {
+		if (args.action === "read") return { content: [{ type: "text", text: "existing body\n\n> [!note] Related mail: Policy renewal (m1) — found 2024-01-01 by cross-semantic-relate." }] };
+		return { content: [{ type: "text", text: "{}" }] };
+	});
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["cross-semantic"].write([{ vaultPath: "Notes/Insurance.md", relatedDomain: "mail", relatedRef: "m1", relatedTitle: "Policy renewal" }], { clock: { now: () => 0 } } as unknown as Caps);
+	expect(out).toEqual({ related: 1, groups: 1 });
+	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "append" }));
+});
+
+test("cross-semantic sink skips (doesn't throw) an item whose append fails, and counts it as failed", async () => {
+	obsidianRun.mockClear();
+	obsidianRun.mockResolvedValueOnce({ content: [{ type: "text", text: "no pointer here" }] }); // the read
+	obsidianRun.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: "conflict" }] }); // the append
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["cross-semantic"].write([{ vaultPath: "Notes/Insurance.md", relatedDomain: "mail", relatedRef: "m1", relatedTitle: "Policy renewal" }], { clock: { now: () => 0 } } as unknown as Caps);
+	expect(out).toEqual({ related: 0, groups: 1, failed: 1 });
+});

@@ -132,6 +132,16 @@ export type RtEnv = Env &
 		CONSOLIDATE_ENABLED?: string;
 		CONSOLIDATE_STALE_DAYS?: string;
 
+		// Cross-domain semantic linking (fns/_cross_semantic.ts + op-engine's
+		// `cross-semantic-relate`, #785): scores the vault/mail/files semantic indices against
+		// each other and, on human approval (via `run {action:'answer', ...}`), appends a
+		// "related" backlink pointer to the vault-side note. Fail-closed, default OFF, set via
+		// `wrangler secret` (NOT declared in wrangler.jsonc — like CONSOLIDATE_*). Unset ⇒ the
+		// `cross_semantic_relate` fn is a dormant no-op. Nothing is ever auto-applied — the
+		// human `ask` gate is the safety valve, same as vault_consolidate_plan.
+		//   CROSS_SEMANTIC_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		CROSS_SEMANTIC_ENABLED?: string;
+
 		EXA_API_KEY?: string;
 
 		KROGER_CLIENT_ID?: string;

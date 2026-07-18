@@ -14,6 +14,7 @@
 // high-priority emails triaged'"). All Web Crypto (ECDH/HMAC/AES-GCM), no dependency —
 // see this file's `.test.ts` for a full encrypt→decrypt round trip against the same
 // derivation a real browser push service performs.
+import { isBlockedTarget } from "../proxy";
 import type { RtEnv } from "../registry";
 
 export type PushSubscriptionInfo = { endpoint: string; keys: { p256dh: string; auth: string } };
@@ -60,6 +61,11 @@ export function validSubscription(sub: unknown): sub is PushSubscriptionInfo {
 
 export async function subscribe(env: RtEnv, sub: PushSubscriptionInfo): Promise<void> {
 	if (!validSubscription(sub)) throw new Error("invalid subscription: endpoint + keys.p256dh + keys.auth are required.");
+	// Unlike every other outbound-fetch path (kagi/ai/cf-render/github-handler), a push
+	// endpoint is caller-supplied and later fetched with an attacker-uncontrollable but
+	// caller-triggerable VAPID-signed POST — refuse a private/loopback/link-local/metadata
+	// target up front rather than only at send time (#801).
+	if (isBlockedTarget(sub.endpoint)) throw new Error("invalid subscription: endpoint must not resolve to a private/loopback/link-local/metadata host.");
 	await env.OAUTH_KV.put(await subKey(sub.endpoint), JSON.stringify(sub));
 }
 
@@ -186,6 +192,9 @@ export async function encryptPayload(plaintext: Uint8Array, p256dhB64: string, a
  *  404/410 "gone") rather than throwing, so a dead endpoint can't sink a fan-out send. */
 export async function sendToSubscription(env: RtEnv, sub: PushSubscriptionInfo, message: PushMessage, ttlSeconds = 60): Promise<boolean> {
 	if (!hasWebPush(env)) return false;
+	// Defense in depth alongside subscribe()'s guard — covers any subscription that
+	// reached KV before this check existed (#801).
+	if (isBlockedTarget(sub.endpoint)) return false;
 	try {
 		const body = await encryptPayload(textEncoder.encode(JSON.stringify(message)), sub.keys.p256dh, sub.keys.auth);
 		const res = await fetch(sub.endpoint, {
