@@ -103,6 +103,28 @@ describe("portal", () => {
 		expect((await get(ENV, "/portal/does-not-exist"))!.status).toBe(404);
 	});
 
+	it("resolves a basename collision to the portal-visible note, even when the private one sorts first", async () => {
+		serveNotes({
+			"Private/ideas.md": "This is secret.",
+			"Notes/Ideas.md": "---\ntitle: Ideas\n---\n#portal\n\nPublic idea.",
+		});
+		const res = await get(ENV, "/portal/ideas");
+		expect(res!.status).toBe(200);
+		expect(await res!.text()).toContain("Public idea.");
+	});
+
+	it("falls back to a private stub for a basename collision where no candidate is portal-visible", async () => {
+		serveNotes({
+			"Private/ideas.md": "This is secret.",
+			"Other/Ideas.md": "Also secret.",
+		});
+		const res = await get(ENV, "/portal/ideas");
+		expect(res!.status).toBe(200);
+		const body = await res!.text();
+		expect(body).toContain("isn't public");
+		expect(body).not.toContain("secret");
+	});
+
 	it("429s when OBS_RATE_LIMITER denies", async () => {
 		serveNotes(NOTES);
 		const env = { ...ENV, OBS_RATE_LIMITER: { limit: async () => ({ success: false }) } };

@@ -166,7 +166,13 @@ export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv)
 	}
 
 	const reqBasename = noteBasename(decodeURIComponent(path.slice("/portal/".length)));
-	const match = records.find((r) => noteBasename(r.path) === reqBasename);
+	// A basename can collide across folders (e.g. `Notes/Ideas.md` tagged #portal
+	// alongside an untagged `Private/Ideas.md`) — prefer a portal-visible match
+	// deterministically so a private same-basename note can never mask a public
+	// one depending on scan order; fall back to the first match (private stub)
+	// only when none of the candidates are visible.
+	const candidates = records.filter((r) => noteBasename(r.path) === reqBasename);
+	const match = candidates.find(isPortalVisible) ?? candidates[0];
 	if (!match) return new Response("not found", { status: 404 });
 	if (!isPortalVisible(match)) return renderStub();
 
