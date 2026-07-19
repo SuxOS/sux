@@ -310,6 +310,15 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   via `uses: SuxOS/.github/.github/workflows/pr-watch.yml@main`), not anywhere in `sux/`, so
   no amount of re-reading this repo's code will ever turn up a fix. Both got `needs-human`
   applied directly rather than left to keep churning the queue.
+- **An issue whose actual ask is "re-file this as its own tracking issue" (an audit issue
+  auditing another issue/PR's scope, not the code itself) has no code diff as its deliverable
+  — the deliverable IS `gh issue create`.** Confirmed on #984 (asking to split MyChart's
+  still-unbuilt Part A+B off from #891 once #891's detector-wiring half shipped): there was
+  nothing to change in `sux/src`, so the build step was filing issue #986 with the scoped
+  Part A+B description, then marking #984 `built` in the disposition (its `Closes #984` on
+  the PR is earned by the new issue existing, not by a commit). Don't mistake "no diff for
+  this issue" for "unbuildable" — check whether the issue's own text is asking for an
+  out-of-band action before dropping it.
 
 ## House style
 
