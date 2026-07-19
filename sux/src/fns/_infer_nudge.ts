@@ -23,7 +23,8 @@ import { fingerprint, ledger } from "../ledger";
 import { hasAI, llm } from "../ai";
 import { appendInferInference, deleteInferInference, hasInferArm, isInferKilled, readInferSignals, type InferDomain, type InferSignal } from "./_infer";
 import { detectCentroidDrift, type DriftCandidate, type DriftOptions } from "./_infer_drift";
-import { cappedKvLog } from "./_capped_kv_log";
+import { maybeCompressString, maybeDecompressString } from "./_gzip";
+import { keyedSerialize } from "../keyed-serialize";
 import { errMsg, vaultToday } from "./_util";
 
 const numOr = (v: unknown, dflt: number): number => {
@@ -69,24 +70,49 @@ export type InferNudgeWarmupEntry = {
 };
 
 const WARMUP_LOG_CAP = 50;
-const warmupLogKey = (cluster: string): string => `kv:infer:warmup:${cluster}:log`;
-const warmupLog = (env: RtEnv, cluster: string) => cappedKvLog<InferNudgeWarmupEntry>(env, warmupLogKey(cluster), WARMUP_LOG_CAP);
+const warmupKey = (cluster: string): string => `kv:infer:warmup:${cluster}`;
 
-const warmupCountKey = (cluster: string): string => `kv:infer:warmup:${cluster}:count`;
+/** Graduation counter + audit log live in ONE KV value now (#1014) — previously a separate
+ *  `:log` key and `:count` key were written by two sequential puts, so a log-push that
+ *  succeeded followed by a count-write that failed left the two permanently desynced (the
+ *  catch could only roll back the inference record, not the already-persisted log entry).
+ *  One key means one put; there's no "between" for a partial failure to land in. */
+type WarmupState = { count: number; log: InferNudgeWarmupEntry[] };
 
-/** How many would-fire cycles this cluster has already logged suggest-only. */
-async function readWarmupCount(env: RtEnv, cluster: string): Promise<number> {
-	const n = Number(await env.OAUTH_KV?.get(warmupCountKey(cluster)));
-	return Number.isFinite(n) && n > 0 ? n : 0;
+const emptyWarmupState = (): WarmupState => ({ count: 0, log: [] });
+
+async function readWarmupState(env: RtEnv, cluster: string): Promise<WarmupState> {
+	const raw = await maybeDecompressString((await env.OAUTH_KV?.get(warmupKey(cluster))) ?? "");
+	if (!raw) return emptyWarmupState();
+	try {
+		const v = JSON.parse(raw);
+		return v && typeof v === "object" && Array.isArray(v.log) ? { count: Number(v.count) > 0 ? Number(v.count) : 0, log: v.log } : emptyWarmupState();
+	} catch {
+		return emptyWarmupState();
+	}
 }
 
-async function writeWarmupCount(env: RtEnv, cluster: string, count: number): Promise<void> {
-	await env.OAUTH_KV?.put(warmupCountKey(cluster), String(count));
+// Per-isolate serialization of the read-modify-write, same rationale as _capped_kv_log.ts's
+// own pushChains — two concurrent warm-up cycles for the same cluster (a cron tick overlapping
+// a webhook-triggered tick) must not race and clobber each other's entry/count.
+const warmupChains = new Map<string, Promise<unknown>>();
+
+/** Append one warm-up entry and bump the graduation counter, both in the single KV write
+ *  described above. Returns the new count. */
+async function pushWarmupEntry(env: RtEnv, cluster: string, entry: InferNudgeWarmupEntry): Promise<number> {
+	return keyedSerialize(warmupChains, warmupKey(cluster), async () => {
+		const state = await readWarmupState(env, cluster);
+		state.log.unshift(entry);
+		if (state.log.length > WARMUP_LOG_CAP) state.log.length = WARMUP_LOG_CAP;
+		state.count += 1;
+		await env.OAUTH_KV?.put(warmupKey(cluster), await maybeCompressString(JSON.stringify(state)));
+		return state.count;
+	});
 }
 
 /** Read back a cluster's suggest-only audit log (newest-first) — what warm-up logged instead of writing. */
 export async function readInferNudgeWarmupLog(env: RtEnv, cluster: string): Promise<InferNudgeWarmupEntry[]> {
-	return warmupLog(env, cluster).load();
+	return (await readWarmupState(env, cluster)).log;
 }
 
 export type InferNudgeDeps = {
@@ -211,12 +237,13 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 	const digestContent = buildDigestBlock(candidate, phrasing, whyTrail, inferenceId);
 
 	const warmupRequired = warmupCyclesRequired(env);
-	const warmupCount = await readWarmupCount(env, candidate.cluster);
+	const warmupCount = (await readWarmupState(env, candidate.cluster)).count;
 	const inWarmup = warmupCount < warmupRequired;
 
+	let newWarmupCount = warmupCount;
 	if (inWarmup) {
 		try {
-			await warmupLog(env, candidate.cluster).push({
+			newWarmupCount = await pushWarmupEntry(env, candidate.cluster, {
 				ts: Date.now(),
 				cluster: candidate.cluster,
 				driftScore: candidate.driftScore,
@@ -225,7 +252,6 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 				whyTrail,
 				wouldWriteDigest: digestContent,
 			});
-			await writeWarmupCount(env, candidate.cluster, warmupCount + 1);
 		} catch (e) {
 			await deleteInferInference(env, domains[0], inferenceId);
 			return { error: `warm-up log write failed: ${errMsg(e)}`, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
@@ -243,7 +269,7 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 	await dedupe.mark(dedupeKey);
 
 	return inWarmup
-		? { warmup: true, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId, cyclesRemaining: warmupRequired - (warmupCount + 1) }
+		? { warmup: true, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId, cyclesRemaining: warmupRequired - newWarmupCount }
 		: { fired: true, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };
 }
 

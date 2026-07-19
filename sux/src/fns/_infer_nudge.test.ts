@@ -232,4 +232,39 @@ describe("runInferNudge — suggest-only warm-up (#868)", () => {
 		const r2 = await runInferNudge(env, {}, deps({ digestAppend }));
 		expect(r2.warmup).toBe(true);
 	});
+
+	it("a failed warm-up write can never leave the count and log desynced — they're one KV write now (#1014)", async () => {
+		const env = baseEnv({ INFER_NUDGE_WARMUP_CYCLES: "5" });
+		const digestAppend = vi.fn(async () => {});
+
+		// Cycle 1 succeeds: count=1, one log entry.
+		await runInferNudge(env, {}, deps({ digestAppend }));
+		expect(await readInferNudgeWarmupLog(env, "mail+vault")).toHaveLength(1);
+
+		// Cycle 2's warm-up write fails outright.
+		await env.OAUTH_KV.delete("sux:ledger:infer_nudge_rate:mail+vault");
+		const realPut = env.OAUTH_KV.put;
+		env.OAUTH_KV.put = vi.fn(async (k: string, v: string) => {
+			if (String(k).startsWith("kv:infer:warmup:")) throw new Error("transient KV put failure");
+			return realPut(k, v);
+		});
+		const distinct2 = deps({ digestAppend, detectDrift: vi.fn(async () => ({ cluster: "mail+vault", driftScore: 0.4, evidenceIds: ["s5", "s6"] })) });
+		const r = await runInferNudge(env, {}, distinct2);
+		expect(r.error).toContain("warm-up log write failed");
+
+		// A prior two-key design could leave the log grown to 2 while the count stayed at 1
+		// (log-push succeeds, count-write throws) — with one combined key that's impossible:
+		// the failed write can't have landed at all, so the log is still exactly 1 entry.
+		env.OAUTH_KV.put = realPut;
+		expect(await readInferNudgeWarmupLog(env, "mail+vault")).toHaveLength(1);
+
+		// A retry succeeds and the count/log advance together, in lockstep, from where they
+		// actually were (2), not from a desynced count that silently skipped a cycle.
+		await env.OAUTH_KV.delete("sux:ledger:infer_nudge_rate:mail+vault");
+		const distinct3 = deps({ digestAppend, detectDrift: vi.fn(async () => ({ cluster: "mail+vault", driftScore: 0.4, evidenceIds: ["s7", "s8"] })) });
+		const r2 = await runInferNudge(env, {}, distinct3);
+		expect(r2.warmup).toBe(true);
+		expect(r2.cyclesRemaining).toBe(3);
+		expect(await readInferNudgeWarmupLog(env, "mail+vault")).toHaveLength(2);
+	});
 });
