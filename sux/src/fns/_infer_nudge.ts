@@ -72,18 +72,6 @@ const WARMUP_LOG_CAP = 50;
 const warmupLogKey = (cluster: string): string => `kv:infer:warmup:${cluster}:log`;
 const warmupLog = (env: RtEnv, cluster: string) => cappedKvLog<InferNudgeWarmupEntry>(env, warmupLogKey(cluster), WARMUP_LOG_CAP);
 
-const warmupCountKey = (cluster: string): string => `kv:infer:warmup:${cluster}:count`;
-
-/** How many would-fire cycles this cluster has already logged suggest-only. */
-async function readWarmupCount(env: RtEnv, cluster: string): Promise<number> {
-	const n = Number(await env.OAUTH_KV?.get(warmupCountKey(cluster)));
-	return Number.isFinite(n) && n > 0 ? n : 0;
-}
-
-async function writeWarmupCount(env: RtEnv, cluster: string, count: number): Promise<void> {
-	await env.OAUTH_KV?.put(warmupCountKey(cluster), String(count));
-}
-
 /** Read back a cluster's suggest-only audit log (newest-first) — what warm-up logged instead of writing. */
 export async function readInferNudgeWarmupLog(env: RtEnv, cluster: string): Promise<InferNudgeWarmupEntry[]> {
 	return warmupLog(env, cluster).load();
@@ -215,10 +203,12 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 	const digestContent = buildDigestBlock(candidate, phrasing, whyTrail, inferenceId);
 
 	const warmupRequired = warmupCyclesRequired(env);
-	const warmupCount = await readWarmupCount(env, candidate.cluster);
+	const warmupCount = (await readInferNudgeWarmupLog(env, candidate.cluster)).length;
 	const inWarmup = warmupCount < warmupRequired;
 
 	if (inWarmup) {
+		// The log is the sole source of truth for the cluster's warm-up count (its length
+		// after push) — no separate counter write to desync from it on a partial failure.
 		try {
 			await warmupLog(env, candidate.cluster).push({
 				ts: Date.now(),
@@ -229,7 +219,6 @@ export async function runInferNudge(env: RtEnv, opts: { domains?: InferDomain[] 
 				whyTrail,
 				wouldWriteDigest: digestContent,
 			});
-			await writeWarmupCount(env, candidate.cluster, warmupCount + 1);
 		} catch (e) {
 			await deleteInferInference(env, domains[0], inferenceId);
 			return { error: `warm-up log write failed: ${errMsg(e)}`, cluster: candidate.cluster, driftScore: candidate.driftScore, inferenceId };

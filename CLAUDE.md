@@ -350,6 +350,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   Part A's state from scratch (`git grep MYCHART_ORGS origin/main` settles it in one call) —
   go straight to scoping Part B alone, and expect it to need its own dedicated session per the
   `effort:large` precedent (see the `#920` gotcha above), not a batch slot alongside other work.
+- **A `building`-labeled issue can already be fully shipped on `main`** if the PR that built it
+  skipped/lost its disposition record — PR #1010's body literally says "Related to #1008 (not
+  auto-closed — no disposition record, please verify)" for both #1008 and #1009, yet its diff
+  (`git show b3f70b3 --stat`) fully implements both. Before building an open, `building`-labeled
+  issue, `git log --all --oneline | grep -i <keyword>` (per the orphaned-commit gotcha above) —
+  it may turn up a MERGED commit, not just an orphaned one. Drop it with `"superseded": true` in
+  the disposition so it closes instead of getting rebuilt.
 
 ## House style
 
