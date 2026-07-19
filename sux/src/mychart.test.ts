@@ -527,6 +527,11 @@ describe("substancesOverlap — conservative, non-diagnostic text match (#1005)"
 		expect(substancesOverlap("", "Penicillin")).toBe(false);
 		expect(substancesOverlap("Penicillin", "")).toBe(false);
 	});
+
+	it("ignores bare numeric dosage tokens so unrelated substances never share only a dose (#1031)", () => {
+		expect(substancesOverlap("Calcium Carbonate 1000 MG Oral Tablet", "Vitamin D3 1000 UNT Tablet")).toBe(false);
+		expect(substancesOverlap("Metformin 500 MG Tablet", "Naproxen 500 MG Tablet")).toBe(false);
+	});
 });
 
 describe("crossOrgMedicationAllergyConflicts — cross-org continuity check (#1005)", () => {
