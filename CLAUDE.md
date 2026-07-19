@@ -235,6 +235,12 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   tool-call dispatch (`dispatch-guards.ts`). Verify the dependency's own state instead
   (`gh issue view #N --json state`) and drop the dependent issue back to the queue if
   it isn't merged yet, same as the `#865-#867` case above.
+- **`mail-mcp.ts`'s `mail_send` never returns the created message's JMAP id or RFC5322
+  Message-ID** — only `{sent, submissionId, to, ...}` (`draftOrSend`'s `doSend` closure).
+  A caller that needs to reference the just-sent message later (e.g. to bind a future
+  inbound reply to it via In-Reply-To/References threading, considered but not built for
+  `_agenda_reply.ts` in #765) must do a follow-up `mail_search` on the Sent mailbox plus a
+  raw `jmap` `Email/get` for the `messageId` property — there's no cheaper path today.
 
 ## House style
 
