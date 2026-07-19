@@ -201,6 +201,16 @@ export type RtEnv = Env &
 		//   CROSS_SEMANTIC_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
 		CROSS_SEMANTIC_ENABLED?: string;
 
+		// Contact address-book deduplication (fns/_contact_consolidate.ts +
+		// fns/contact_consolidate_plan.ts, #965): fuzzy-matches contact_search's page of
+		// ContactCards by shared email/phone/name into duplicate CANDIDATE clusters, then starts
+		// a durable, human-approved run (op-engine's `contacts-consolidate-plan`) that unions
+		// each cluster's emails/phones into the canonical contact via contact_update — never a
+		// contact_delete, so a wrong merge judgment stays reversible. Fail-closed like the plan
+		// flags above: unset ⇒ refuses to run.
+		//   CONTACT_CONSOLIDATE_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		CONTACT_CONSOLIDATE_ENABLED?: string;
+
 		EXA_API_KEY?: string;
 
 		KROGER_CLIENT_ID?: string;

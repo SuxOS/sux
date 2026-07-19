@@ -1,0 +1,96 @@
+import { describe, expect, it } from "vitest";
+import { findDuplicateContacts, hasContactConsolidate, type ContactRef } from "./_contact_consolidate";
+
+describe("hasContactConsolidate", () => {
+	it("is off by default and on common falsy strings", () => {
+		expect(hasContactConsolidate({} as any)).toBe(false);
+		expect(hasContactConsolidate({ CONTACT_CONSOLIDATE_ENABLED: "0" } as any)).toBe(false);
+		expect(hasContactConsolidate({ CONTACT_CONSOLIDATE_ENABLED: "false" } as any)).toBe(false);
+		expect(hasContactConsolidate({ CONTACT_CONSOLIDATE_ENABLED: "off" } as any)).toBe(false);
+	});
+
+	it("is on for any other truthy value", () => {
+		expect(hasContactConsolidate({ CONTACT_CONSOLIDATE_ENABLED: "1" } as any)).toBe(true);
+		expect(hasContactConsolidate({ CONTACT_CONSOLIDATE_ENABLED: "true" } as any)).toBe(true);
+	});
+});
+
+describe("findDuplicateContacts", () => {
+	it("groups two contacts sharing an email into one cluster", () => {
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Ada Lovelace", emails: ["ada@example.com"] },
+			{ id: "2", name: "Ada L", emails: ["ADA@Example.com"] },
+			{ id: "3", name: "Bob Smith", emails: ["bob@example.com"] },
+		];
+		const clusters = findDuplicateContacts(contacts);
+		expect(clusters).toHaveLength(1);
+		expect(new Set(clusters[0].ids)).toEqual(new Set(["1", "2"]));
+	});
+
+	it("groups two contacts sharing a phone number regardless of formatting", () => {
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Carol", phones: ["+1 (555) 123-4567"] },
+			{ id: "2", name: "Carol J", phones: ["555-123-4567"] },
+		];
+		const clusters = findDuplicateContacts(contacts);
+		expect(clusters).toHaveLength(1);
+		expect(new Set(clusters[0].ids)).toEqual(new Set(["1", "2"]));
+	});
+
+	it("fuzzy-matches a full name against an initial ('Colin Powell' vs 'C. Powell')", () => {
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Colin Powell" },
+			{ id: "2", name: "C. Powell" },
+		];
+		const clusters = findDuplicateContacts(contacts);
+		expect(clusters).toHaveLength(1);
+		expect(new Set(clusters[0].ids)).toEqual(new Set(["1", "2"]));
+	});
+
+	it("matches a parenthetical-tagged duplicate ('Colin Powell' vs 'Colin Powell (work)')", () => {
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Colin Powell" },
+			{ id: "2", name: "Colin Powell (work)" },
+		];
+		const clusters = findDuplicateContacts(contacts);
+		expect(clusters).toHaveLength(1);
+		expect(new Set(clusters[0].ids)).toEqual(new Set(["1", "2"]));
+	});
+
+	it("does not match two different people with the same last name only", () => {
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Colin Powell" },
+			{ id: "2", name: "Jamie Powell" },
+		];
+		expect(findDuplicateContacts(contacts)).toEqual([]);
+	});
+
+	it("transitively unions a 3+ contact chain via different signals into ONE cluster", () => {
+		// 1<->2 share an email, 2<->3 share a phone — all three collapse into one group.
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "Dana West", emails: ["dana@example.com"] },
+			{ id: "2", name: "D. West", emails: ["dana@example.com"], phones: ["555-000-1111"] },
+			{ id: "3", name: "Dana W", phones: ["555-000-1111"] },
+		];
+		const clusters = findDuplicateContacts(contacts);
+		expect(clusters).toHaveLength(1);
+		expect(new Set(clusters[0].ids)).toEqual(new Set(["1", "2", "3"]));
+	});
+
+	it("drops singleton groups — nothing else in the page matched", () => {
+		const contacts: ContactRef[] = [{ id: "1", name: "Solo Person", emails: ["solo@example.com"] }];
+		expect(findDuplicateContacts(contacts)).toEqual([]);
+	});
+
+	it("ignores a too-short phone number as too weak a signal", () => {
+		const contacts: ContactRef[] = [
+			{ id: "1", name: "A", phones: ["123"] },
+			{ id: "2", name: "B", phones: ["123"] },
+		];
+		expect(findDuplicateContacts(contacts)).toEqual([]);
+	});
+
+	it("returns an empty array for an empty page", () => {
+		expect(findDuplicateContacts([])).toEqual([]);
+	});
+});

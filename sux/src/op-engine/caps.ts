@@ -91,7 +91,7 @@ function makeSinks(env: RtEnv): Record<string, SinkTarget> {
 			return input;
 		},
 	});
-	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env), "vault-notes": vaultNotesSink(env), "related-links": relatedLinksSink(env) };
+	return { r2: publisher("r2", "published/"), vault: publisher("vault", "vault/"), "mail-labels": mailLabelsSink(env), "vault-notes": vaultNotesSink(env), "related-links": relatedLinksSink(env), "contacts-merge": contactsMergeSink(env) };
 }
 
 // The `mail-triage-plan` op's terminal (registry.ts): applies a batch of {id, label, add}
@@ -251,6 +251,74 @@ function relatedLinksSink(env: RtEnv): SinkTarget {
 				linked++;
 			}
 			return { linked, notes: byNote.size, ...(failed ? { failed } : {}) };
+		},
+	};
+}
+
+// The `contacts-consolidate-plan` op's terminal (registry.ts): applies a batch of already-
+// approved {keep, archives, name?, company?, emails, phones} merge proposals via the EXISTING
+// `contact` front-door fn's update action (contact_update is irreversible:false in stage.ts, so
+// it auto-mutates with no staging round trip). Dynamically imported for the same reason
+// mailLabelsSink/vaultNotesSink are — op-engine's other ops never pull mail-mcp's JMAP
+// dependency graph into their module load. Deliberately NON-DESTRUCTIVE, mirroring
+// vaultNotesSink's write/append split: `keep` gets ONE contact_update carrying the cluster's
+// unioned emails/phones (+ the longest name/first company, when proposeContactMerge found one),
+// each of `archives` gets its OWN name tagged with a pointer back to `keep` — never a
+// contact_delete — so a wrong merge judgment is always undoable by hand. A malformed item
+// (missing keep/archives) is skipped, not a hard failure; an empty batch is a no-op.
+function contactsMergeSink(env: RtEnv): SinkTarget {
+	return {
+		name: "contacts-merge",
+		async write(input: any): Promise<any> {
+			const items: Array<{ keep?: unknown; archives?: unknown; name?: unknown; company?: unknown; emails?: unknown; phones?: unknown }> = Array.isArray(input) ? input : [];
+			if (!items.length) return { merged: 0 };
+			const { contact } = await import("../fns/contact.js");
+			let merged = 0;
+			let failed = 0;
+			for (const it of items) {
+				const keep = typeof it?.keep === "string" ? it.keep : "";
+				const archives = Array.isArray(it?.archives) ? it.archives.filter((a: unknown): a is string => typeof a === "string" && a.length > 0) : [];
+				if (!keep || !archives.length) continue;
+				const patch: Record<string, unknown> = { id: keep };
+				if (typeof it?.name === "string" && it.name) patch.name = it.name;
+				if (typeof it?.company === "string" && it.company) patch.company = it.company;
+				if (Array.isArray(it?.emails) && it.emails.length) patch.emails = it.emails;
+				if (Array.isArray(it?.phones) && it.phones.length) patch.phones = it.phones;
+				const u = await contact.run(env, { action: "update", ...patch });
+				if (u.isError) {
+					failed++;
+					continue;
+				}
+				// Not idempotent by itself — a step.do retry after a mid-batch eviction (durable.ts's
+				// `sink` step wraps this whole loop as ONE memoized step) would otherwise double the
+				// merge-pointer tag on each `archive`'s name. Skip an archive whose name already
+				// carries this `keep`'s pointer from a prior attempt (mirrors vaultNotesSink's #740).
+				const pointer = `(merged into ${keep})`;
+				let archiveFailed = false;
+				for (const archiveId of archives) {
+					const g = await contact.run(env, { action: "get", id: archiveId });
+					if (g.isError) {
+						archiveFailed = true;
+						continue;
+					}
+					let existingName = "";
+					try {
+						existingName = String(JSON.parse(g.content?.[0]?.text ?? "{}")?.name ?? "");
+					} catch {
+						/* an unparseable get response reads as no existing name — the tag still applies */
+					}
+					if (existingName.includes(pointer)) continue;
+					const newName = existingName ? `${existingName} ${pointer}` : pointer;
+					const a = await contact.run(env, { action: "update", id: archiveId, name: newName });
+					if (a.isError) archiveFailed = true;
+				}
+				if (archiveFailed) {
+					failed++;
+					continue;
+				}
+				merged++;
+			}
+			return { merged, groups: items.length, ...(failed ? { failed } : {}) };
 		},
 	};
 }

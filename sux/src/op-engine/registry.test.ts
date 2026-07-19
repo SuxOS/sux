@@ -124,3 +124,39 @@ test("cross-semantic-plan: a veto ({approved:false}) rejects the gate and never 
 	await expect(interpretDurable(registry["cross-semantic-plan"](), matches, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
 	expect(written).toHaveLength(0);
 });
+
+test("contacts-consolidate-plan: proposes a union merge per cluster, asks for approval, and sinks only the approved batch", async () => {
+	const rec = { events: [] as string[] };
+	const written: unknown[] = [];
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: { "contacts-merge": { name: "contacts-merge", write: async (input: any) => (written.push(input), { merged: input.length, groups: input.length }) } },
+	} as unknown as Caps;
+
+	const clusters = [{ ids: ["b1", "a1"], names: ["Bobby", "Bob"], emails: [["bobby@x.com"], ["bob@x.com"]], phones: [[], []], companies: [undefined, undefined] }];
+
+	const out = await interpretDurable(registry["contacts-consolidate-plan"](), clusters, fakeStep(rec), caps, "root");
+
+	expect(rec.events).toEqual(["ask:apply these contact merges?"]);
+	expect(written).toHaveLength(1);
+	expect(written[0]).toEqual([{ keep: "a1", archives: ["b1"], name: "Bobby", emails: expect.arrayContaining(["bob@x.com", "bobby@x.com"]), phones: [] }]);
+	expect(out).toEqual(written[0]);
+});
+
+test("contacts-consolidate-plan: a veto ({approved:false}) rejects the gate and never reaches the sink", async () => {
+	const rec = { events: [] as string[] };
+	const written: unknown[] = [];
+	const caps = {
+		store: new MemoryStore(),
+		llm: {},
+		clock: { now: () => 0 },
+		sinks: { "contacts-merge": { name: "contacts-merge", write: async (input: any) => (written.push(input), input) } },
+	} as unknown as Caps;
+
+	const clusters = [{ ids: ["1", "2"], names: [undefined, undefined], emails: [["a@x.com"], ["b@x.com"]], phones: [[], []], companies: [undefined, undefined] }];
+
+	await expect(interpretDurable(registry["contacts-consolidate-plan"](), clusters, fakeStep(rec, { approved: false }), caps, "root")).rejects.toThrow(AskRejectedError);
+	expect(written).toHaveLength(0);
+});
