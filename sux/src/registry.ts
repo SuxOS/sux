@@ -368,6 +368,13 @@ export type RtEnv = Env &
 		// the Monarch thresholds above; every drop it can produce is redacted (no raw lab values or
 		// diagnosis names — see mychart.ts's summarizeMyChart docstring).
 		MYCHART_REFILL_WINDOW_DAYS?: string;
+		// Relationship-decay detector thresholds (fns/_agenda.ts's detectRelationshipDrops,
+		// #930) — a contact's own EWMA cadence baseline must be exceeded by BOTH a multiple
+		// (default 2x) and an absolute floor (default 5 days) before it's proposed. Both
+		// optional; unset ⇒ those defaults. Same read-only/proposal-only contract as the
+		// Monarch thresholds above — these only decide what gets PROPOSED, never acted on.
+		AGENDA_RELATIONSHIP_SILENCE_MULTIPLIER?: string;
+		AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS?: string;
 
 		// Ask-gate reminder (fns/_ask_gate_reminder.ts) — proactively surfaces durable
 		// `run` instances paused on a human `ask` gate (op-engine) instead of relying on
