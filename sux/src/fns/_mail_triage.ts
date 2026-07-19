@@ -34,8 +34,11 @@ import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
 import { passesDraftGate } from "./_briefing";
 import { errMsg, vaultToday } from "./_util";
+import { embedOne } from "./_embed";
+import { appendInferSignal, hasInferArm } from "./_infer";
 import { appendTriageEntries, type TriageEntry } from "./_mail_triage_log";
 import { classifyByHistory } from "./_mail_triage_semantic";
+import { redactPII } from "./redact";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 // A dedicated toggle var (not a credential): FASTMAIL_TOKEN is required for mail to
@@ -418,6 +421,29 @@ function buildDigest(r: { cycle: string; mailbox: string; actEnabled: boolean; a
 	return `${lines.join("\n")}\n`;
 }
 
+const SIGNAL_SNIPPET_MAX = 1000;
+
+/** Best-effort feed into the infer signal log (#864's substrate) — a no-op unless
+ *  INFER_ARM_MAIL is set, checked here first so a dormant domain costs zero embed calls.
+ *  Never throws into the caller: a failed embed/append must not affect triage itself.
+ *  Callers MUST check isSensitiveSender themselves and skip this call entirely for a
+ *  sensitive sender — this function persists (redacted) subject/preview to KV via Workers
+ *  AI, so a caller that logs before checking sensitivity defeats the guard (#975). */
+async function logMailSignal(env: RtEnv, m: TriageMsg): Promise<void> {
+	if (!hasInferArm(env, "mail")) return;
+	try {
+		// Redact BEFORE truncating — slicing first could cut a PII pattern (card/SSN) in half,
+		// leaving the surviving fragment past the cut unmatched and un-redacted.
+		const raw = `${m.subject ?? ""}\n${m.preview ?? ""}`;
+		const { redacted } = redactPII(raw);
+		const snippet = redacted.slice(0, SIGNAL_SNIPPET_MAX);
+		const vec = await embedOne(env, snippet);
+		await appendInferSignal(env, "mail", { ts: Date.now(), vec, redacted_snippet: snippet, source_tag: `mail:${m.id}` });
+	} catch (e) {
+		console.warn(`infer: mail signal log failed for ${m.id} — ${errMsg(e)}`);
+	}
+}
+
 /** Run one triage cycle. Fail-closed: returns a dormant no-op unless MAIL_TRIAGE_ENABLED.
  *  Self-bounds its own wall-clock budget because the cron `scheduled()` path bypasses the
  *  normal FN_DEADLINE_MS guard — past the budget it stops claiming new messages, reports
@@ -502,6 +528,9 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			}
 			if (scanned >= max) break sweep;
 			scanned++;
+			// isSensitiveSender is checked BEFORE any signal-log persistence — a sensitive sender's
+			// subject/preview must never reach KV, even redacted (#975).
+			if (!isSensitiveSender(String(m.from ?? ""))) await logMailSignal(env, m);
 			let c = await (deps.classify ?? classify)(env, m);
 			// A personal message that asks for a reply is upgraded to a draft-reply intent — the one
 			// CREATE op (a reply DRAFT is staged for review, never sent). Kept OUT of the shared
