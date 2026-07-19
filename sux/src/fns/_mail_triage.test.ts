@@ -580,6 +580,23 @@ describe("runTriage — sweep_backlog pages through search results", () => {
 		expect(report.scanned).toBe(1); // only the genuinely new message counts toward the budget
 		expect(report.suggested!.map((s) => s.id)).toEqual(["new-1"]);
 	});
+	it("dry_run never persists the sweep cursor, digest, or undo-log — a preview must mutate nothing (#924)", async () => {
+		const bigPage = Array.from({ length: 50 }, (_, i) => ({ id: `dp-${i}`, from: "someone@randomcorp.example", subject: "hey" }));
+		const searchSpy = vi.fn(async () => bigPage);
+		const deps = { ...mkDeps([]), search: searchSpy };
+		const env = envWith({ MAIL_TRIAGE_ENABLED: "1" });
+		const report = await runTriage(env, { cycle_id: "sw5", sweep_backlog: true, max: 100, dry_run: true }, deps);
+		expect(report.scanned).toBe(100);
+		expect(await env.OAUTH_KV.get("sux:ledger:mail_triage:sweep-position::inbox")).toBeNull();
+		expect(deps.digested).not.toHaveBeenCalled();
+		expect(await readTriageEntries(env, { cycle: "sw5" })).toEqual([]);
+
+		// A REAL (non-dry-run) sweep right after must still start at position 0 — proof the
+		// dry-run preview above left no cursor behind to skip past unprocessed backlog mail.
+		const realDeps = { ...mkDeps([]), search: searchSpy };
+		await runTriage(env, { cycle_id: "sw6", sweep_backlog: true, max: 10 }, realDeps);
+		expect(searchSpy).toHaveBeenLastCalledWith(env, expect.objectContaining({ position: 0 }));
+	});
 });
 
 describe("runTriage — reversibility: undo-log is written BEFORE a message is marked seen", () => {

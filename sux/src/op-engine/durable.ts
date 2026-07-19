@@ -88,6 +88,11 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 		case "mapField": {
 			const obj = input as Record<string, unknown>;
 			const items = obj[node.arrayField] as any[];
+			if (items.length > MAP_FANOUT_CEILING) {
+				// TODO(slice-2-scale): split into child workflows via env.OP_WORKFLOW.create()
+				// above this ceiling, awaited by polling instance status.
+				throw new Error(`mapField fan-out of ${items.length} exceeds the MVP ceiling (${MAP_FANOUT_CEILING}); needs a child-workflow split`);
+			}
 			const out = new Array(items.length);
 			await Promise.all(
 				items.map(async (it, i) => {

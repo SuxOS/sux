@@ -432,7 +432,8 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 	const max = numClamp(opts.max, 1, 100, 25);
 	const budgetMs = numClamp(opts.budget_ms, 1000, 45_000, 20_000);
 	const deadline = Date.now() + budgetMs;
-	const actAllowed = opts.dry_run !== true && hasMailTriageAct(env);
+	const dryRun = opts.dry_run === true;
+	const actAllowed = !dryRun && hasMailTriageAct(env);
 	const led = ledger(env, "mail_triage");
 
 	// Default the autonomous scan to UNREAD-only so the bot never touches mail Colin has
@@ -585,7 +586,7 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			// seen. led.mark is what stops the next cycle from reprocessing; if we marked first and
 			// then crashed (or the isolate was evicted) before writing the log, an ACTED message would
 			// be un-undoable — acted-but-unlogged. Log-then-mark, per message, closes that window.
-			if (entry) await appendTriageEntries(env, [entry]);
+			if (entry && !dryRun) await appendTriageEntries(env, [entry]);
 			if (markSeen) await led.mark(m.id);
 		}
 		if (msgs.length < pageLimit) {
@@ -594,12 +595,14 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 		}
 		position += msgs.length;
 	}
-	if (sweepBacklog) await led.mark(cursorKey, String(exhausted ? 0 : position));
+	// dry_run must never persist state — including the sweep's own paging cursor — or a
+	// dry-run preview permanently skips the backlog it only meant to preview (#924).
+	if (sweepBacklog && !dryRun) await led.mark(cursorKey, String(exhausted ? 0 : position));
 
 	// Digest: best-effort, idempotent per cycle id (a double cron-fire won't double-append).
 	let digestWritten = false;
 	let digestError: string | undefined;
-	if (acted.length || suggested.length) {
+	if (!dryRun && (acted.length || suggested.length)) {
 		const dled = ledger(env, "mail_triage_digest");
 		const digKey = `digest::${cycle}`;
 		if (!(await dled.seen(digKey))) {
@@ -638,6 +641,7 @@ export async function defaultDeps(): Promise<TriageDeps> {
 	const { obsidian } = await import("./obsidian");
 	const searchTool = mail.MAIL_TOOLS.find((t) => t.name === "mail_search");
 	const draftTool = mail.MAIL_TOOLS.find((t) => t.name === "mail_draft");
+	const readTool = mail.MAIL_TOOLS.find((t) => t.name === "mail_read");
 	return {
 		search: async (env, o) => {
 			if (!searchTool) throw new Error("mail_search tool not found");
@@ -662,7 +666,20 @@ export async function defaultDeps(): Promise<TriageDeps> {
 			// No AI binding → return "" so the tone/PII gate rejects it and the bot suggests a
 			// manual reply instead of staging an empty draft.
 			if (!hasAI(env)) return "";
-			const material = `From: ${m.from ?? "?"}\nSubject: ${m.subject ?? "(no subject)"}\n\n${(m.preview ?? "").slice(0, 2_000)}`;
+			// mail_search's `preview` is JMAP's server-truncated snippet (a few hundred chars) —
+			// fetch the real body via mail_read so the ask buried past the preview's cutoff is
+			// actually visible to the model, the same full-body read mail_draft's reply-quoting
+			// path already uses.
+			let body = m.preview ?? "";
+			if (readTool) {
+				try {
+					const r = await readTool.run(env, { id: m.id });
+					if (!r.isError) body = JSON.parse(r.content?.[0]?.text ?? "{}")?.body ?? body;
+				} catch {
+					// fall back to the preview below
+				}
+			}
+			const material = `From: ${m.from ?? "?"}\nSubject: ${m.subject ?? "(no subject)"}\n\n${body.slice(0, 2_000)}`;
 			return llm(env, REPLY_SYSTEM, material, 400, "triage draft a reply");
 		},
 		draftReply: async (env, args) => {
