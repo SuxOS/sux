@@ -1,6 +1,7 @@
 import { hasAI } from "./ai";
 import { fingerprint, ledger } from "./ledger";
 import { fail, failWith, ok, type RtEnv, type ToolResult } from "./registry";
+import { staged } from "./stage";
 import { embedOne } from "./fns/_embed";
 import { ingest } from "./fns/ingest";
 import { obsidian, readGitContents, RETRY_ATTEMPTS, retryDelay, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
@@ -53,6 +54,9 @@ type VaultTool = {
 };
 
 const git = (args: Record<string, unknown>) => ({ ...args, backend: "git" });
+
+/** The stage-guard arg triplet, threaded uniformly at every staged() call site (mirrors mail-mcp.ts). */
+const gateArgs = (a: any) => ({ stage: a?.stage === true, commit_token: a?.commit_token ? String(a.commit_token) : undefined, force: a?.force === true });
 
 export type VaultRecord = { path: string; fm: Record<string, unknown>; links: string[]; tags: string[]; tasks: VaultTask[]; excerpt: string; keywords: string[] };
 
@@ -237,9 +241,38 @@ const TOOLS: VaultTool[] = [
 	},
 	{
 		name: "vault_delete",
-		description: "Delete a note (git history keeps it recoverable). Requires confirm:true.",
-		inputSchema: { type: "object", additionalProperties: false, required: ["path", "confirm"], properties: { path: { type: "string" }, confirm: { type: "boolean", description: "Must be true — a deliberate two-step, stolen from obsidian-web-mcp." } } },
-		run: (env, a) => (a?.confirm === true ? obsidian.run(env, git({ action: "delete", path: a?.path })) : Promise.resolve(failWith("bad_input", "vault_delete requires confirm:true."))),
+		description: "Delete a note (git history keeps it recoverable). Stages a preview by default — pass the returned commit_token to confirm, or force:true to skip staging.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["path"],
+			properties: {
+				path: { type: "string" },
+				stage: { type: "boolean" },
+				commit_token: { type: "string" },
+				force: { type: "boolean", description: "Skip staging and apply in one shot (the ! override). By default this verb stages a preview first." },
+			},
+		},
+		run: async (env, a) => {
+			if (!a?.path) return failWith("bad_input", "vault_delete requires a `path`.");
+			const path = String(a.path);
+			let note = "no inbound links (orphan).";
+			try {
+				const { records } = await scanVault(env, undefined, clampCap(undefined));
+				const inbound = records.filter((r) => r.path !== path && r.links.some((l) => linkResolvesTo(l, path)));
+				if (inbound.length) note = `${inbound.length} note${inbound.length === 1 ? "" : "s"} link here.`;
+			} catch {
+				// best-effort advisory — never block the delete on a scan failure
+			}
+			const preview = { action: "delete note", path, note };
+			const mutate = () => obsidian.run(env, git({ action: "delete", path }));
+			try {
+				const out = await staged(env, "vault_delete", gateArgs(a), { path }, preview, mutate);
+				return "stageResult" in out ? ok(JSON.stringify(out.stageResult, null, 2)) : out.result;
+			} catch (e) {
+				return fail(String((e as Error)?.message ?? e));
+			}
+		},
 	},
 	{
 		name: "vault_capture",
