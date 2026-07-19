@@ -476,6 +476,13 @@ export type RtEnv = Env &
 
 		YOUTUBE_API_KEY?: string;
 		AI?: AiBinding;
+		// AI Gateway id (#1060) — routes every env.AI.run() call (ai.ts's llm(),
+		// _embed.ts's embed(), translate, ocr) through Cloudflare AI Gateway for
+		// response caching, observability, and a cost ceiling. Dormant until a human
+		// creates the gateway in the Cloudflare account and sets this var (same
+		// convention as MONARCH_TOKEN above) — absent, every call behaves exactly as
+		// it does today, no gateway option passed. See ai.ts's aiGatewayOptions().
+		AI_GATEWAY_ID?: string;
 		IMAGES?: ImagesBinding;
 
 		BROWSER?: BrowserWorker;
