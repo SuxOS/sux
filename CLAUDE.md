@@ -256,6 +256,16 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   scratch, check whether the latest orphaned attempt still applies cleanly — it usually
   does, since the DIRTY state is a timing artifact of `main` moving during the queue
   wait, not a real conflict with the change itself.
+- **An issue can implicitly assume a sibling issue's fix already landed via past-tense
+  body text ("the same gap #950 just fixed") without an explicit "depends on #N"
+  marker** — the `#865-#867`/`#869` dependency check above only catches the explicit
+  phrasing, and an unclaimed issue carries no `building` label of its own to warn you
+  off. Confirmed on #953 (purgeInferDomain cascade), whose body reads as if #950's
+  cross-domain cascading-delete fix were already merged; #950 was still open, mid-
+  flight in an unmerged PR (#952) at the time. Before claiming an EXPAND candidate,
+  check every issue number its body speaks of in the past tense against that issue's
+  own state (`gh issue view #N --json state`) and its closing PR's merge status, not
+  just issues explicitly worded as "depends on #N".
 
 ## House style
 
