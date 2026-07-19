@@ -743,6 +743,21 @@ describe("MCP Tasks primitive", () => {
 		expect(lifeWiki.result.task?.status).toBe("working");
 	});
 
+	// consolidate's sweep can read up to MAX_NOTES_PER_SWEEP notes on a cold KV cache and risk
+	// FN_DEADLINE_MS the same way onboard/recall/advise/life_wiki's fan-outs do (#964).
+	it("consolidate is task-capable too", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const out = await callRpc(makeEnv(kv), ctx, {
+			jsonrpc: "2.0",
+			id: 23,
+			method: "tools/call",
+			params: { name: "consolidate", arguments: {}, task: {} },
+		});
+		expect(out.error).toBeUndefined();
+		expect(out.result.task?.status).toBe("working");
+	});
+
 	it("a task-augmented call to a non-task-capable tool is refused with -32601", async () => {
 		const { kv } = makeKv();
 		const { ctx } = makeCtx();

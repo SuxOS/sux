@@ -42,6 +42,11 @@ export function staleDays(env: RtEnv): number {
 /** Bounds the per-cycle scan so a huge vault can't blow the cron's wall-clock budget. */
 export const MAX_NOTES_PER_SWEEP = 500;
 
+/** Bounded-concurrency size for the read loop below (mirrors _examples.ts's GET_CONCURRENCY) —
+ *  high enough to keep a cold-cache sweep of MAX_NOTES_PER_SWEEP notes well under
+ *  FN_DEADLINE_MS, low enough not to slam the GitHub Contents API with 500 simultaneous calls. */
+const READ_CONCURRENCY = 20;
+
 /** The ledger key holding the rotating sweep cursor (an index into `listNotes`' order) — kept
  *  under the same "consolidate" namespace as the per-week gate, but not itself week-scoped, so
  *  it survives across weeks and keeps advancing. */
@@ -226,13 +231,23 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 	const windowOffset = Number.isFinite(storedOffset) && storedOffset >= 0 ? storedOffset : 0;
 	const { window: scanPaths, nextOffset } = sweepWindow(paths, windowOffset, MAX_NOTES_PER_SWEEP);
 
+	// Read in READ_CONCURRENCY-sized parallel batches rather than one round-trip at a time — a
+	// cold-cache sweep of MAX_NOTES_PER_SWEEP notes is 500 real GitHub Contents API calls
+	// (obsidian.ts's read path misses the per-note KV cache on a vault's first sweep or after
+	// any vault-changing commit), and a fully sequential loop risks FN_DEADLINE_MS (#964).
 	const contents = new Map<string, string>();
-	for (const path of scanPaths) {
-		try {
-			contents.set(path, await deps.readNote(env, path));
-		} catch {
-			continue; // one unreadable note must not sink the whole sweep
-		}
+	for (let i = 0; i < scanPaths.length; i += READ_CONCURRENCY) {
+		const batch = scanPaths.slice(i, i + READ_CONCURRENCY);
+		const results = await Promise.all(
+			batch.map(async (path) => {
+				try {
+					return [path, await deps.readNote(env, path)] as const;
+				} catch {
+					return null; // one unreadable note must not sink the whole sweep
+				}
+			}),
+		);
+		for (const r of results) if (r) contents.set(r[0], r[1]);
 	}
 	const { stale, duplicate_candidates, scanned } = classifyNotes(scanPaths, contents, cutoff, days);
 
