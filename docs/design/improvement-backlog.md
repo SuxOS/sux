@@ -34,7 +34,7 @@ an in-flight workstream owns; it can't start until that lands.
 | 6 | Unify the 3 destructive-confirm DSLs into one path | best-practices (D1) | **UNSAFE** | M | after mail-cal + vault land |
 | 7 | ~~Remove `geo_fetch`~~ — DONE (folded into proxy `x-exit-geo`) | debloat (S2) | SAFE | S–M | none |
 | 8 | ~~Document `GITHUB_TOKEN` scope~~ — DONE (secrets.md ⇄ keys.md reconciled) | best-practices (C1) | SAFE | S | none |
-| 9 | Route Workers-AI through AI Gateway (cache / observe / cost-cap) | best-practices (E1) | **UNSAFE** | M | none |
+| 9 | ~~Route Workers-AI through AI Gateway~~ — WIRED (#1060): every `env.AI.run()` call site passes `aiGatewayOptions(env)`, dormant behind the out-of-band `AI_GATEWAY_ID` secret until a human creates the gateway and sets it | best-practices (E1) | SAFE | M | none |
 | 10 | Enable `noUncheckedIndexedAccess` + add a lint gate (staged) | best-practices (F) | **UNSAFE** | L | none |
 
 ## Rationale (why this order)
