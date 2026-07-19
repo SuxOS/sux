@@ -640,8 +640,9 @@ export function substancesOverlap(medName: string, allergySubstance: string): bo
 	const allergy = normalizeSubstance(allergySubstance);
 	if (!med || !allergy) return false;
 	if (med.includes(allergy) || allergy.includes(med)) return true;
-	const medWords = new Set(med.split(" ").filter((w) => w.length >= 4 && !SUBSTANCE_STOPWORDS.has(w)));
-	return allergy.split(" ").some((w) => w.length >= 4 && !SUBSTANCE_STOPWORDS.has(w) && medWords.has(w));
+	const isSignificant = (w: string) => w.length >= 4 && !SUBSTANCE_STOPWORDS.has(w) && !/^\d+$/.test(w);
+	const medWords = new Set(med.split(" ").filter(isSignificant));
+	return allergy.split(" ").some((w) => isSignificant(w) && medWords.has(w));
 }
 
 type OrgMedAllergySet = { org: string; meds: Array<{ id: string; name: string }>; allergies: Array<{ id: string; substance: string }> };
