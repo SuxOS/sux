@@ -235,6 +235,16 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   tool-call dispatch (`dispatch-guards.ts`). Verify the dependency's own state instead
   (`gh issue view #N --json state`) and drop the dependent issue back to the queue if
   it isn't merged yet, same as the `#865-#867` case above.
+- **A closed issue's `COMPLETED` state doesn't guarantee the described work actually
+  shipped** — a batch-build PR's body lists `Closes #n` for its whole original batch,
+  and if one issue gets silently REDUCE-dropped without the drop being carved out of
+  that list, merging still auto-closes it as done. Confirmed on #419 (VPC-hosted live
+  vault): closed 2026-07-17 by PR #767's "drain low-priority backlog", but #767's diff
+  only touches `_learning_folder.ts`/`dropbox.ts`/`tavily.ts`/`find_similar.ts` — no
+  `vpc`/`cloudflared`/Workers-VPC code exists anywhere in `sux/src`. Before trusting a
+  closed issue as done — especially one that once needed `needs-human`/`effort:large`
+  — check that its closing PR's file list (`gh pr view <n> --json files`) actually
+  touches the area the issue describes, not just that its state is CLOSED.
 
 ## House style
 
