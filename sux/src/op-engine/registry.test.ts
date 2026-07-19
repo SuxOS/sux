@@ -141,7 +141,7 @@ test("contacts-consolidate-plan: proposes a union merge per cluster, asks for ap
 
 	expect(rec.events).toEqual(["ask:apply these contact merges?"]);
 	expect(written).toHaveLength(1);
-	expect(written[0]).toEqual([{ keep: "a1", archives: ["b1"], name: "Bobby", emails: expect.arrayContaining(["bob@x.com", "bobby@x.com"]), phones: [] }]);
+	expect(written[0]).toEqual([{ keep: "a1", archives: ["b1"], name: "Bob", emails: expect.arrayContaining(["bob@x.com", "bobby@x.com"]), phones: [] }]);
 	expect(out).toEqual(written[0]);
 });
 

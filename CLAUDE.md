@@ -327,6 +327,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   stream (iMessage threads, mail senders), not a contact-importance flag. Confirmed
   while building #930's relationship-decay detector, which fell back to reusing
   `_agenda.ts`'s existing `TextThreadRef` (iMessage) population instead.
+- **An auto-filed "sux production deploy failed" issue (opened by `.github/workflows/
+  deploy.yml`'s failure handler) isn't necessarily a real code regression** — #956's linked
+  run failed on `git clone https://github.com/SuxOS/suxlib.git` returning "Repository not
+  found", the same transient-external-repo-404 shape already known for `SuxOS/.github` above,
+  just hitting the deploy workflow's own suxlib checkout step instead. Every `deploy.yml` run
+  since (`gh run list --workflow=deploy.yml`) succeeded. Before treating one of these as
+  something to fix, check whether later deploy runs already went green — if so it was a
+  momentary outage, not a bug in the merged commit.
 
 ## House style
 

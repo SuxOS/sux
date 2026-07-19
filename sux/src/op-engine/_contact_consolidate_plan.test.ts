@@ -20,13 +20,39 @@ describe("proposeContactMerge", () => {
 		expect(item?.phones.sort()).toEqual(["555-1234", "555-5678"]);
 	});
 
-	it("keeps the longest non-empty name as the most complete variant", () => {
-		const item = proposeContactMerge({ ids: ["1", "2"], names: ["C. Powell", "Colin Powell"], emails: [[], []], phones: [[], []], companies: [undefined, undefined] });
+	it("dedups phones by normalized digits, not exact string match (#995)", () => {
+		const item = proposeContactMerge({
+			ids: ["1", "2"],
+			names: ["Carol", "Carol J"],
+			emails: [[], []],
+			phones: [["+1 (555) 123-4567"], ["555-123-4567"]],
+			companies: [undefined, undefined],
+		});
+		expect(item?.phones).toEqual(["+1 (555) 123-4567"]);
+	});
+
+	it("falls back to the longest non-empty name only when keep has none (#995)", () => {
+		const item = proposeContactMerge({ ids: ["1", "2"], names: [undefined, "Colin Powell"], emails: [[], []], phones: [[], []], companies: [undefined, undefined] });
+		expect(item?.name).toBe("Colin Powell");
+	});
+
+	it("prefers keep's own name over a longer duplicate's, so a merge never worsens the canonical card (#995)", () => {
+		const item = proposeContactMerge({ ids: ["1", "2"], names: ["C. Powell", "Colin Powell (work)"], emails: [[], []], phones: [[], []], companies: [undefined, undefined] });
+		expect(item?.name).toBe("C. Powell");
+	});
+
+	it("strips a stray parenthetical tag before it ever becomes the merged name, even on the fallback path (#995)", () => {
+		const item = proposeContactMerge({ ids: ["1", "2"], names: [undefined, "Colin Powell (work)"], emails: [[], []], phones: [[], []], companies: [undefined, undefined] });
 		expect(item?.name).toBe("Colin Powell");
 	});
 
 	it("keeps the first non-empty company", () => {
 		const item = proposeContactMerge({ ids: ["1", "2"], names: [undefined, undefined], emails: [[], []], phones: [[], []], companies: [undefined, "Acme Inc"] });
+		expect(item?.company).toBe("Acme Inc");
+	});
+
+	it("prefers keep's own company over an archived duplicate's (#995)", () => {
+		const item = proposeContactMerge({ ids: ["1", "2"], names: [undefined, undefined], emails: [[], []], phones: [[], []], companies: ["Acme Inc", "Stale Co"] });
 		expect(item?.company).toBe("Acme Inc");
 	});
 

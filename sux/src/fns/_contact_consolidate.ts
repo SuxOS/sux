@@ -35,15 +35,22 @@ const isMergedArchive = (name?: string): boolean => /\(merged into [^)]*\)/.test
 
 /** Digits only, US country-code (leading "1" on 11 digits) stripped so "+1 (555) 123-4567" and
  *  "555-123-4567" collapse to the same key. Shorter than 7 digits is too weak a signal (a
- *  stray extension-only number) to treat as a match — left out of the phone index entirely. */
-const normPhone = (p: string): string => p.replace(/\D/g, "").replace(/^1(\d{10})$/, "$1");
+ *  stray extension-only number) to treat as a match — left out of the phone index entirely.
+ *  Exported so _contact_consolidate_plan.ts's merge step can dedup by the same key it clustered
+ *  on (#995), not just an exact-string match that misses format variants. */
+export const normPhone = (p: string): string => p.replace(/\D/g, "").replace(/^1(\d{10})$/, "$1");
+
+/** Strips a parenthetical tag ("(work)", "(home)", an already-applied "(merged into ...)"
+ *  pointer) from a raw display name while preserving case/spacing — for when a raw name is
+ *  chosen as a MERGED value (_contact_consolidate_plan.ts, #995), not just for the fuzzy-match
+ *  comparison below, where case/punctuation don't matter. */
+export const stripNameTags = (name: string): string => name.replace(/\([^)]*\)/g, "").replace(/\s+/g, " ").trim();
 
 /** Lowercased, parenthetical tags ("(work)", "(home)") and punctuation stripped, whitespace
  *  collapsed — "Colin Powell (work)" and "colin  powell" both become "colin powell". */
 const normName = (name?: string): string =>
-	(name ?? "")
+	stripNameTags(name ?? "")
 		.toLowerCase()
-		.replace(/\([^)]*\)/g, "")
 		.replace(/[^a-z\s]/g, "")
 		.replace(/\s+/g, " ")
 		.trim();
