@@ -32,7 +32,7 @@ import type { CrossSemanticFindings } from "./_cross_semantic";
 import { classifyMessage } from "./_mail_triage";
 import { hasImessage, imessage } from "./imessage";
 import { hasMonarch, monarch } from "./monarch";
-import { mychartConfigured, summarizeMyChart } from "../mychart";
+import { crossOrgMedicationAllergyConflicts, mychartConfigured, orgLabel, summarizeMyChart } from "../mychart";
 import { errMsg, vaultToday } from "./_util";
 import type { WatchFindings } from "./_watch_sweep";
 import type { WeeklyRecallFindings } from "./_weekly_recall";
@@ -49,6 +49,12 @@ export const hasAgenda = (env: RtEnv): boolean => flagOn(env.AGENDA_ENABLED);
 /** The digest may additionally be MAILED to Colin's own address. Requires AGENDA_ENABLED
  *  too, so a stray AGENDA_EMAIL without the master enable never sends (fail-closed). */
 export const hasAgendaEmail = (env: RtEnv): boolean => hasAgenda(env) && flagOn(env.AGENDA_EMAIL);
+
+/** The cross-org MyChart reconciliation detector (#1005) may run. Requires AGENDA_ENABLED
+ *  too (same fail-closed shape as hasAgendaEmail) — a stray MYCHART_RECONCILE_ENABLED without
+ *  the master enable never fires. Off by default: this is the first mychart_* detector that
+ *  reads two orgs' PHI against each other rather than one org's redacted snapshot alone. */
+export const hasMychartReconcile = (env: RtEnv): boolean => hasAgenda(env) && flagOn(env.MYCHART_RECONCILE_ENABLED);
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 export type MailRef = { id: string; from?: string; subject?: string; preview?: string; date?: string };
@@ -624,6 +630,7 @@ async function saveMonarchSnapshot(env: RtEnv, snapshot: MonarchSnapshot): Promi
 export type MyChartLabFlagRef = { id: string; category: string; direction: string };
 export type MyChartRefillDueRef = { id: string; name?: string; dueDate?: string };
 export type MyChartEntryRef = { id: string; docType?: string };
+export type MyChartConflictRef = { medOrg: string; medId: string; medName: string; allergyOrg: string; allergyId: string; allergySubstance: string };
 
 /** Turn MyChart's redacted last-pull summary (mychart.ts's summarizeMyChart — never raw lab
  *  values or diagnosis names, see its docstring) into drops — same read-only-sense/reversible-
@@ -682,6 +689,30 @@ export function detectMyChartDrops(labFlags: MyChartLabFlagRef[], refillsDue: My
 		});
 	}
 	return sortByUrgency(drops);
+}
+
+/** Cross-org medication/allergy overlap (#1005): mychart.ts's summarizeMyChart merges every
+ *  connected org's redacted findings into one flat list, but never cross-references org A's
+ *  data against org B's — the real continuity-of-care gap where org B's specialist has no
+ *  idea org A's PCP started a medication that textually overlaps an allergy only org B's chart
+ *  carries. mychart.ts's crossOrgMedicationAllergyConflicts does the deliberately conservative
+ *  (name/substance-string only, never dosage/severity/diagnostic) matching; this only turns
+ *  each hit into a drop at the same sensitivity level as the other mychart_* kinds (a
+ *  medication name + a generic org label, never a diagnosis) — always phrased as "may overlap"
+ *  / "verify with your provider", never a claim. Dedupe is the med+allergy resource-id pair, so
+ *  — like every other mychart_* kind — a given pair proposes once ever. */
+export function detectMychartConflictDrops(conflicts: MyChartConflictRef[]): Drop[] {
+	return sortByUrgency(
+		conflicts.map((c) => ({
+			kind: "mychart_conflict",
+			urgency: "today" as const,
+			dedupe: `mychart::conflict::${c.medOrg}:${c.medId}::${c.allergyOrg}:${c.allergyId}`,
+			title: `Medication "${c.medName}" (${orgLabel(c.medOrg)}) may overlap an allergy on file at ${orgLabel(c.allergyOrg)} — verify with your provider`,
+			emoji: "⚠️",
+			action: task(`Ask your provider: does ${c.medName} conflict with the allergy on file at ${orgLabel(c.allergyOrg)}?`),
+			evidence: { medOrg: c.medOrg, medId: c.medId, allergyOrg: c.allergyOrg, allergyId: c.allergyId },
+		})),
+	);
 }
 
 /** Load each tracked thread's cached cadence baseline — one KV key per thread id, unlike
@@ -787,6 +818,9 @@ export type AgendaDeps = {
 	 *  summarizeMyChart — only called when mychartConfigured(env). Null when never connected
 	 *  (no grant) or never pulled. */
 	mychartSummary: (env: RtEnv, opts: { now: string; refillWindowDays: number }) => Promise<{ labFlags: MyChartLabFlagRef[]; refillsDue: MyChartRefillDueRef[]; newConditions: MyChartEntryRef[]; newDocuments: MyChartEntryRef[] } | null>;
+	/** Cross-org medication/allergy overlaps (#1005) — only called when hasMychartReconcile(env)
+	 *  && mychartConfigured(env). [] when fewer than 2 orgs have ever pulled. */
+	mychartConflicts: (env: RtEnv) => Promise<MyChartConflictRef[]>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -862,6 +896,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let mychartRefillsDue: MyChartRefillDueRef[] = [];
 	let mychartNewConditions: MyChartEntryRef[] = [];
 	let mychartNewDocuments: MyChartEntryRef[] = [];
+	let mychartConflicts: MyChartConflictRef[] = [];
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
@@ -951,6 +986,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.mychart = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			if (!hasMychartReconcile(env) || !mychartConfigured(env)) {
+				status.mychart_reconcile = hasMychartReconcile(env) ? "not_configured" : "disabled";
+				return;
+			}
+			mychartConflicts = await deps.mychartConflicts(env);
+			status.mychart_reconcile = `${mychartConflicts.length} cross-org conflict(s)`;
+		})().catch((e) => {
+			status.mychart_reconcile = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
 	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
@@ -978,6 +1023,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectPortfolioDrops(date, monarchHoldings, priorMonarchSnapshot?.allocation ?? null, { concentrationThreshold: portfolioConcentrationThreshold, driftThreshold: portfolioDriftThreshold }),
 		...detectSavingsRateDrop(date, currentSavingsRate, priorMonarchSnapshot?.savingsRate ?? null, { dropThreshold: savingsRateDropThreshold }),
 		...detectMyChartDrops(mychartLabFlags, mychartRefillsDue, mychartNewConditions, mychartNewDocuments),
+		...detectMychartConflictDrops(mychartConflicts),
 	]);
 
 	// Advance the "since last check" baseline every successful Monarch fetch, regardless of
@@ -1222,5 +1268,6 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			return out;
 		},
 		mychartSummary: async (env, o) => summarizeMyChart(env, { now: o.now, refillWindowDays: o.refillWindowDays }),
+		mychartConflicts: async (env) => crossOrgMedicationAllergyConflicts(env),
 	};
 }

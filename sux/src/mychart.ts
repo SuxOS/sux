@@ -555,6 +555,96 @@ export async function summarizeMyChart(env: RtEnv, opts?: { org?: string; refill
 	};
 }
 
+/** `org`'s display name from the registry, or the bare id if somehow unregistered
+ * (defensive only — every caller here already validated the org). */
+export function orgLabel(org: string): string {
+	return MYCHART_ORGS[org]?.name ?? org;
+}
+
+// ---------------- cross-org reconciliation (#1005) ----------------
+
+export type MyChartConflict = { medOrg: string; medId: string; medName: string; allergyOrg: string; allergyId: string; allergySubstance: string };
+
+// Generic pharma filler words that would otherwise trip a false "overlap" between two
+// unrelated substances (e.g. "Aspirin 81mg oral tablet" vs "Penicillin oral suspension"
+// sharing only "oral") — excluded from the significant-word comparison below.
+const SUBSTANCE_STOPWORDS = new Set(["tablet", "tablets", "capsule", "capsules", "oral", "injection", "solution", "cream", "ointment", "daily", "twice", "extended", "release", "delayed", "chewable", "suspension", "patch", "dose", "spray", "drops", "gel", "mg", "ml"]);
+
+function normalizeSubstance(s: string): string {
+	return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** Conservative, non-diagnostic substance-string overlap: true when a significant
+ * (4+ char, non-filler) word is shared between a medication's name and an allergy's
+ * substance text, or one normalized string contains the other outright. This is a
+ * TEXT match only — it says nothing about clinical significance, dosage, or route; the
+ * caller (detectMychartConflictDrops) always phrases a hit as "may overlap — verify
+ * with your provider", never a diagnostic claim. */
+export function substancesOverlap(medName: string, allergySubstance: string): boolean {
+	const med = normalizeSubstance(medName);
+	const allergy = normalizeSubstance(allergySubstance);
+	if (!med || !allergy) return false;
+	if (med.includes(allergy) || allergy.includes(med)) return true;
+	const medWords = new Set(med.split(" ").filter((w) => w.length >= 4 && !SUBSTANCE_STOPWORDS.has(w)));
+	return allergy.split(" ").some((w) => w.length >= 4 && !SUBSTANCE_STOPWORDS.has(w) && medWords.has(w));
+}
+
+/** Cross-org drug/allergy continuity check (#1005): summarizeMyChart already fans out
+ * across every connected org, but stops at concatenation — org A's data is never compared
+ * against org B's. This closes the real continuity-of-care gap: org B's specialist has no
+ * idea org A's PCP started a medication, and neither org's chart necessarily carries the
+ * other's allergy list. Compares every connected org's ACTIVE medications against every
+ * OTHER connected org's allergy list for a name/substance-string overlap only — never
+ * anything diagnostic (dosage, interaction severity, route). Same-org pairs are skipped: a
+ * same-org prescription against a known allergy is exactly what that org's own ordering
+ * system's interaction check already guards against; the gap here is specifically the
+ * blind spot ACROSS orgs. Only orgs that have ever pulled contribute (mirrors
+ * summarizeMyChart's hasEverPulled gate). [] when unconfigured or fewer than 2 orgs
+ * contribute — reconciliation is meaningless with a single chart. */
+export async function crossOrgMedicationAllergyConflicts(env: RtEnv): Promise<MyChartConflict[]> {
+	if (!mychartConfigured(env)) return [];
+	const orgs = await connectedOrgs(env);
+	if (orgs.length < 2) return [];
+
+	const perOrg = await Promise.all(
+		orgs.map(async (org) => {
+			const grant = await readGrant(env, org);
+			if (!grant?.patient) return null;
+			if (!(await hasEverPulled(env, org, grant.patient))) return null;
+			const [meds, allergies] = await Promise.all([
+				latestPulledResources(env, org, grant.patient, "MedicationRequest"),
+				latestPulledResources(env, org, grant.patient, "AllergyIntolerance"),
+			]);
+			const activeMeds = meds
+				.filter((r) => r?.id && r?.status === "active")
+				.map((r) => ({ id: String(r.id), name: codeableConceptText(r.medicationCodeableConcept) }))
+				.filter((m): m is { id: string; name: string } => Boolean(m.name));
+			const activeAllergies = allergies
+				.filter((r) => r?.id)
+				.map((r) => ({ id: String(r.id), substance: codeableConceptText(r.code) }))
+				.filter((a): a is { id: string; substance: string } => Boolean(a.substance));
+			return { org, meds: activeMeds, allergies: activeAllergies };
+		}),
+	);
+	const contributing = perOrg.filter((v): v is { org: string; meds: Array<{ id: string; name: string }>; allergies: Array<{ id: string; substance: string }> } => v !== null);
+	if (contributing.length < 2) return [];
+
+	const conflicts: MyChartConflict[] = [];
+	for (const medSide of contributing) {
+		for (const allergySide of contributing) {
+			if (medSide.org === allergySide.org) continue;
+			for (const med of medSide.meds) {
+				for (const allergy of allergySide.allergies) {
+					if (substancesOverlap(med.name, allergy.substance)) {
+						conflicts.push({ medOrg: medSide.org, medId: med.id, medName: med.name, allergyOrg: allergySide.org, allergyId: allergy.id, allergySubstance: allergy.substance });
+					}
+				}
+			}
+		}
+	}
+	return conflicts;
+}
+
 /** Resolve a DocumentReference's Binary attachments (content[].attachment.url →
  * Binary/{id}). Returns the raw fetched bodies keyed by Binary id. Skips non-Binary
  * or off-base attachment URLs. */
