@@ -10,6 +10,9 @@ vi.mock("../mail-mcp.js", () => ({ labelMessages: (...args: [unknown, string[], 
 const obsidianRun = vi.fn(async (_env: unknown, _args: unknown): Promise<FakeToolResult> => ({ content: [{ type: "text", text: "{}" }] }));
 vi.mock("../fns/obsidian.js", () => ({ obsidian: { run: (...args: [unknown, unknown]) => obsidianRun(...args) } }));
 
+const contactRun = vi.fn(async (_env: unknown, _args: unknown): Promise<FakeToolResult> => ({ content: [{ type: "text", text: "{}" }] }));
+vi.mock("../fns/contact.js", () => ({ contact: { run: (...args: [unknown, unknown]) => contactRun(...args) } }));
+
 // Fake R2: just enough of the head/get/put surface makeSinks touches.
 test("sinks re-address a Handle (r2 -> published/) and a {summaryHandle} (vault -> vault/)", async () => {
 	const objs = new Map<string, Uint8Array>();
@@ -244,4 +247,48 @@ test("related-links sink skips (doesn't throw) a note whose append fails, and co
 	const { sinks } = makeCaps({} as unknown as RtEnv);
 	const out = await sinks["related-links"].write([{ vaultPath: "A.md", domain: "mail", key: "m1", label: "x", score: 0.9 }], {} as Caps);
 	expect(out).toEqual({ linked: 0, notes: 1, failed: 1 });
+});
+
+test("contacts-merge sink contact_updates `keep` with the unioned emails/phones and tags each `archive`'s name — never a contact_delete", async () => {
+	contactRun.mockClear();
+	contactRun.mockImplementation(async (_env: unknown, args: any) => {
+		if (args.action === "get") return { content: [{ type: "text", text: JSON.stringify({ id: args.id, name: "Old Name" }) }] };
+		return { content: [{ type: "text", text: "{}" }] };
+	});
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["contacts-merge"].write([{ keep: "a1", archives: ["b1"], name: "Ada Lovelace", emails: ["ada@example.com"], phones: ["555-1234"] }], {} as Caps);
+	expect(contactRun).toHaveBeenCalledWith({}, { action: "update", id: "a1", name: "Ada Lovelace", emails: ["ada@example.com"], phones: ["555-1234"] });
+	expect(contactRun).toHaveBeenCalledWith({}, { action: "get", id: "b1" });
+	expect(contactRun).toHaveBeenCalledWith({}, { action: "update", id: "b1", name: "Old Name (merged into a1)" });
+	expect(contactRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "delete" }));
+	expect(out).toEqual({ merged: 1, groups: 1 });
+});
+
+test("contacts-merge sink is a no-op on an empty batch (never an error)", async () => {
+	contactRun.mockClear();
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["contacts-merge"].write([], {} as Caps);
+	expect(contactRun).not.toHaveBeenCalled();
+	expect(out).toEqual({ merged: 0 });
+});
+
+test("contacts-merge sink skips the archive tag on a retry — the name already carries this `keep`'s pointer", async () => {
+	contactRun.mockClear();
+	contactRun.mockImplementation(async (_env: unknown, args: any) => {
+		if (args.action === "get") return { content: [{ type: "text", text: JSON.stringify({ id: args.id, name: "Bob (merged into a1)" }) }] };
+		return { content: [{ type: "text", text: "{}" }] };
+	});
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["contacts-merge"].write([{ keep: "a1", archives: ["b1"], emails: ["bob@x.com"], phones: [] }], {} as Caps);
+	expect(out).toEqual({ merged: 1, groups: 1 });
+	expect(contactRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "update", id: "b1" }));
+});
+
+test("contacts-merge sink skips (doesn't throw) an item whose canonical update fails, and counts it as failed", async () => {
+	contactRun.mockClear();
+	contactRun.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text: "conflict" }] });
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["contacts-merge"].write([{ keep: "a1", archives: ["b1"], emails: ["a@x.com"], phones: [] }], {} as Caps);
+	expect(out).toEqual({ merged: 0, groups: 1, failed: 1 });
+	expect(contactRun).toHaveBeenCalledTimes(1); // the archive tag never runs once the canonical update failed
 });

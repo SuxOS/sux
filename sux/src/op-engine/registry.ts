@@ -1,6 +1,7 @@
 import { op, pipe, map, reconcile, ask, sink, aimd, fixed, unzip, extract, summarize, type Caps, type Op } from "@suxos/lib";
 import { classifyForLabelPlan, compactLabelPlan, type LabelPlanItem } from "./_mail_triage_plan.js";
 import { proposeMerge, compactMergePlan, type DuplicateClusterInput, type MergePlanItem } from "./_vault_consolidate_plan.js";
+import { proposeContactMerge, compactContactMergePlan, type ContactClusterInput, type ContactMergePlanItem } from "./_contact_consolidate_plan.js";
 import type { TriageMsg } from "../fns/_mail_triage.js";
 
 // THE op registry — named op trees that the `run` front-verb and the OpWorkflow
@@ -51,6 +52,17 @@ import type { TriageMsg } from "../fns/_mail_triage.js";
 // `related-links` sink (caps.ts) apply them — an `append`-only "Related" block per matched vault
 // note, never a `write`/`delete` (so, unlike vault-consolidate-plan, this can never touch a
 // note's own content). onTimeout:'fail' — an unanswered gate applies nothing.
+//
+// `contacts-consolidate-plan` (#965) is vault-consolidate-plan's sibling for the address book:
+// input is a batch of duplicate-candidate contact clusters (id + name/emails/phones/company
+// each side) already fetched by `contact_consolidate_plan` and grouped by
+// _contact_consolidate.ts's fuzzy email/phone/name matching — same reason as the other plan
+// ops' fetch-in-the-calling-fn shape (a leaf only sees `caps`, not env). Each cluster is
+// proposed as one field-union merge (`proposeContactMerge` — a plain set union over already-
+// structured emails/phones, no `caps.store`/reconcile needed, unlike vault-consolidate-plan's
+// unstructured note bodies), the human approves the WHOLE batch once, and only on approval does
+// the `contacts-merge` sink (caps.ts) apply them via `contact_update` — never a `contact_delete`,
+// so a wrong merge judgment stays reversible. onTimeout:'fail' — an unanswered gate applies nothing.
 export const registry: Record<string, () => Op> = {
 	echo: () => op("echo", async (x: unknown) => x, { kind: "pure" }),
 	"assimilate-pdfs": () =>
@@ -80,5 +92,12 @@ export const registry: Record<string, () => Op> = {
 		pipe(
 			ask("add these related links?", { timeout: "24 hour", onTimeout: "fail" }),
 			sink("related-links"),
+		),
+	"contacts-consolidate-plan": () =>
+		pipe(
+			map(op("propose", async (c: ContactClusterInput) => proposeContactMerge(c), { kind: "pure" }), { concurrency: fixed(8) }),
+			op("compact", async (items: Array<ContactMergePlanItem | null>) => compactContactMergePlan(items), { kind: "pure" }),
+			ask("apply these contact merges?", { timeout: "24 hour", onTimeout: "fail" }),
+			sink("contacts-merge"),
 		),
 };
