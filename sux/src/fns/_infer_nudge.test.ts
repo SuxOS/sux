@@ -232,4 +232,19 @@ describe("runInferNudge — suggest-only warm-up (#868)", () => {
 		const r2 = await runInferNudge(env, {}, deps({ digestAppend }));
 		expect(r2.warmup).toBe(true);
 	});
+
+	it("the warm-up count is derived from the log itself, so a partial write can't desync it (#1014)", async () => {
+		// Only one KV write backs warm-up progress now (the log), so a write that fails
+		// partway through never leaves a log entry persisted without its count reflected —
+		// there's no second counter key left to fall out of sync with it.
+		const env = baseEnv({ INFER_NUDGE_WARMUP_CYCLES: "2" });
+		const digestAppend = vi.fn(async () => {});
+		const distinctCandidate = (n: number) => ({ cluster: "mail+vault", driftScore: 0.4, evidenceIds: [`s${n}`, `s${n + 1}`] });
+
+		const r1 = await runInferNudge(env, {}, deps({ digestAppend, detectDrift: vi.fn(async () => distinctCandidate(1)) }));
+		expect(r1.cyclesRemaining).toBe(1);
+		expect(await readInferNudgeWarmupLog(env, "mail+vault")).toHaveLength(1);
+
+		expect(await env.OAUTH_KV.get("kv:infer:warmup:mail+vault:count")).toBeNull();
+	});
 });
