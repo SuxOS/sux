@@ -245,6 +245,17 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   closed issue as done — especially one that once needed `needs-human`/`effort:large`
   — check that its closing PR's file list (`gh pr view <n> --json files`) actually
   touches the area the issue describes, not just that its state is CLOSED.
+- **An issue-build PR can get auto-closed unmerged by an external "production-driver
+  reconcile" process for going DIRTY (conflicting with `main`) while its issue(s) sit
+  claimed (`building`) with no open PR — a "zombie claim-jam"** — this doesn't mean the
+  underlying commit was broken. Confirmed on #765 (agenda inbound-reply loop): two
+  separate attempts (orphaned commits `55e5e14`, then a fresher `e9f2487`) both shipped
+  complete, tested implementations, and both PRs (#787, then #936) got closed by this
+  reconcile rather than merged. `e9f2487` still `git cherry-pick`s cleanly onto current
+  `origin/main` with zero conflicts. Before reimplementing an issue like this from
+  scratch, check whether the latest orphaned attempt still applies cleanly — it usually
+  does, since the DIRTY state is a timing artifact of `main` moving during the queue
+  wait, not a real conflict with the change itself.
 
 ## House style
 
