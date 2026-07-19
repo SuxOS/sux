@@ -8,15 +8,19 @@
 //      (mail_identities) — a stranger's mail can never dispatch a command, even one that
 //      literally reads "approve 1a2b3c4d".
 //   2. The subject must still carry the digest's own prefix (composeDigest's `sux · `,
-//      surviving any number of Re:/Fwd: hops) — this is the reply-to-a-digest-thread check;
-//      a message merely FROM Colin about something unrelated is never parsed as a command.
-//   Only messages that pass BOTH gates are ever fed to the command parser.
+//      surviving any number of Re:/Fwd: hops) — a cheap pre-filter so gate 3's jmap lookup
+//      only runs for messages that at least look like a digest-thread reply.
+//   3. The message's In-Reply-To/References headers (raw jmap Email/get — mail_search's
+//      shapeRef() doesn't expose them) must name a Message-ID that _agenda.ts's sendDigest
+//      ledgered when it actually sent a digest (`agenda_digest_msgid`, 30d TTL). This is the
+//      real binding: gate 2's subject prefix is guessable by anyone, but only a genuine
+//      reply-chain to a digest sux itself sent carries one of these Message-IDs.
+//   Only messages that pass ALL THREE gates are ever fed to the command parser.
 //   Residual limitation: a From header is provider-parsed SMTP envelope data, not
 //   cryptographically verified here (no DKIM/SPF/DMARC check in this mail stack) — gate 1
 //   proves "looks like Colin's address", not "definitely Colin". Impact is bounded by the
 //   proposal kernel's own locks (reversible + allow-listed fns only, no force — see
-//   proposals.ts). A stronger binding (In-Reply-To matched against a ledgered digest
-//   Message-ID, or DKIM-domain verification) would close this further; not done here.
+//   proposals.ts).
 //
 // SAFETY (fail-closed, mirrors AGENDA_ENABLED): AGENDA_REPLY_ENABLED unset ⇒ total no-op —
 // scans nothing, dispatches nothing. Armed, it still only ever runs approveProposal /
@@ -107,6 +111,9 @@ export type AgendaReplyDeps = {
 	mailSearch: (env: RtEnv, opts: { limit: number }) => Promise<MailRef[]>;
 	/** Colin's own verified send-from addresses (mail_identities), for the sender auth gate. */
 	identities: (env: RtEnv) => Promise<string[]>;
+	/** This message's In-Reply-To + References Message-IDs (raw jmap Email/get) — checked
+	 *  against the ledgered sent-digest Message-IDs as the thread-binding auth gate. */
+	threadIds: (env: RtEnv, mailId: string) => Promise<string[]>;
 };
 
 export type AgendaReplyReport = {
@@ -114,6 +121,7 @@ export type AgendaReplyReport = {
 	scanned?: number;
 	untrusted?: number; // From didn't match a verified identity — never parsed
 	not_a_reply?: number; // subject didn't carry the digest thread prefix — never parsed
+	not_thread_matched?: number; // subject looked right but In-Reply-To/References named no ledgered digest — never parsed
 	processed?: number; // messages whose commands were parsed and dispatched
 	approved?: string[];
 	rejected?: string[];
@@ -136,7 +144,7 @@ export async function runAgendaReply(env: RtEnv, opts: { max_mail?: number }, de
 	if (!hasAgendaReply(env)) {
 		return {
 			dormant: true,
-			note: "agenda_reply is disabled — set AGENDA_REPLY_ENABLED (requires AGENDA_ENABLED) to parse inbound 'approve/snooze/reject <id>' replies to the agenda digest and dispatch them through the proposal kernel. Only messages FROM one of your own mail_identities AND whose subject is still a digest-thread reply ('sux · …') are ever parsed — everything else is ignored untouched. Fail-closed: nothing runs until the flag is set.",
+			note: "agenda_reply is disabled — set AGENDA_REPLY_ENABLED (requires AGENDA_ENABLED) to parse inbound 'approve/snooze/reject <id>' replies to the agenda digest and dispatch them through the proposal kernel. Only messages FROM one of your own mail_identities, whose subject is still a digest-thread reply ('sux · …'), AND whose In-Reply-To/References actually name a Message-ID sux ledgered when it sent that digest are ever parsed — everything else is ignored untouched. Fail-closed: nothing runs until the flag is set.",
 		};
 	}
 
@@ -149,9 +157,11 @@ export async function runAgendaReply(env: RtEnv, opts: { max_mail?: number }, de
 	const identities = new Set((await deps.identities(env).catch(() => [])).map((e) => e.toLowerCase()).filter(Boolean));
 
 	const led = ledger(env, "agenda_reply");
+	const digestMsgIds = ledger(env, "agenda_digest_msgid");
 	let scanned = 0;
 	let untrusted = 0;
 	let notReply = 0;
+	let notThreadMatched = 0;
 	let processed = 0;
 	const approved: string[] = [];
 	const rejected: string[] = [];
@@ -169,6 +179,22 @@ export async function runAgendaReply(env: RtEnv, opts: { max_mail?: number }, de
 		}
 		if (!looksLikeDigestReply(m.subject)) {
 			notReply++;
+			await led.mark(m.id);
+			continue;
+		}
+		// Gate 3 — the real binding: the subject prefix is guessable, so require this message's
+		// In-Reply-To/References to actually name a Message-ID _agenda.ts ledgered when it sent a
+		// digest. Checked serially (not Promise.all) so a match short-circuits the KV reads.
+		const refs = await deps.threadIds(env, m.id).catch(() => []);
+		let threadMatched = false;
+		for (const ref of refs) {
+			if (await digestMsgIds.seen(ref)) {
+				threadMatched = true;
+				break;
+			}
+		}
+		if (!threadMatched) {
+			notThreadMatched++;
 			await led.mark(m.id);
 			continue;
 		}
@@ -207,7 +233,7 @@ export async function runAgendaReply(env: RtEnv, opts: { max_mail?: number }, de
 		await led.mark(m.id);
 	}
 
-	return { scanned, untrusted, not_a_reply: notReply, processed, approved, rejected, snoozed, unresolved };
+	return { scanned, untrusted, not_a_reply: notReply, not_thread_matched: notThreadMatched, processed, approved, rejected, snoozed, unresolved };
 }
 
 // ── Real deps ───────────────────────────────────────────────────────────────────────
@@ -233,6 +259,21 @@ export async function defaultDeps(): Promise<AgendaReplyDeps> {
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "mail_identities failed");
 			const parsed = JSON.parse(r.content?.[0]?.text ?? "{}");
 			return ((parsed.identities ?? []) as Array<{ email?: string }>).map((i) => i.email).filter((e): e is string => Boolean(e));
+		},
+		threadIds: async (env, mailId) => {
+			const t = tool("jmap");
+			if (!t) return [];
+			try {
+				const r = await t.run(env, { method: "Email/get", args: { ids: [mailId], properties: ["inReplyTo", "references"] } });
+				if (r.isError) return [];
+				const mrs = JSON.parse(r.content?.[0]?.text ?? "{}").methodResponses ?? [];
+				const e = mrs.find((mr: any) => mr[0] === "Email/get")?.[1]?.list?.[0];
+				const inReplyTo = Array.isArray(e?.inReplyTo) ? e.inReplyTo : [];
+				const references = Array.isArray(e?.references) ? e.references : [];
+				return [...inReplyTo, ...references].filter((x): x is string => Boolean(x));
+			} catch {
+				return [];
+			}
 		},
 	};
 }

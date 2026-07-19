@@ -11,6 +11,7 @@ vi.mock("./index", () => ({
 import { type AgendaReplyDeps, durationMs, extractEmail, looksLikeDigestReply, parseCommands, resolveShortId, runAgendaReply } from "./_agenda_reply";
 import { listProposals, propose } from "../proposals";
 import type { MailRef } from "./_agenda";
+import { ledger } from "../ledger";
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -19,9 +20,14 @@ function kvStub() {
 const env = (extra: Record<string, unknown> = {}) => ({ AGENDA_ENABLED: "1", AGENDA_REPLY_ENABLED: "1", VAULT_TZ: "UTC", OAUTH_KV: kvStub(), ...extra }) as any;
 
 const SELF = "colin@example.com";
+// The Message-ID _agenda.ts's sendDigest would have ledgered for a real sent digest — gate 3
+// requires a candidate reply's In-Reply-To/References to name one of these.
+const DIGEST_MSG_ID = "digest-2026-07-13@fastmail.example";
+const ledgerDigest = (e: any, id = DIGEST_MSG_ID) => ledger(e, "agenda_digest_msgid").mark(id);
 const deps = (mail: MailRef[], over: Partial<AgendaReplyDeps> = {}): AgendaReplyDeps => ({
 	mailSearch: vi.fn(async () => mail),
 	identities: vi.fn(async () => [SELF]),
+	threadIds: vi.fn(async () => []),
 	...over,
 });
 
@@ -90,11 +96,12 @@ describe("agenda_reply — loop", () => {
 
 	it("approves + rejects proposals named by a trusted digest-reply", async () => {
 		const e = env();
+		await ledgerDigest(e);
 		const p1 = await propose(e, { source: "agenda", kind: "bill_due", intent: "pay the thing", payload: { fn: "todoist", args: { action: "add", content: "pay" } }, reversible: true, stakes: "low" });
 		const p2 = await propose(e, { source: "agenda", kind: "rx_ready", intent: "pick up rx", payload: { fn: "todoist", args: { action: "add", content: "rx" } }, reversible: true, stakes: "low" });
 		const short = (id: string) => id.slice(0, 8);
 		const mail: MailRef[] = [{ id: "m1", from: `"Colin" <${SELF}>`, subject: "Re: sux · 2 things need you (2026-07-13)", preview: `approve ${short(p1.id)} reject ${short(p2.id)}` }];
-		const r = await runAgendaReply(e, {}, deps(mail));
+		const r = await runAgendaReply(e, {}, deps(mail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]) }));
 		expect(r.approved).toEqual([p1.id]);
 		expect(r.rejected).toEqual([p2.id]);
 		const live = await listProposals(e, { includeSnoozed: true });
@@ -105,10 +112,11 @@ describe("agenda_reply — loop", () => {
 
 	it("snoozes with a parsed duration", async () => {
 		const e = env();
+		await ledgerDigest(e);
 		const p = await propose(e, { source: "agenda", kind: "bill_due", intent: "pay the thing", payload: { fn: "todoist", args: { action: "add", content: "pay" } }, reversible: true, stakes: "low" });
 		const mail: MailRef[] = [{ id: "m1", from: SELF, subject: "sux · 1 thing needs you (2026-07-13)", preview: `snooze ${p.id.slice(0, 8)} 3d` }];
 		const before = Date.now();
-		const r = await runAgendaReply(e, {}, deps(mail));
+		const r = await runAgendaReply(e, {}, deps(mail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]) }));
 		expect(r.snoozed).toEqual([p.id]);
 		const [live] = await listProposals(e, { includeSnoozed: true });
 		expect(live.status).toBe("snoozed");
@@ -137,19 +145,44 @@ describe("agenda_reply — loop", () => {
 
 	it("an unresolved / ambiguous short id is reported, never thrown", async () => {
 		const e = env();
+		await ledgerDigest(e);
 		const mail: MailRef[] = [{ id: "m1", from: SELF, subject: "sux · nothing pressing (2026-07-13)", preview: "approve ffffffff" }];
-		const r = await runAgendaReply(e, {}, deps(mail));
+		const r = await runAgendaReply(e, {}, deps(mail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]) }));
 		expect(r.unresolved).toEqual(["ffffffff"]);
 	});
 
 	it("is idempotent — a re-scanned message is never reprocessed", async () => {
 		const e = env();
+		await ledgerDigest(e);
 		const p = await propose(e, { source: "agenda", kind: "bill_due", intent: "pay", payload: { fn: "todoist", args: { action: "add", content: "pay" } }, reversible: true, stakes: "low" });
 		const mail: MailRef[] = [{ id: "m1", from: SELF, subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: `approve ${p.id.slice(0, 8)}` }];
-		const d = deps(mail);
+		const d = deps(mail, { threadIds: vi.fn(async () => [DIGEST_MSG_ID]) });
 		await runAgendaReply(e, {}, d);
 		const second = await runAgendaReply(e, {}, d);
 		expect(second.approved).toEqual([]);
 		expect(second.processed).toBe(0);
+	});
+
+	it("ignores commands whose subject looks right but In-Reply-To/References name no ledgered digest — the guessable-subject-prefix gap this hardens", async () => {
+		const e = env();
+		await ledgerDigest(e); // a real digest went out at some point...
+		const p = await propose(e, { source: "agenda", kind: "bill_due", intent: "pay", payload: { fn: "todoist", args: { action: "add", content: "pay" } }, reversible: true, stakes: "low" });
+		const mail: MailRef[] = [{ id: "m1", from: SELF, subject: "Re: sux · 1 thing needs you (2026-07-13)", preview: `approve ${p.id.slice(0, 8)}` }];
+		// ...but this message's thread doesn't actually chain to it (e.g. a freshly composed message
+		// that merely guessed the `sux · ` subject prefix rather than replying to the real digest).
+		const r = await runAgendaReply(e, {}, deps(mail, { threadIds: vi.fn(async () => ["unrelated@example.com"]) }));
+		expect(r.not_thread_matched).toBe(1);
+		expect(r.approved).toEqual([]);
+		const [live] = await listProposals(e, { includeSnoozed: true });
+		expect(live.status).toBe("proposed"); // untouched
+	});
+
+	it("fails closed when no digest Message-ID has ever been ledgered — nothing for gate 3 to bind to", async () => {
+		const e = env();
+		const p = await propose(e, { source: "agenda", kind: "bill_due", intent: "pay", payload: { fn: "todoist", args: { action: "add", content: "pay" } }, reversible: true, stakes: "low" });
+		const mail: MailRef[] = [{ id: "m1", from: SELF, subject: "sux · 1 thing needs you (2026-07-13)", preview: `approve ${p.id.slice(0, 8)}` }];
+		const r = await runAgendaReply(e, {}, deps(mail)); // default threadIds → [], nothing ledgered
+		expect(r.not_thread_matched).toBe(1);
+		expect(r.approved).toEqual([]);
 	});
 });
