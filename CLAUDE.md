@@ -283,6 +283,22 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   drop decision, `gh pr list --state open --search "<issue-number>"` (or check recently
   merged PRs) for a sibling session that already resolved the same batch — reuse its
   reasoning instead of re-deriving it from scratch.
+- **#920 (per-request subrequest ledger / `env._budget`) has been independently dropped
+  by 5 consecutive build sessions as of 2026-07-19, every time for the same reason: it's
+  labeled `effort:large` and its own issue text says "genuinely large, not downscoped."**
+  Don't spend a turn re-reading and re-deriving this — `gh issue view 920 --json comments`
+  shows the prior drop notes. It needs a dedicated design+implementation session (likely
+  opus-escalated per its effort label), not another batch-queue retry; if it keeps
+  recurring in future batches unbuilt, that's a signal for a maintainer to route it
+  differently rather than for another session to attempt it piecemeal.
+- **An issue can have MULTIPLE orphaned-but-complete prior attempts, not just one** — #948
+  (cross-domain-link cron sweep) had two independent, fully-tested implementations sitting
+  on orphaned commits (`56aa5f5` via closed PR #958, `93492ee` via closed PR #957, both
+  closed unmerged ~10s apart by the same concurrent-dispatch pattern as the #920 note
+  above) before this session's build. `git cherry-pick -n <sha>` the more complete/recent
+  one directly (only `cron-heartbeat.ts`'s `CRON_JOBS` array needed a manual merge against
+  jobs added since) rather than reimplementing from the issue text — much faster and
+  proven-tested.
 
 ## House style
 
