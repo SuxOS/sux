@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
+import { composeDigest, type AgendaDeps, type Drop, detectCrossSemanticDrops, detectDrops, detectKnowledgeDrops, detectMonarchDrops, detectMyChartDrops, detectMychartConflictDrops, detectPortfolioDrops, detectRelationshipDrops, detectSavingsRateDrop, detectTextDrops, detectWatchDrops, computeSavingsRate, type EventRef, type MailRef, type RelationshipBaseline, type TextThreadRef, rankDropsLearned, runAgenda } from "./_agenda";
 import { listProposals } from "../proposals";
 import { recordOutcome } from "./_learning";
 
@@ -36,6 +36,7 @@ const deps = (over: Partial<AgendaDeps> = {}): AgendaDeps => ({
 	monarchHoldings: vi.fn(async () => []),
 	textThreads: vi.fn(async () => []),
 	mychartSummary: vi.fn(async () => null),
+	mychartConflicts: vi.fn(async () => []),
 	...over,
 });
 
@@ -304,6 +305,28 @@ describe("agenda — MyChart detectors (W6)", () => {
 
 	it("no drops when the summary is empty", () => {
 		expect(detectMyChartDrops([], [], [], [])).toHaveLength(0);
+	});
+});
+
+describe("agenda — MyChart cross-org reconciliation detector (#1005)", () => {
+	it("flags a cross-org medication/allergy overlap with a non-diagnostic, org-labeled title", () => {
+		const drops = detectMychartConflictDrops([{ medOrg: "uwmedicine", medId: "med1", medName: "Penicillin V", allergyOrg: "swedish", allergyId: "al1", allergySubstance: "Penicillin" }]);
+		expect(drops).toHaveLength(1);
+		expect(drops[0].kind).toBe("mychart_conflict");
+		expect(drops[0].title).toContain("Penicillin V");
+		expect(drops[0].title).toMatch(/verify with your provider/i);
+		expect(drops[0].action.fn).toBe("todoist");
+	});
+
+	it("dedupe is the med+allergy resource-id pair — a still-flagged overlap only ever proposes once", () => {
+		const conflict = { medOrg: "uwmedicine", medId: "med1", medName: "Penicillin V", allergyOrg: "swedish", allergyId: "al1", allergySubstance: "Penicillin" };
+		const first = detectMychartConflictDrops([conflict]);
+		const second = detectMychartConflictDrops([conflict]);
+		expect(first[0].dedupe).toBe(second[0].dedupe);
+	});
+
+	it("no drops when there are no conflicts", () => {
+		expect(detectMychartConflictDrops([])).toHaveLength(0);
 	});
 });
 
@@ -585,6 +608,31 @@ describe("agenda — loop", () => {
 		const r = await runAgenda(e, {}, d);
 		expect(r.sources.mychart).toBe("not_connected");
 		expect(r.proposals?.map((p) => p.kind)).not.toContain("mychart_lab_flag");
+	});
+
+	it("wires cross-org MyChart conflicts (#1005) in only when MYCHART_RECONCILE_ENABLED is set", async () => {
+		const e = env({ EPIC_CLIENT_ID: "cid", EPIC_CLIENT_SECRET: "csec", MYCHART_RECONCILE_ENABLED: "1" });
+		const d = deps({ mychartConflicts: vi.fn(async () => [{ medOrg: "uwmedicine", medId: "med1", medName: "Penicillin V", allergyOrg: "swedish", allergyId: "al1", allergySubstance: "Penicillin" }]) });
+		const r = await runAgenda(e, {}, d);
+		expect(r.proposals?.map((p) => p.kind)).toContain("mychart_conflict");
+		expect(r.sources.mychart_reconcile).toMatch(/1 cross-org conflict/);
+		expect(d.mychartConflicts).toHaveBeenCalled();
+	});
+
+	it("skips cross-org reconciliation (disabled) when MYCHART_RECONCILE_ENABLED is unset, even with MyChart configured", async () => {
+		const e = env({ EPIC_CLIENT_ID: "cid", EPIC_CLIENT_SECRET: "csec" });
+		const d = deps();
+		const r = await runAgenda(e, {}, d);
+		expect(r.sources.mychart_reconcile).toBe("disabled");
+		expect(d.mychartConflicts).not.toHaveBeenCalled();
+	});
+
+	it("skips cross-org reconciliation (not_configured) when the flag is set but EPIC_* is unset", async () => {
+		const e = env({ MYCHART_RECONCILE_ENABLED: "1" });
+		const d = deps();
+		const r = await runAgenda(e, {}, d);
+		expect(r.sources.mychart_reconcile).toBe("not_configured");
+		expect(d.mychartConflicts).not.toHaveBeenCalled();
 	});
 
 	it("dry_run never persists the Monarch snapshot", async () => {

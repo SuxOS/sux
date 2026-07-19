@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MYCHART_ORGS, connectedOrgs, handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath, resolveOrg, summarizeMyChart } from "./mychart";
+import { MYCHART_ORGS, connectedOrgs, crossOrgMedicationAllergyConflicts, handleAppleHealth, handleMychartRoutes, isUnderFhirBase, mintAccessToken, mychartFetch, readGrant, resolveFhirPath, resolveOrg, substancesOverlap, summarizeMyChart } from "./mychart";
 import { handleObservability } from "./observability";
 
 const ORG = "uwmedicine";
@@ -504,5 +504,69 @@ describe("summarizeMyChart — redacted last-pull summary for the agenda detecto
 		await seedBundle(env, ORG2, "P2", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "only-org-b" }]);
 		const summary = await summarizeMyChart(env, { org: ORG });
 		expect(summary?.newConditions).toEqual([{ id: "only-org-a" }]);
+	});
+});
+
+describe("substancesOverlap — conservative, non-diagnostic text match (#1005)", () => {
+	it("matches on a shared significant word or a substring containment", () => {
+		expect(substancesOverlap("Penicillin V Potassium", "Penicillin")).toBe(true);
+		expect(substancesOverlap("Amoxicillin 500mg oral capsule", "amoxicillin")).toBe(true);
+		expect(substancesOverlap("Ibuprofen", "Acetaminophen")).toBe(false);
+	});
+
+	it("ignores generic pharma filler words so unrelated substances never share only a stopword", () => {
+		expect(substancesOverlap("Aspirin 81mg oral tablet", "Penicillin oral suspension")).toBe(false);
+	});
+
+	it("is false-safe on empty/missing input", () => {
+		expect(substancesOverlap("", "Penicillin")).toBe(false);
+		expect(substancesOverlap("Penicillin", "")).toBe(false);
+	});
+});
+
+describe("crossOrgMedicationAllergyConflicts — cross-org continuity check (#1005)", () => {
+	async function seedGrant(env: ReturnType<typeof baseEnv>, org: string, patient: string) {
+		await env.OAUTH_KV.put(`sux:mychart:grant:${org}`, JSON.stringify({ refresh_token: "rt", patient, issued_at: Date.now() }));
+	}
+	async function seedBundle(env: ReturnType<typeof baseEnv>, org: string, patient: string, label: string, stamp: string, resources: any[]) {
+		const bundle = { resourceType: "Bundle", entry: resources.map((resource) => ({ resource })) };
+		await env.R2.put(`phi/mychart/${org}/${patient}/${label}/${stamp}-p1.json`, JSON.stringify(bundle), { httpMetadata: { contentType: "application/fhir+json" } });
+	}
+
+	it("returns [] when unconfigured, or fewer than 2 connected/pulled orgs", async () => {
+		expect(await crossOrgMedicationAllergyConflicts({} as any)).toEqual([]);
+		const oneOrg = baseEnv();
+		await seedGrant(oneOrg, ORG, "P1");
+		await seedBundle(oneOrg, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "med1", status: "active", medicationCodeableConcept: { text: "Penicillin V" } }]);
+		expect(await crossOrgMedicationAllergyConflicts(oneOrg)).toEqual([]);
+	});
+
+	it("flags an active medication at one org overlapping an allergy at ANOTHER connected org", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "med1", status: "active", medicationCodeableConcept: { text: "Penicillin V" } }]);
+		await seedBundle(env, ORG2, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		const conflicts = await crossOrgMedicationAllergyConflicts(env);
+		expect(conflicts).toEqual([{ medOrg: ORG, medId: "med1", medName: "Penicillin V", allergyOrg: ORG2, allergyId: "al1", allergySubstance: "Penicillin" }]);
+	});
+
+	it("never flags a same-org medication/allergy pair — only the cross-org blind spot", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "med1", status: "active", medicationCodeableConcept: { text: "Penicillin V" } }]);
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		// ORG2 connected but contributes nothing overlapping — proves this isn't just "any 2 orgs".
+		await seedBundle(env, ORG2, "P1", "Condition", "2026-07-18T00-00-00-000Z", [{ resourceType: "Condition", id: "cond1" }]);
+		expect(await crossOrgMedicationAllergyConflicts(env)).toEqual([]);
+	});
+
+	it("skips an inactive medication and an org that's connected but never pulled", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedBundle(env, ORG, "P1", "MedicationRequest", "2026-07-18T00-00-00-000Z", [{ resourceType: "MedicationRequest", id: "med1", status: "stopped", medicationCodeableConcept: { text: "Penicillin V" } }]);
+		await seedGrant(env, ORG2, "P1"); // grant exists, but pull() has never run
+		expect(await crossOrgMedicationAllergyConflicts(env)).toEqual([]);
 	});
 });

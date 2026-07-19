@@ -368,6 +368,18 @@ export type RtEnv = Env &
 		// the Monarch thresholds above; every drop it can produce is redacted (no raw lab values or
 		// diagnosis names — see mychart.ts's summarizeMyChart docstring).
 		MYCHART_REFILL_WINDOW_DAYS?: string;
+		// Cross-org MyChart reconciliation (fns/_agenda.ts's detectMychartConflictDrops via
+		// mychart.ts's crossOrgMedicationAllergyConflicts, #1005). summarizeMyChart's multi-org
+		// fan-out only concatenates each org's redacted findings — this compares them: a
+		// connected org's ACTIVE medication whose name/substance-string overlaps another
+		// connected org's allergy list (the continuity-of-care gap where org B's specialist has
+		// no idea org A's PCP started a medication that conflicts with an allergy only org B's
+		// chart carries). Deliberately conservative (text overlap only, never a dosage/severity/
+		// diagnostic judgment) and off by default — a NEW, separate gate from MYCHART_REFILL_
+		// WINDOW_DAYS above, since this is the first mychart_* detector that reads across two
+		// orgs' PHI at once rather than one org's redacted snapshot in isolation. Unset/"0"/
+		// "false"/"off" ⇒ inert, same fail-closed two-stage convention as MAIL_TRIAGE_ENABLED.
+		MYCHART_RECONCILE_ENABLED?: string;
 		// Relationship-decay detector thresholds (fns/_agenda.ts's detectRelationshipDrops,
 		// #930) — a contact's own EWMA cadence baseline must be exceeded by BOTH a multiple
 		// (default 2x) and an absolute floor (default 5 days) before it's proposed. Both
