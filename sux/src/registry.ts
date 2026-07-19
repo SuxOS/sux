@@ -532,6 +532,14 @@ export type RtEnv = Env &
 		GRAFANA_PROM_URL?: string;
 		GRAFANA_PROM_USER?: string;
 
+		// GitHub Actions billing gauge (spend-observability-plan.md #1) — reuses the
+		// Prometheus push above (same URL/USER + shared GRAFANA_LOKI_TOKEN bearer) plus the
+		// existing GITHUB_TOKEN (self-improve's) to poll /actions/billing/usage once a day.
+		// Repo defaults to the sux repo itself; override only if this ever needs to watch a
+		// different one. Absent GITHUB_TOKEN or Prometheus secrets ⇒ dormant. See
+		// shipGithubBillingSnapshot in sux/src/grafana.ts.
+		GH_BILLING_REPO?: string;
+
 		MCP_RATE_LIMITER?: { limit: (opts: { key: string }) => Promise<{ success: boolean }> };
 		// Coarse per-IP limiter for the anonymous observability/content routes
 		// (/metrics, /logs, /feedback, /s/*), which the MCP gate never touches.
