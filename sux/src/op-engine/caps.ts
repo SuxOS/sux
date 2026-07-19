@@ -226,14 +226,18 @@ function relatedLinksSink(env: RtEnv): SinkTarget {
 			}
 			if (!byNote.size) return { linked: 0 };
 			const { obsidian } = await import("../fns/obsidian.js");
-			const marker = "<!-- cross-semantic-plan:related -->";
 			let linked = 0;
 			let failed = 0;
 			for (const [vaultPath, links] of byNote) {
 				// The append below is NOT idempotent by itself — a step.do retry after a mid-batch
 				// eviction (durable.ts's `sink` step wraps this whole loop as ONE memoized step)
-				// would otherwise double the "Related" block. Skip a note that already carries this
-				// op's marker from a prior attempt, same guard vaultNotesSink applies per-archive (#740).
+				// would otherwise double the "Related" block. Scope the marker to THIS batch's exact
+				// target set (mirrors vaultNotesSink's per-`keep` pointer, #740) rather than a single
+				// note-wide sentinel — a note-wide marker would also silently skip a LATER run's newly
+				// found links for the same note, since any prior batch's marker would already match
+				// (#962). Skip only when this specific target set was already appended.
+				const targetsKey = links.map((l) => `${l.domain}:${l.key}`).sort().join(",");
+				const marker = `<!-- cross-semantic-plan:related:${targetsKey} -->`;
 				const r = await obsidian.run(env, { action: "read", path: vaultPath, backend: "git" });
 				const already = !r.isError && typeof r.content?.[0]?.text === "string" && r.content[0].text.includes(marker);
 				if (already) continue;

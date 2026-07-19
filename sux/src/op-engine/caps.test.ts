@@ -208,16 +208,30 @@ test("related-links sink is a no-op on an empty batch (never an error)", async (
 	expect(out).toEqual({ linked: 0 });
 });
 
-test("related-links sink skips the append on a retry — the note already carries this op's marker", async () => {
+test("related-links sink skips the append on a retry — the note already carries THIS batch's marker", async () => {
 	obsidianRun.mockClear();
 	obsidianRun.mockImplementation(async (_env: unknown, args: any) => {
-		if (args.action === "read") return { content: [{ type: "text", text: "existing body\n\n<!-- cross-semantic-plan:related -->\n> [!note] Related\n> - 📧 old match" }] };
+		if (args.action === "read") return { content: [{ type: "text", text: "existing body\n\n<!-- cross-semantic-plan:related:mail:m1 -->\n> [!note] Related\n> - 📧 old match" }] };
 		return { content: [{ type: "text", text: "{}" }] };
 	});
 	const { sinks } = makeCaps({} as unknown as RtEnv);
 	const out = await sinks["related-links"].write([{ vaultPath: "A.md", domain: "mail", key: "m1", label: "x", score: 0.9 }], {} as Caps);
 	expect(out).toEqual({ linked: 0, notes: 1 });
 	expect(obsidianRun).not.toHaveBeenCalledWith({}, expect.objectContaining({ action: "append" }));
+});
+
+test("related-links sink does NOT skip a later run's newly found links just because an EARLIER batch's marker is present (#962)", async () => {
+	obsidianRun.mockClear();
+	obsidianRun.mockImplementation(async (_env: unknown, args: any) => {
+		if (args.action === "read") return { content: [{ type: "text", text: "existing body\n\n<!-- cross-semantic-plan:related:mail:m1 -->\n> [!note] Related\n> - 📧 old match" }] };
+		return { content: [{ type: "text", text: "{}" }] };
+	});
+	const { sinks } = makeCaps({} as unknown as RtEnv);
+	const out = await sinks["related-links"].write([{ vaultPath: "A.md", domain: "files", key: "spec.md", label: "new match", score: 0.9 }], {} as Caps);
+	expect(out).toEqual({ linked: 1, notes: 1 });
+	const appendCalls = obsidianRun.mock.calls.filter((c: any[]) => c[1].action === "append");
+	expect(appendCalls).toHaveLength(1);
+	expect(appendCalls[0][1]).toMatchObject({ content: expect.stringContaining("new match") });
 });
 
 test("related-links sink skips (doesn't throw) a note whose append fails, and counts it as failed", async () => {
