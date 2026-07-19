@@ -147,6 +147,17 @@ test("interpretDurable runs mapField over one named field of each array element,
 	expect(out).toEqual({ files: [{ handle: 2, name: "a" }, { handle: 4, name: "b" }] });
 });
 
+test("interpretDurable's mapField throws before fanning out when the array field exceeds the MVP ceiling", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const double = op("double", async (n: number) => n * 2, { kind: "pure" });
+	const tree = mapField("entries", "handle", double, { concurrency: fixed(2) });
+	const entries = new Array(20_001).fill(0).map((_, i) => ({ handle: i }));
+
+	await expect(interpretDurable(tree, { entries }, fakeStep({ events: [] }), caps, "op11")).rejects.toThrow(
+		/mapField fan-out of 20001 exceeds the MVP ceiling/,
+	);
+});
+
 test("interpretDurable dispatches reconcile modes — last-write-wins selects the newest stamped handle", async () => {
 	const store = new MemoryStore();
 	const caps = { store, llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;

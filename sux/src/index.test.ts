@@ -718,6 +718,31 @@ describe("MCP Tasks primitive", () => {
 		expect(byName.search).toBeUndefined();
 	});
 
+	// advise/life_wiki aren't front verbs, so tools/list doesn't advertise them (see
+	// registry.ts's frontToolList) — but they're still directly dispatchable by name, so
+	// their task-capability is only observable through an actual task-augmented call.
+	it("advise and life_wiki — recall's other synchronous multi-source fan-outs (#861) — are task-capable too", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const advise = await callRpc(makeEnv(kv), ctx, {
+			jsonrpc: "2.0",
+			id: 21,
+			method: "tools/call",
+			params: { name: "advise", arguments: { domain: "test", action: "profile" }, task: {} },
+		});
+		expect(advise.error).toBeUndefined();
+		expect(advise.result.task?.status).toBe("working");
+
+		const lifeWiki = await callRpc(makeEnv(kv), ctx, {
+			jsonrpc: "2.0",
+			id: 22,
+			method: "tools/call",
+			params: { name: "life_wiki", arguments: { action: "status" }, task: {} },
+		});
+		expect(lifeWiki.error).toBeUndefined();
+		expect(lifeWiki.result.task?.status).toBe("working");
+	});
+
 	it("a task-augmented call to a non-task-capable tool is refused with -32601", async () => {
 		const { kv } = makeKv();
 		const { ctx } = makeCtx();
