@@ -188,10 +188,19 @@ export type RtEnv = Env &
 		// #785): cosine-ranks the vault's semantic index against the pooled mail+files semantic
 		// indices to find standing cross-domain relationships, then starts a durable, human-
 		// approved run (op-engine's `cross-semantic-plan`) that appends a "Related" block to each
-		// matched vault note — never a mail/file mutation, never a vault delete. User-invoked (no
-		// cron sweep yet), but still fail-closed like the sweep flags above: unset ⇒ refuses to run.
+		// matched vault note — never a mail/file mutation, never a vault delete. User-invoked via
+		// vault_cross_link_plan; still fail-closed: unset ⇒ refuses to run.
 		//   CROSS_SEMANTIC_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
 		CROSS_SEMANTIC_ENABLED?: string;
+		// Cross-domain-link cron sweep (fns/_cross_semantic_sweep.ts, #948) — the proactive half
+		// of the manual entrypoint above: rides the daily cron at the SAME once-per-ISO-week
+		// cadence as CONSOLIDATE_*, ranks the same indices, and caches the batch for
+		// _agenda.ts's detectCrossSemanticDrops to surface in the daily digest. Detection +
+		// caching only — never starts vault_cross_link_plan's durable approval run itself.
+		// Fail-closed, default OFF, set via `wrangler secret` (NOT declared in wrangler.jsonc).
+		// Requires CROSS_SEMANTIC_ENABLED too (nested gate, mirrors AGENDA_EMAIL/hasAgendaEmail).
+		//   CROSS_SEMANTIC_SWEEP_ENABLED — master enable (toggle); unset/"0"/"false"/"off" ⇒ inert.
+		CROSS_SEMANTIC_SWEEP_ENABLED?: string;
 
 		EXA_API_KEY?: string;
 
