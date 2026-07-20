@@ -25,7 +25,7 @@
 // engine lifetimes"); only `Promise.race`/`Promise.any` need wrapping. `map` stays
 // bounded by the op's own limiter (`node.concurrency`), matching `runInline`.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowTimeoutDuration } from "cloudflare:workers";
-import { runReconcile, type Caps, type Op } from "@suxos/lib";
+import { runGoverned, runReconcile, type Caps, type Op } from "@suxos/lib";
 import type { RtEnv } from "../registry.js";
 
 // Above this, the fan-out would blow through the per-instance step ceiling (25k) —
@@ -56,7 +56,11 @@ export class AskRejectedError extends Error {
 export async function interpretDurable(node: Op, input: any, step: WorkflowStep, caps: Caps, path: string): Promise<any> {
 	switch (node.tag) {
 		case "leaf":
-			return step.do(`${path}:${node.name}`, () => node.fn(input, caps));
+			// Routed through the SAME runGoverned suxlib's inline interpreter uses (governor.ts),
+			// so a durable run honors a leaf's declared retries/heavy/memo instead of silently
+			// dropping them behind Workflows' bare default step behavior (#1071). step.do still
+			// memoizes the whole call (including any internal retries) as one step.
+			return step.do(`${path}:${node.name}`, () => runGoverned(node.name, node.opts, node.fn, input, caps, caps.governors?.[node.name]));
 		case "pipe": {
 			let v = input;
 			let i = 0;
@@ -115,11 +119,24 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 		case "sink": {
 			// A fanout target is either a bare name or a `{ name, opts }` pair (suxlib's
 			// SinkFanoutTarget) -- extract the name for both the sink lookup and the step
-			// name, same as suxlib's own inline interpreter does.
+			// name, same as suxlib's own inline interpreter does. Each write is also routed
+			// through runGoverned (matching inline.ts's own sink handling) so the node's/
+			// target's SinkOpts.retries/heavy/memo are honored durably instead of dropped
+			// behind Workflows' bare default step behavior (#1071).
 			await Promise.all(
 				node.targets.map((t) => {
 					const name = typeof t === "string" ? t : t.name;
-					return step.do(`${path}:sink:${name}`, () => caps.sinks[name].write(input, caps));
+					const targetOpts = typeof t === "string" ? undefined : t.opts;
+					const governorName = `sink:${name}`;
+					const opts = {
+						kind: "effect" as const,
+						retries: targetOpts?.retries ?? node.opts?.retries,
+						heavy: targetOpts?.heavy ?? node.opts?.heavy,
+						memo: targetOpts?.memo ?? node.opts?.memo,
+					};
+					return step.do(`${path}:sink:${name}`, () =>
+						runGoverned(governorName, opts, (v, c) => caps.sinks[name].write(v, c), input, caps, caps.governors?.[governorName]),
+					);
 				}),
 			);
 			return input;

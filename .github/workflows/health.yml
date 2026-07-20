@@ -3,8 +3,10 @@ name: Health check
 # Daily regression canary (tests) + live smoke check of the deployed Worker, plus a
 # billing/usage guard (scripts/billing-check.mjs) so a spend blowout across GitHub
 # Actions minutes / CF Workers requests+neurons / Anthropic API is caught automatically
-# instead of only when a human remembers to run the script by hand. On failure either
-# job opens (or updates) a tracking issue so nothing gets missed on a day no one pushed.
+# instead of only when a human remembers to run the script by hand. Also asserts main's
+# required_status_checks are still configured (docs/design/generalized-watchdog-debug.md's
+# "branch protection flipped off silently" failure mode). On failure any job opens (or
+# updates) a tracking issue so nothing gets missed on a day no one pushed.
 # Reusable workflow: SuxOS/.github/.github/workflows/health.yml
 
 on:
@@ -93,4 +95,84 @@ jobs:
               }
             } catch (e) {
               core.warning(`Could not open/update billing issue: ${e.message}`);
+            }
+
+  branch-protection:
+    name: Branch protection guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      administration: read # needed to read main's branch-protection settings
+    steps:
+      # Verify main's required_status_checks hasn't been silently disabled/emptied —
+      # docs/design/generalized-watchdog-debug.md flags this as one of the highest-
+      # leverage unaddressed failure modes ("branch protection flipped off silently").
+      - name: Assert main's required status checks are still configured
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            let protection;
+            try {
+              const res = await github.rest.repos.getBranchProtection({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: "main",
+              });
+              protection = res.data;
+            } catch (e) {
+              core.setFailed(`Could not read branch protection for main: ${e.message}`);
+              return;
+            }
+            const checks = protection.required_status_checks;
+            const contexts = checks?.checks?.map((c) => c.context) ?? checks?.contexts ?? [];
+            if (!checks || contexts.length === 0) {
+              core.setFailed("main's required_status_checks is missing or empty — branch protection may have been silently disabled.");
+              return;
+            }
+            core.info(`main's required status checks: ${contexts.join(", ")}`);
+
+      - name: Open or update branch-protection-alert issue on breach
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = "main's branch protection / required status checks look disabled";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `The daily branch-protection guard couldn't confirm main's required_status_checks on ${new Date().toISOString()}.`,
+              "",
+              `- Workflow run: ${runUrl}`,
+              "",
+              "Check Settings → Branches → main's protection rule — required_status_checks may have been cleared or the rule removed.",
+            ].join("\n");
+            try {
+              const existing = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: "open",
+                per_page: 100,
+              });
+              const hit = existing.data.find(
+                (i) => !i.pull_request && i.title === title,
+              );
+              if (hit) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: hit.number,
+                  body,
+                });
+                core.info(`Updated existing issue #${hit.number}.`);
+              } else {
+                const created = await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                });
+                core.info(`Opened issue #${created.data.number}.`);
+              }
+            } catch (e) {
+              core.warning(`Could not open/update branch-protection issue: ${e.message}`);
             }

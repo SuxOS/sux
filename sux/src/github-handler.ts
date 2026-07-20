@@ -14,6 +14,7 @@ import { deriveMetrics, readMetrics } from "./metrics";
 import { readHeartbeats } from "./cron-heartbeat";
 import type { RtEnv } from "./registry";
 import { safeParseJson } from "./fns/_util";
+import { readNodeStatus, ROUTER_NODE_ID } from "./recovery";
 
 type HandlerEnv = Env &
 	TailscaleEnv & { OAUTH_PROVIDER: OAuthHelpers } & {
@@ -139,6 +140,43 @@ export function bindingsOk(b: any): boolean {
 	return Boolean(b?.kv?.ok && b?.r2?.ok && b?.ai?.bound && b?.images?.bound && b?.browser?.bound);
 }
 
+const DEFAULT_HEALTH_REPO = "SuxOS/sux";
+
+/** Bot-tier health: recent workflow-run conclusions + count of currently-open issues,
+ * so the "bots" tier (health.yml/audit.yml watchdogs) reads from the same page as the
+ * router/Worker tiers (generalized-watchdog-debug.md's "Next" item 3). Best-effort —
+ * degrades to `{available:false}` on a missing GITHUB_TOKEN or any API hiccup, never
+ * fails the health page. */
+async function botsHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
+	const token = env.GITHUB_TOKEN;
+	if (!token) return { available: false, reason: "GITHUB_TOKEN not set" };
+	const repo = String((env as unknown as RtEnv).GH_BILLING_REPO ?? "").trim() || DEFAULT_HEALTH_REPO;
+	const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.v3+json" };
+	try {
+		const [runsRes, issuesRes] = await Promise.all([
+			fetch(`https://api.github.com/repos/${repo}/actions/runs?per_page=20`, { headers }),
+			fetch(`https://api.github.com/search/issues?q=${encodeURIComponent(`repo:${repo} is:issue is:open`)}`, { headers }),
+		]);
+		if (!runsRes.ok) return { available: false, reason: `workflow runs HTTP ${runsRes.status}` };
+		const runsBody = (await runsRes.json()) as { workflow_runs?: Array<{ name?: string; conclusion?: string | null; status?: string }> };
+		const runs = runsBody.workflow_runs ?? [];
+		const failing = runs.filter((r) => r.conclusion && r.conclusion !== "success" && r.conclusion !== "skipped" && r.conclusion !== "cancelled");
+		// De-duped by workflow name — a flaky retry that later went green shouldn't
+		// still show its own earlier failed run alongside it.
+		const failingNames = [...new Set(failing.map((r) => r.name ?? "unknown"))];
+		const openIssues = issuesRes.ok ? ((await issuesRes.json()) as { total_count?: number }).total_count ?? null : null;
+		return {
+			available: true,
+			runs_checked: runs.length,
+			recent_failures: failing.length,
+			failing_workflows: failingNames,
+			open_issues: openIssues,
+		};
+	} catch (e) {
+		return { available: false, reason: String((e as Error).message ?? e) };
+	}
+}
+
 // deriveMetrics now lives beside the other Metrics derivations in ./metrics; re-
 // exported here so existing importers (and the health page below) keep working.
 export { deriveMetrics };
@@ -152,7 +190,7 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 
 	// Residential (through the proxy) vs datacenter (direct) egress + tunnel latency.
 	const t0 = Date.now();
-	const [proxied, direct, status, rawMetrics, bindings] = await Promise.all([
+	const [proxied, direct, status, rawMetrics, bindings, routerStatus, bots] = await Promise.all([
 		withTimeout(ipInfo((u) => smartFetch(env, u, {})), 9000, null),
 		withTimeout(ipInfo((u) => fetch(u)), 9000, null),
 		withTimeout(nodeStatus(env), 9000, { available: false, reason: "timeout" } as Record<string, unknown>),
@@ -167,6 +205,12 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 			images: { bound: false },
 			browser: { bound: false },
 		} as Record<string, unknown>),
+		// The router's (owl-tegu) last self-reported checkin via the recovery dead-drop
+		// (recovery.ts) — the "router → hub" edge generalized-watchdog-debug.md flags as
+		// the gap between /recovery/status (admin-only) and this public page.
+		withTimeout(readNodeStatus(env as unknown as RtEnv, ROUTER_NODE_ID).catch(() => null), 9000, null),
+		// The "bots" tier: recent workflow-run conclusions + open-issue count.
+		withTimeout(botsHealth(env), 9000, { available: false, reason: "timeout" } as Record<string, unknown>),
 	]);
 	const tunnelMs = Date.now() - t0;
 	const metrics = rawMetrics ? deriveMetrics(rawMetrics) : null;
@@ -174,6 +218,20 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	// Last {ok,at,error?} + staleness per unattended cron sub-job. Best-effort: a KV
 	// miss degrades to { seen: false } and never fails the health page.
 	const cron = await readHeartbeats((env as unknown as RtEnv).OAUTH_KV).catch(() => ({}));
+
+	// Router checkin freshness — mirrors the cron heartbeat's staleness convention
+	// (WINDOW_SECONDS is recovery.ts's own checkin-freshness window; 3x gives the
+	// router a couple of missed checkins' grace before the hub calls it stale).
+	const ROUTER_STALE_SECONDS = 900;
+	const router = routerStatus
+		? {
+				available: true,
+				seen: true,
+				received_at: (routerStatus as { received_at: number }).received_at,
+				age_seconds: Math.floor(Date.now() / 1000) - (routerStatus as { received_at: number }).received_at,
+				stale: Math.floor(Date.now() / 1000) - (routerStatus as { received_at: number }).received_at > ROUTER_STALE_SECONDS,
+			}
+		: { available: false, seen: false };
 
 	const configured = isTailscaleConfigured(env);
 	let proxyUrlValid = false;
@@ -212,7 +270,7 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	}
 
 	const ok = config.kagiKey && config.githubClient && upstream.reachable && bindingsOk(bindings);
-	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron, bindings };
+	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron, bindings, router, bots };
 }
 
 function renderHealthHtml(h: any): string {
@@ -269,6 +327,23 @@ function renderHealthHtml(h: any): string {
  ${cronRow("Briefing", cron.briefing)}
  ${cronRow("Adblock engine", cron.adblock)}
  ${cronRow("Self-improve", cron.self_improve)}
+</div>`;
+
+	const router = h.router ?? { available: false };
+	const routerCard = `<div class="card"><h2>watchdog · router checkin</h2>
+ <div class="row"><span class="k">Last checkin</span><span class="v">${router.seen ? `${dot(!router.stale)} ${ago(router.age_seconds * 1000)}` : `${dot(false)} never seen`}</span></div>
+</div>`;
+
+	const bots = h.bots ?? { available: false };
+	const botsCard = `<div class="card"><h2>watchdog · bots</h2>
+ ${
+		bots.available
+			? `<div class="row"><span class="k">Recent workflow runs</span><span class="v">${dot(bots.recent_failures === 0)} ${bots.recent_failures}/${bots.runs_checked} failing</span></div>
+ ${bots.failing_workflows?.length ? `<div class="row"><span class="k">Failing</span><span class="v">${esc(bots.failing_workflows.join(", "))}</span></div>` : ""}
+ <div class="row"><span class="k">Open issues</span><span class="v">${bots.open_issues ?? "—"}</span></div>`
+			: `<div class="row"><span class="k">Status</span><span class="v">unavailable</span></div>
+ <div class="row"><span class="k">Reason</span><span class="v">${esc(bots.reason ?? "—")}</span></div>`
+	}
 </div>`;
 	return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sux · health</title>
@@ -330,6 +405,10 @@ function renderHealthHtml(h: any): string {
 </div>
 
 ${cronCard}
+
+${routerCard}
+
+${botsCard}
 
 <div class="card"><h2>tailscale · node <code>tailscaled status</code></h2>
  ${

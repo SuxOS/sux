@@ -195,6 +195,25 @@ async function handleEnqueue(request: Request, env: RtEnv): Promise<Response> {
 	return json({ ok: true, node_id: nodeId, queued: cmd, queue_depth: queue.length });
 }
 
+// The single known router node (owl-tegu, see this file's header) that phones home via
+// /recovery/checkin. Exported so gatherHealth (github-handler.ts) can surface the same
+// checkin state /recovery/status shows, without a second hardcoded copy of the id.
+export const ROUTER_NODE_ID = "owl-tegu";
+
+// Best-effort read of a node's last-seen checkin, for a caller (gatherHealth) that
+// wants the raw status without the bearer-authed /recovery/status route's HTTP shape.
+// Returns null on a KV miss or corrupt blob — never throws — since this is a
+// presentation-only read that must never fail the health page.
+export async function readNodeStatus(env: RtEnv, nodeId: string): Promise<StoredStatus | null> {
+	const raw = await env.OAUTH_KV.get(statusKey(nodeId));
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw) as StoredStatus;
+	} catch {
+		return null;
+	}
+}
+
 // operator→Worker status read. Bearer-authed. Returns the node's last-seen health +
 // timestamp (or not_found), plus the current queue depth so an operator can see
 // whether a command is still waiting to be collected.

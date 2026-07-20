@@ -13,7 +13,8 @@
     { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
     { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
     { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
-    { "type": "panel", "id": "stat", "name": "Stat", "version": "" }
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
+    { "type": "panel", "id": "gauge", "name": "Gauge", "version": "" }
   ],
   "annotations": { "list": [{ "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true, "hide": true, "name": "Annotations & Alerts", "type": "dashboard" }] },
   "description": "sux Cloudflare Worker — long-retention counters + /health/SLO gauges pushed once per cron tick by shipMetricsSnapshot (sux/src/grafana.ts) as Influx line protocol into Grafana Cloud Prometheus. Complements the Loki dashboard (per-event data); this one is the durable metrics view.",
@@ -90,6 +91,36 @@
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
       "id": 7,
       "targets": [{ "refId": "A", "expr": "topk(10, rate(sux_tool_calls_total[15m]) * 60)", "legendFormat": "{{tool}}" }],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "GitHub Actions minutes used (billing cycle)",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 22 },
+      "id": 8,
+      "description": "gh_actions_minutes_used_total / gh_actions_minutes_included, pushed once per billing snapshot by shipGithubBillingSnapshot (sux/src/grafana.ts). 'No data' means GRAFANA_PROM_*/GITHUB_TOKEN aren't set or the snapshot push has stalled.",
+      "targets": [{ "refId": "A", "expr": "gh_actions_minutes_used_total / gh_actions_minutes_included" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.8 }, { "color": "red", "value": 0.95 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROM}" },
+      "title": "GitHub Actions minutes (used vs included)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 22 },
+      "id": 9,
+      "targets": [
+        { "refId": "A", "expr": "gh_actions_minutes_used_total", "legendFormat": "used" },
+        { "refId": "B", "expr": "gh_actions_minutes_included", "legendFormat": "included" }
+      ],
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
     }
   ],

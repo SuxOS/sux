@@ -202,6 +202,34 @@ describe("agenda — detectors", () => {
 		expect(creep?.evidence).toMatchObject({ merchant: "Streamflix", firstAmount: 9.99, latestAmount: 14.99, occurrences: 3 });
 	});
 
+	it("subscription_creep's dedupe key is keyed on the rounded amount, not the latest transaction id, so a repeat charge at the same already-flagged amount doesn't re-propose next cycle (#1067)", () => {
+		const cycle1 = detectMonarchDrops(
+			"2026-07-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+			],
+			[],
+		);
+		const cycle2 = detectMonarchDrops(
+			"2026-08-28",
+			[],
+			[
+				{ id: "t1", amount: -9.99, merchant: "Streamflix", date: "2026-05-28" },
+				{ id: "t2", amount: -9.99, merchant: "Streamflix", date: "2026-06-28" },
+				{ id: "t3", amount: -14.99, merchant: "Streamflix", date: "2026-07-28" },
+				{ id: "t4", amount: -14.99, merchant: "Streamflix", date: "2026-08-28" },
+			],
+			[],
+		);
+		const creep1 = cycle1.find((d) => d.kind === "subscription_creep");
+		const creep2 = cycle2.find((d) => d.kind === "subscription_creep");
+		expect(creep1?.dedupe).toBeDefined();
+		expect(creep2?.dedupe).toBe(creep1?.dedupe);
+	});
+
 	it("Monarch: subscription creep does not flag a flat recurring charge or too few occurrences", () => {
 		const flat = detectMonarchDrops(
 			"2026-07-28",
