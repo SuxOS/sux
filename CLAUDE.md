@@ -396,6 +396,14 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   re-run on a clean checkout before assuming it's pre-existing-and-ignorable — if it's a date
   bomb like this one, it blocks every PR today and is worth fixing inline rather than reporting
   as unrelated noise.
+- **`_capped_kv_log.ts`'s `update(mutate)` (added for #1090) skips its `save()` call when
+  `mutate` returns the EXACT SAME array reference it was given — that's the deliberate no-op
+  signal for "nothing changed, don't write." A `mutate` that edits the array IN PLACE and
+  returns that same reference (e.g. `items.unshift(x); return items;`) therefore silently never
+  persists, which is exactly why `push()` itself builds a new array (`[...entries, ...items]`)
+  instead of mutating and returning `items`. Any new `update()`/`push()` caller must return a
+  fresh array whenever a write should actually happen — only hand back the original reference
+  for the genuine "no change" case (see `_infer.ts`'s delete/purge paths for the pattern).
 
 ## House style
 
