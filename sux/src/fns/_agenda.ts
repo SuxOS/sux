@@ -467,9 +467,14 @@ const UNUSUAL_CHARGE_WINDOW_DAYS = 3;
 const TEXT_LOOKBACK_DAYS = 3;
 // Recent-mail window scanned for the mail half of Relationship Radar (#1133) — deliberately NOT
 // unread-gated (unlike detectDrops/mailSearch's inbox scan), so a contact's cadence keeps updating
-// after their message is read instead of freezing the moment it's marked read. Wider than
-// TEXT_LOOKBACK_DAYS since email cadence runs slower than texting.
-const RELATIONSHIP_MAIL_LOOKBACK_DAYS = 30;
+// after their message is read instead of freezing the moment it's marked read. A bounded window is
+// still a membership test, not a true "ever contacted" scan — too narrow and a slow-cadence contact
+// falls out of it before detectRelationshipDrops' own silenceDays threshold ever fires, same freeze
+// bug one step removed. 90d (matching AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS' own max) comfortably
+// covers the default-config drop threshold (baselineDays*2) up to a ~45d cadence; widening costs
+// nothing extra server-side (mail_search's `after` filter is cheap — the `limit:50` cap below is
+// what actually bounds cost, not the window width).
+const RELATIONSHIP_MAIL_LOOKBACK_DAYS = 90;
 // Trailing window (NOT calendar-month-to-date) for the cashflow-derived savings-rate detector —
 // a fixed calendar-month window reads sharply negative for the first few days of a month before
 // income posts (a biweekly/monthly paycheck lags the 1st), a pure timing artifact rather than a
