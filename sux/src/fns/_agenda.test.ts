@@ -574,6 +574,17 @@ describe("agenda — loop", () => {
 		expect(d.sendDigest).toHaveBeenCalledTimes(1);
 	});
 
+	it("records 'digest (vault only)' in the vault note when the send fails, not 'digest emailed' (#1089)", async () => {
+		const e = env({ AGENDA_EMAIL: "1" });
+		const d = deps({ sendDigest: vi.fn(async () => { throw new Error("no primary identity"); }) });
+		const r = await runAgenda(e, {}, d);
+		expect(r.emailed).toBe(false);
+		expect(r.digest_written).toBe(true);
+		const written = (d.digestAppend as any).mock.calls[0][2] as string;
+		expect(written).toContain("digest (vault only)");
+		expect(written).not.toContain("digest emailed");
+	});
+
 	it("ledgers the sent digest's Message-ID so _agenda_reply.ts can thread-match a later reply", async () => {
 		const e = env({ AGENDA_EMAIL: "1" });
 		const d = deps({ sendDigest: vi.fn(async () => ({ messageId: "abc123@fastmail.com" })) });

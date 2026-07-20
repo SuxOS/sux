@@ -1229,12 +1229,9 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		const digKey = `digest::${cycle}`;
 		const alreadyDelivered = await dled.seen(digKey);
 		if (!alreadyDelivered) {
-			try {
-				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(date, cycle, hasAgendaEmail(env), digest));
-				digestWritten = true;
-			} catch {
-				/* a vault-append failure must never fail the cycle */
-			}
+			// Attempt the send BEFORE the vault append so the append's "digest emailed" text
+			// reflects the true outcome, not the config flag (#1089) — a send failure here must
+			// still never fail the cycle (the vault digest lands below regardless).
 			if (hasAgendaEmail(env)) {
 				try {
 					const sent = await deps.sendDigest(env, digest.subject, digest.body);
@@ -1246,6 +1243,12 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 				} catch {
 					/* an email failure must never fail the cycle — the proposals are already recorded */
 				}
+			}
+			try {
+				await deps.digestAppend(env, `Daily/${vaultToday(env.VAULT_TZ)}.md`, buildDigestBlock(date, cycle, emailed, digest));
+				digestWritten = true;
+			} catch {
+				/* a vault-append failure must never fail the cycle */
 			}
 			// Mark AFTER a successful write on EITHER channel — vault append or email — so a cycle
 			// where only one channel is down doesn't re-send/re-append an ever-growing digest to the
