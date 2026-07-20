@@ -59,6 +59,12 @@ found nothing beyond the tool-call metrics above.
    daily maintenance cron as the `gh_actions_billing` sub-job (heartbeat-tracked like the
    rest of `CRON_JOBS`); dormant until GITHUB_TOKEN + both Prometheus secrets are set.
    The dashboard panel itself is still unbuilt — see "Next step" below.
+
+   Note: `scripts/billing-check.mjs`'s `githubActionsMeter()` independently polls the same
+   GH Actions billing surface as a CI/local gate (report + exit-nonzero-on-breach, not a
+   Grafana push). The two implementations don't share code and can drift on endpoint shape
+   or owner defaults — check both before assuming this plumbing note is the only GH Actions
+   billing surface (#1101).
 2. **Claude/API credit usage**: Anthropic doesn't currently expose a usage/cost
    API for this to poll (console-only as of this writing) — confirm before
    building; if none exists, this half stays manual/console-only until Anthropic

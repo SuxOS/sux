@@ -202,6 +202,11 @@ export async function shipMetricsSnapshot(env: RtEnv, ctx: { waitUntil(p: Promis
 
 const DEFAULT_BILLING_REPO = "SuxOS/sux";
 
+// scripts/billing-check.mjs's githubActionsMeter() independently implements the same GH
+// Actions billing poll as a CI/local gate (this pushes to Grafana instead) — the two
+// don't share code and can drift on endpoint shape/owner defaults. Check both before
+// changing one or assuming this is the only GH Actions billing implementation (#1101).
+
 // The subset of GitHub's `GET /repos/{owner}/{repo}/actions/billing/usage` response this
 // cares about — the endpoint also returns a per-runner-OS `minutes_used_breakdown`, which
 // isn't shipped (it would multiply cardinality for a number nobody's asked to watch yet).

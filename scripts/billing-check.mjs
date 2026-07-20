@@ -18,6 +18,11 @@
 //   GITHUB_TOKEN/GH_TOKEN — run counts for the Anthropic spend ESTIMATE.
 //   ANTHROPIC_ADMIN_KEY — if set, a note points at the real usage source; there
 //                      is no simple public usage API, so spend stays an estimate.
+//
+// sux/src/grafana.ts's shipGithubBillingSnapshot independently polls the same GitHub
+// Actions billing surface (pushed to Grafana as a gauge, instead of gating CI here) —
+// the two don't share code and can drift on endpoint shape/owner defaults. Check both
+// before assuming this is the only GH Actions billing implementation (#1101).
 import { pathToFileURL } from "node:url";
 
 const OWNER = process.env.GH_BILLING_OWNER ?? "colinxs";
