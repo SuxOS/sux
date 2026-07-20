@@ -59,7 +59,11 @@ function commandSigningString(c: Omit<SignedCommand, "sig">): string {
 }
 
 // Deterministic JSON for the signing string: object keys sorted recursively so the
-// box (busybox `jq -S`) and the Worker produce the same canonical bytes.
+// box (busybox `jq -S`) and the Worker produce the same canonical bytes. Kept as its
+// own local copy rather than routed through suxlib's canonicalize/idempotencyKey
+// (#1104) — this is the wire contract the box's jq -S verifies against, and swapping
+// algorithms needs a byte-for-byte check against the box's actual jq -S output first,
+// not just against this file's own prior output.
 function stableStringify(v: unknown): string {
 	if (v === null || typeof v !== "object") return JSON.stringify(v);
 	if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;

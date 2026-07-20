@@ -76,6 +76,17 @@ describe("runWatchSweep", () => {
 		expect(report.changed).toEqual([{ url: "https://b", label: "price", hash: "new", previous_hash: "old", checked_at: expect.any(String) }]);
 	});
 
+	it("threads a numeric-mode result's numeric_value/previous_numeric_value (#1091) onto the reported change (#1095)", async () => {
+		const env = envWith({ WATCH_SWEEP_ENABLED: "1" });
+		const deps = mkDeps([entry("https://price", { label: "price watch", threshold: 10 })], {
+			"https://price": { changed: true, first_seen: false, hash: "new", previous_hash: "old", numeric_value: 85, previous_numeric_value: 100 },
+		});
+		const report = await runWatchSweep(env, {}, deps);
+		expect(report.changed).toEqual([
+			{ url: "https://price", label: "price watch", hash: "new", previous_hash: "old", numeric_value: 85, previous_numeric_value: 100, checked_at: expect.any(String) },
+		]);
+	});
+
 	it("forwards each entry's threshold/thresholdPct (#1091) to checkWatch so a numeric-mode watch stays noise-filtered under the sweep", async () => {
 		const env = envWith({ WATCH_SWEEP_ENABLED: "1" });
 		const seen: Array<{ url: string; threshold?: number; thresholdPct?: number }> = [];

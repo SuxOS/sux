@@ -103,6 +103,17 @@ describe("agenda — detectors", () => {
 		expect(drops[0].action.fn).toBe("todoist");
 	});
 
+	it("surfaces the numeric delta in the title/evidence when a numeric-threshold watch reports one (#1091, #1095)", () => {
+		const drops = detectWatchDrops({
+			checked_at: "2026-07-18T00:00:00.000Z",
+			changed_count: 1,
+			changed: [{ url: "https://example.com/price", label: "price watch", hash: "new-hash", previous_hash: "old-hash", numeric_value: 85, previous_numeric_value: 100, checked_at: "2026-07-18T00:00:00.000Z" }],
+		});
+		expect(drops).toHaveLength(1);
+		expect(drops[0].title).toBe("Watched page changed (price watch) — 100 → 85: https://example.com/price");
+		expect(drops[0].evidence).toMatchObject({ numeric_value: 85, previous_numeric_value: 100 });
+	});
+
 	it("no watch drops when there's nothing to report", () => {
 		expect(detectWatchDrops(null)).toHaveLength(0);
 		expect(detectWatchDrops({ checked_at: "2026-07-18T00:00:00.000Z", changed_count: 0, changed: [] })).toHaveLength(0);
