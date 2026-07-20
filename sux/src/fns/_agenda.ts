@@ -1287,13 +1287,23 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			}
 		}
 	}
-	const toDeliver = [...carried, ...proposed];
 	// Guard against unbounded growth across a sustained mail+vault outage (#1134) — KV values cap
 	// at 25MB and a growing `evidence` payload (Monarch/MyChart drops aren't small) could otherwise
-	// push a `put` over that limit. Stay well under it, mirroring _capped_kv_log.ts's byte cap. Drops
-	// the OLDEST (already-carried) entries first — this cycle's fresh proposals are never dropped.
+	// push a `put` over that limit. Stay well under it, mirroring _capped_kv_log.ts's byte cap.
+	// Trims `carried` (the OLDEST, already-carried-over entries) FIRST, on its own, so this
+	// cycle's fresh `proposed` entries are never touched while carried still has slack to shed.
+	// Only once carried is fully exhausted and the combined set STILL doesn't fit does the loop
+	// fall through to trimming `toDeliver` itself (now proposed-only) — logged separately since
+	// that genuinely means this cycle's own proposals alone blew the budget (#1140), the opposite
+	// of dropping already-carried leftovers.
 	const MAX_PENDING_BYTES = 1024 * 1024;
-	while (toDeliver.length > 1 && new TextEncoder().encode(JSON.stringify(toDeliver)).length > MAX_PENDING_BYTES) toDeliver.shift();
+	const byteLen = (arr: ProposedDrop[]) => new TextEncoder().encode(JSON.stringify(arr)).length;
+	while (carried.length && byteLen([...carried, ...proposed]) > MAX_PENDING_BYTES) carried.shift();
+	const toDeliver = [...carried, ...proposed];
+	if (byteLen(toDeliver) > MAX_PENDING_BYTES) {
+		console.warn(`agenda: pending digest still over ${MAX_PENDING_BYTES} bytes after dropping every carried-over entry — trimming this cycle's own fresh proposals`);
+		while (toDeliver.length > 1 && byteLen(toDeliver) > MAX_PENDING_BYTES) toDeliver.shift();
+	}
 
 	const digest = composeDigest(date, toDeliver);
 
