@@ -664,4 +664,17 @@ describe("crossOrgAllergyGaps — one-sided allergy continuity gap (#1009)", () 
 		]);
 		expect(await crossOrgAllergyGaps(env)).toEqual([]);
 	});
+
+	it("still flags a gap when the OTHER org's matching record was refuted (#1084)", async () => {
+		const env = baseEnv();
+		await seedGrant(env, ORG, "P1");
+		await seedGrant(env, ORG2, "P1");
+		await seedBundle(env, ORG, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [{ resourceType: "AllergyIntolerance", id: "al1", code: { text: "Penicillin" } }]);
+		// ORG2's only matching record was refuted — the opposite signal from "has a record of it",
+		// so this must still read as a gap, not as "org B already knows".
+		await seedBundle(env, ORG2, "P1", "AllergyIntolerance", "2026-07-18T00-00-00-000Z", [
+			{ resourceType: "AllergyIntolerance", id: "al2", code: { text: "Penicillin" }, verificationStatus: { coding: [{ code: "refuted" }] } },
+		]);
+		expect(await crossOrgAllergyGaps(env)).toEqual([{ org: ORG, allergyId: "al1", allergySubstance: "Penicillin", missingOrg: ORG2 }]);
+	});
 });

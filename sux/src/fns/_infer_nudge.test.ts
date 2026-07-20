@@ -3,6 +3,7 @@ import type { InferNudgeDeps } from "./_infer_nudge";
 import { readInferNudgeWarmupLog, runInferNudge } from "./_infer_nudge";
 import type { DriftCandidate } from "./_infer_drift";
 import { readInferInferences, type InferSignal } from "./_infer";
+import { vaultToday } from "./_util";
 
 function fakeKv() {
 	const store = new Map<string, string>();
@@ -126,7 +127,9 @@ describe("runInferNudge — digest block", () => {
 		expect(digestAppend).toHaveBeenCalledTimes(1);
 		const [calledEnv, path, content] = (digestAppend as any).mock.calls[0];
 		expect(calledEnv).toBe(env);
-		expect(path).toBe("Daily/2026-07-19.md");
+		// vaultToday derives from the real wall clock (no injected clock in deps()), so
+		// assert against the same call rather than a hardcoded date (#1083).
+		expect(path).toBe(`Daily/${vaultToday(env.VAULT_TZ)}.md`);
 		expect(content).toContain("**suggests:** I noticed a lot about kayaking lately");
 		expect(content).toContain("[mail:thread-1] [redacted] a lot about kayaking");
 		expect(content).toContain("[vault:note-1] [redacted] kayak trip notes");

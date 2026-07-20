@@ -485,6 +485,17 @@ function codeableConceptHasCode(cc: any, code: string): boolean {
  *  so a resolved/refuted allergy stops permanently tripping the cross-org checks. */
 function isAllergyActive(r: any): boolean {
 	if (r?.clinicalStatus && !codeableConceptHasCode(r.clinicalStatus, "active")) return false;
+	if (!isAllergyNotRefuted(r)) return false;
+	return true;
+}
+
+/** True unless an AllergyIntolerance was explicitly refuted or entered in error. Unlike
+ *  isAllergyActive, an inactive/resolved clinicalStatus still counts here — org B has SOME
+ *  record of the allergy, which is what crossOrgAllergyGaps's "known at other org" check
+ *  cares about (#1057). A refuted/entered-in-error verificationStatus is the opposite
+ *  signal though: org B affirmatively determined the patient is NOT allergic, not merely a
+ *  weaker positive, so it must not count as "known" either (#1084). */
+function isAllergyNotRefuted(r: any): boolean {
 	if (codeableConceptHasCode(r?.verificationStatus, "refuted")) return false;
 	if (codeableConceptHasCode(r?.verificationStatus, "entered-in-error")) return false;
 	return true;
@@ -703,7 +714,9 @@ async function gatherContributingMedsAndAllergies(env: RtEnv): Promise<OrgMedAll
 					.map((r) => ({ id: String(r.id), substance: codeableConceptText(r.code) }))
 					.filter((a): a is { id: string; substance: string } => Boolean(a.substance));
 			const activeAllergies = toAllergyList(allergies.filter((r) => isAllergyActive(r)));
-			const allAllergies = toAllergyList(allergies);
+			// Includes inactive/resolved (still "org B has a record of it", #1057) but excludes
+			// refuted/entered-in-error (the opposite signal — org B ruled it out, #1084).
+			const allAllergies = toAllergyList(allergies.filter((r) => isAllergyNotRefuted(r)));
 			return { org, meds: activeMeds, allergies: activeAllergies, allAllergies, allergiesPulled };
 		}),
 	);
