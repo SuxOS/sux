@@ -209,6 +209,15 @@ describe("validateInputSchema", () => {
 		expect(validateInputSchema(hashSchema, { text: "x", bogus: 1 })).toMatch(/unexpected property.*bogus/);
 	});
 
+	it("suggests the nearest allowed property name when one is close enough", () => {
+		const pathSchema = { type: "object", additionalProperties: false, properties: { path: { type: "string" } } };
+		expect(validateInputSchema(pathSchema, { pth: "a.md" })).toMatch(/unexpected property: pth \(did you mean `path`\?\)/);
+	});
+
+	it("gives no guess when nothing in the schema is close", () => {
+		expect(validateInputSchema(hashSchema, { text: "x", bogus: 1 })).not.toMatch(/did you mean/);
+	});
+
 	it("is a no-op for schemas that aren't type:object, or that allow extra properties", () => {
 		expect(validateInputSchema({ type: "string" }, "anything")).toBeNull();
 		expect(validateInputSchema(undefined, { anything: true })).toBeNull();

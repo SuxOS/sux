@@ -761,6 +761,34 @@ export function findFn(fns: Fn[], name: string): Fn | undefined {
 	return fns.find((f) => f.name === name);
 }
 
+/** Levenshtein edit distance — used only to suggest the intended param name below. */
+function editDistance(a: string, b: string): number {
+	const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+	for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+	for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+	for (let i = 1; i <= a.length; i++) {
+		for (let j = 1; j <= b.length; j++) {
+			dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+		}
+	}
+	return dp[a.length][b.length];
+}
+
+/** Nearest allowed schema property to an unrecognized one, or null if nothing's close enough to be worth guessing. */
+function closestProperty(name: string, allowed: string[]): string | null {
+	let best: string | null = null;
+	let bestDist = Infinity;
+	for (const candidate of allowed) {
+		const d = editDistance(name, candidate);
+		if (d < bestDist) {
+			bestDist = d;
+			best = candidate;
+		}
+	}
+	const threshold = Math.max(2, Math.floor(name.length / 2));
+	return best !== null && bestDist <= threshold ? best : null;
+}
+
 /**
  * Centrally enforce a leaf's own declared `inputSchema` — just `required` +
  * `additionalProperties`, the two checks every fn's schema already promises but
@@ -769,6 +797,11 @@ export function findFn(fns: Fn[], name: string): Fn | undefined {
  * Only fires for an object-typed schema; anything else (rare) is left alone.
  * Not a full JSON-Schema validator (no `type`/`enum`/nested checks) — deliberately
  * narrow so it can't reject an input some fn's own body already handles fine.
+ *
+ * An unrecognized property gets a nearest-neighbor guess against the schema's own
+ * `properties` (e.g. `path` vs `file`) instead of a bare name-and-nothing-else —
+ * centralized so it helps every fn, not just the ones patched one at a time as
+ * these get reported (see #1121's vault_query-specific workaround, #1127).
  */
 export function validateInputSchema(schema: unknown, args: unknown): string | null {
 	if (!schema || typeof schema !== "object") return null;
@@ -780,9 +813,16 @@ export function validateInputSchema(schema: unknown, args: unknown): string | nu
 		if (missing.length) return `missing required field${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`;
 	}
 	if (s.additionalProperties === false && s.properties && typeof s.properties === "object") {
-		const allowed = new Set(Object.keys(s.properties as Record<string, unknown>));
+		const allowedProps = Object.keys(s.properties as Record<string, unknown>);
+		const allowed = new Set(allowedProps);
 		const extra = Object.keys(a).filter((k) => !allowed.has(k));
-		if (extra.length) return `unexpected propert${extra.length > 1 ? "ies" : "y"}: ${extra.join(", ")}`;
+		if (extra.length) {
+			const described = extra.map((k) => {
+				const guess = closestProperty(k, allowedProps);
+				return guess ? `${k} (did you mean \`${guess}\`?)` : k;
+			});
+			return `unexpected propert${extra.length > 1 ? "ies" : "y"}: ${described.join(", ")}`;
+		}
 	}
 	return null;
 }
