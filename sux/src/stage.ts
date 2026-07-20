@@ -53,6 +53,9 @@ export const STAGE_KINDS: Record<string, StageKind> = {
 	// …) that need to auto-run — gating them here would mean threading force:true
 	// through every one of those call sites, well beyond this fix's scope.
 	store_put: { irreversible: true },
+	// vault — git history keeps a delete recoverable, but mail_masked_delete/contact_delete
+	// already stage despite being recoverable too; same precedent applies here.
+	vault_delete: { irreversible: true },
 	// put — the bulk sibling of store.put: one call downloads up to 100 URLs and mints a
 	// world-readable /s/<uuid> ref PER URL, so it's even higher-amplification than store_put
 	// on the same egress channel. Stages by default. Unlike dropbox/obsidian/kv_*/ingest it
