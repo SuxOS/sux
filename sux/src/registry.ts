@@ -799,9 +799,66 @@ export function validateInputSchema(schema: unknown, args: unknown): string | nu
 	if (s.additionalProperties === false && s.properties && typeof s.properties === "object") {
 		const allowed = new Set(Object.keys(s.properties as Record<string, unknown>));
 		const extra = Object.keys(a).filter((k) => !allowed.has(k));
-		if (extra.length) return `unexpected propert${extra.length > 1 ? "ies" : "y"}: ${extra.join(", ")}`;
+		if (extra.length) {
+			const hints = extra.map((k) => suggestProperty(k, allowed)).filter((h): h is string => !!h);
+			const didYouMean = hints.length ? ` (did you mean: ${hints.join(", ")}?)` : "";
+			return `unexpected propert${extra.length > 1 ? "ies" : "y"}: ${extra.join(", ")}${didYouMean}`;
+		}
 	}
 	return null;
+}
+
+// Small, generic wrong-name synonym table for #1127: a fn's own schema can't anticipate
+// every intuitive-but-wrong param a caller tries, so this centralizes the handful of
+// spellings that recur across fns (rather than each fn declaring its own accepted-but-
+// rejected alias property, the per-fn workaround #1121's vault_query fix used).
+const COMMON_PROPERTY_SYNONYMS: Record<string, readonly string[]> = {
+	text: ["content", "body", "q", "query"],
+	content: ["text", "body"],
+	body: ["text", "content"],
+	path: ["file", "filepath", "key"],
+	file: ["path"],
+	filepath: ["path"],
+	query: ["q", "text"],
+	q: ["query", "text"],
+	name: ["title", "path"],
+	title: ["name"],
+	key: ["path", "id"],
+	id: ["key", "path"],
+};
+
+/** Levenshtein edit distance — short-circuit-free, small inputs only (property names). */
+function editDistance(a: string, b: string): number {
+	const m = a.length;
+	const n = b.length;
+	const dp: number[] = Array.from({ length: n + 1 }, (_, j) => j);
+	for (let i = 1; i <= m; i++) {
+		let prevDiag = dp[0];
+		dp[0] = i;
+		for (let j = 1; j <= n; j++) {
+			const temp = dp[j];
+			dp[j] = a[i - 1] === b[j - 1] ? prevDiag : 1 + Math.min(prevDiag, dp[j], dp[j - 1]);
+			prevDiag = temp;
+		}
+	}
+	return dp[n];
+}
+
+/** Best guess at the param the caller meant: a known synonym first, else a close typo (edit distance <=2). */
+function suggestProperty(wrong: string, allowed: Set<string>): string | undefined {
+	const syn = COMMON_PROPERTY_SYNONYMS[wrong]?.find((s) => allowed.has(s));
+	if (syn) return syn;
+	let best: string | undefined;
+	let bestDist = 3;
+	for (const cand of allowed) {
+		if (cand.length < 3) continue;
+		const d = editDistance(wrong, cand);
+		if (d < bestDist) {
+			bestDist = d;
+			best = cand;
+		}
+	}
+	return best;
 }
 
 /**
