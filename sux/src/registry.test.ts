@@ -209,6 +209,18 @@ describe("validateInputSchema", () => {
 		expect(validateInputSchema(hashSchema, { text: "x", bogus: 1 })).toMatch(/unexpected property.*bogus/);
 	});
 
+	it("hints a known synonym for an unexpected property (#1127)", () => {
+		expect(validateInputSchema(hashSchema, { text: "x", content: "y" })).toMatch(/unexpected property.*content.*did you mean: text\?/);
+	});
+
+	it("hints a close typo for an unexpected property (#1127)", () => {
+		expect(validateInputSchema(hashSchema, { text: "x", txet: "y" })).toMatch(/unexpected property.*txet.*did you mean: text\?/);
+	});
+
+	it("gives no hint when nothing is close", () => {
+		expect(validateInputSchema(hashSchema, { text: "x", zzzzz: "y" })).toMatch(/^unexpected property: zzzzz$/);
+	});
+
 	it("is a no-op for schemas that aren't type:object, or that allow extra properties", () => {
 		expect(validateInputSchema({ type: "string" }, "anything")).toBeNull();
 		expect(validateInputSchema(undefined, { anything: true })).toBeNull();
