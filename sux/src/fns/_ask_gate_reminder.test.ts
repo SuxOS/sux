@@ -47,7 +47,7 @@ describe("ask-gate reminder — sweep", () => {
 		expect(d.sendDigest).not.toHaveBeenCalled();
 		expect(d.digestAppend).toHaveBeenCalledTimes(1);
 		const [, path, content] = (d.digestAppend as any).mock.calls[0];
-		expect(path).toMatch(/^Daily\//);
+		expect(path).toMatch(/^06-daily\//);
 		expect(content).toContain("mail-triage-plan");
 	});
 

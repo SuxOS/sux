@@ -128,7 +128,7 @@ describe("runInferNudge — digest block", () => {
 		expect(digestAppend).toHaveBeenCalledTimes(1);
 		const [calledEnv, path, content] = (digestAppend as any).mock.calls[0];
 		expect(calledEnv).toBe(env);
-		expect(path).toBe(`Daily/${vaultToday("UTC")}.md`);
+		expect(path).toBe(`06-daily/${vaultToday("UTC")}.md`);
 		expect(content).toContain("**suggests:** I noticed a lot about kayaking lately");
 		expect(content).toContain("[mail:thread-1] [redacted] a lot about kayaking");
 		expect(content).toContain("[vault:note-1] [redacted] kayak trip notes");
@@ -331,7 +331,7 @@ describe("runInferAnomalyNudge — caps + digest", () => {
 
 		const [calledEnv, path, content] = (digestAppend as any).mock.calls[0];
 		expect(calledEnv).toBe(env);
-		expect(path).toBe(`Daily/${vaultToday("UTC")}.md`);
+		expect(path).toBe(`06-daily/${vaultToday("UTC")}.md`);
 		expect(content).toContain("scalar-anomaly · purchases:spending · z 3.00");
 		expect(content).toContain("**suggests:** I noticed a lot more spending lately");
 		expect(content).toContain("12 spending signals in the last 14d vs a baseline avg of 0.0 per 14d (z=3.00)");

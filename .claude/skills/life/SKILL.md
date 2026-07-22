@@ -31,10 +31,10 @@ If a store isn't connected, say so plainly and use what is — never fail silent
 
 ## Vault conventions (so the graph stays navigable)
 
-- **PARA folders:** `Projects/` (active, deadline'd) · `Areas/` (ongoing
-  responsibilities) · `Resources/` (topics/reference) · `Archive/` (done). Raw
-  intake lands in `Inbox/`; daily jots in `Daily/YYYY-MM-DD.md`.
-- **MOCs** (Maps of Content): a hub note per area (`Areas/Health.md`) that links
+- **PARA folders:** `04-projects/` (active, deadline'd) · `05-areas/` (ongoing
+  responsibilities) · `02-knowledge/` (topics/reference) · `07-archive/` (done). Raw
+  intake lands in `00-inbox/`; daily jots in `06-daily/YYYY-MM-DD.md`.
+- **MOCs** (Maps of Content): a hub note per area (`05-areas/health/Health.md`) that links
   its notes with `[[wikilinks]]`. Navigation is MOC → note → linked note, not
   folder-diving.
 - **Small typed frontmatter** on durable notes. Memories use the memory contract:
@@ -56,12 +56,12 @@ If a store isn't connected, say so plainly and use what is — never fail silent
 ### 1 · capture — get it out of your head in <10s
 **Trigger:** "note this", "capture", "jot", "add to today", a link/quote/thought to keep.
 - A quick thought/task → **`vault_daily_append`** (`- <thought>` or `- [ ] <task>`). Zero ceremony; it's in today's note.
-- A URL or a block of text worth keeping → **`vault_capture`** (`url` | `text` | `query`) → a provenance-stamped note in `Inbox/`. Add `summarize:true` for long pages. Never overwrites.
+- A URL or a block of text worth keeping → **`vault_capture`** (`url` | `text` | `query`) → a provenance-stamped note in `00-inbox/`. Add `summarize:true` for long pages. Never overwrites.
 - Don't classify yet. Capture is cheap and lossy-proof; triage happens later.
 
 ### 2 · remember — a durable fact that must survive
 **Trigger:** "remember that…", a person, a decision, a password *location*, a health detail, a preference.
-- Write a small typed note with the **memory frontmatter** (above) via **`vault_write`**, filed under the right PARA area (a person → `Areas/People/<Name>.md`; a decision → the relevant project/area).
+- Write a small typed note with the **memory frontmatter** (above) via **`vault_write`**, filed under the right PARA area (a person → `03-people/<Name>.md`; a decision → the relevant project/area).
 - One fact per note when it's load-bearing; append related facts to an existing person/topic note with **`vault_append`**/**`vault_edit`**.
 - Link it into its MOC (verb 3) so it's findable, and **never store raw secrets** — store where a credential lives (`node_type: memory`, `type: credential-ref`), not the secret itself.
 - **Two flavors:** *quick* (`vault_daily_append` a `remember:` line — fast, unstructured) vs *durable* (a typed frontmatter note — findable forever). Prefer durable for anything you'd be upset to lose.
@@ -87,7 +87,7 @@ MOC / index  →  search  →  read the whole note  →  follow [[links]] / thre
 
 ### 5 · triage — turn the Inbox into knowledge
 **Trigger:** "organize my notes", "clear my inbox", periodic tidy.
-- `vault_list Inbox` → for each note: promote to its PARA home (`vault_write` the tidied note, or `vault_edit` + move), add frontmatter, link into a MOC (verb 3), then archive/remove the raw capture.
+- `vault_list 00-inbox` → for each note: promote to its PARA home (`vault_write` the tidied note, or `vault_edit` + move), add frontmatter, link into a MOC (verb 3), then archive/remove the raw capture.
 - Mail triage: `mail_search unread` → for each, capture what matters (`vault_capture text:` the gist, or draft a reply), then `mail_archive`.
 - Batch it; report what moved where. Never delete a capture without confirming its content landed somewhere durable.
 
@@ -96,16 +96,16 @@ MOC / index  →  search  →  read the whole note  →  follow [[links]] / thre
 - **Merge duplicates:** two notes on the same person/topic → fold into one, `vault_edit` the survivor, `vault_delete confirm:true` the dupe (git keeps it).
 - **Heal orphans:** notes with no inbound links → link them into a MOC or archive them.
 - **Refresh MOCs:** ensure each area's hub lists its current notes.
-- **Prune stale:** move done `Projects/` to `Archive/`. Summarize long-running threads into a single durable memory.
+- **Prune stale:** move done `04-projects/` to `07-archive/`. Summarize long-running threads into a single durable memory.
 - Do it in small, reviewable batches; git is the audit log.
 
 ## Worked flows
 
 - **"Remember Dr. Chen is my oncologist, appointments are Tuesdays."**
-  → `vault_write Areas/People/Dr Chen.md` with memory frontmatter (`type: person`, tags `[health]`), body with the facts → `vault_edit Areas/Health.md` to add `[[Dr Chen]]` to the MOC.
+  → `vault_write 03-people/Dr Chen.md` with memory frontmatter (`type: person`, tags `[health]`), body with the facts → `vault_edit 05-areas/health/Health.md` to add `[[Dr Chen]]` to the MOC.
 - **"What do I know about my treatment plan?"** (deep recall)
-  → `vault_read Areas/Health.md` (MOC) → read linked notes → `mail_search "treatment"` → `mail_read` the key thread → synthesize with citations (note paths + email subjects/dates).
-- **"Capture this article for later."** → `vault_capture url:<…> summarize:true` → later, triage from `Inbox/` into `Resources/`.
+  → `vault_read 05-areas/health/Health.md` (MOC) → read linked notes → `mail_search "treatment"` → `mail_read` the key thread → synthesize with citations (note paths + email subjects/dates).
+- **"Capture this article for later."** → `vault_capture url:<…> summarize:true` → later, triage from `00-inbox/` into `02-knowledge/`.
 - **"Draft a note to my sister with the update."** → gather via retrieve → `mail_draft to:[…]` (never `mail_send` without the user's go-ahead).
 
 ## Rules

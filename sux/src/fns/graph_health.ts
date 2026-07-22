@@ -1,7 +1,7 @@
 // Vault graph-health report (#1208, W4 of #1202): orphan notes, dead wikilinks, a stale-date
 // distribution, and per-folder counts — the measurement pass the big prune/connect effort
 // (post tree-research) steers by. Pure read over scanVault's index; the only write is the one
-// regenerable Meta/Graph-Health.md summary (same "read-only report, one regenerable note"
+// regenerable _meta/Graph-Health.md summary (same "read-only report, one regenerable note"
 // contract as _grafana_hook.ts's Alerts note / _document_radar.ts's per-document notes).
 import { type Fn, ok, failWith, type RtEnv } from "../registry";
 import { oj, errMsg } from "./_util";
@@ -9,7 +9,7 @@ import { linkResolvesTo, noteBasename } from "../vault-graph";
 import { scanVault, type VaultRecord } from "../vault-mcp";
 import { obsidian, vaultCfg } from "./obsidian";
 
-const REPORT_PATH = "Meta/Graph-Health.md";
+const REPORT_PATH = "_meta/Graph-Health.md";
 const SCAN_CAP = 2000;
 
 const STALE_BUCKETS = ["<30d", "30-90d", "90-365d", ">365d", "unknown"] as const;
@@ -71,7 +71,7 @@ export function computeGraphHealth(
 	const folder_counts: Record<string, number> = {};
 
 	// `records` stays the full resolution universe (a link like `[[Graph-Health]]` must still
-	// resolve to Meta/Graph-Health.md even though the report itself contributes no *source*
+	// resolve to _meta/Graph-Health.md even though the report itself contributes no *source*
 	// metrics below) — only the per-record loop that treats `r` as a source skips excluded paths.
 	const hasInbound = (path: string): boolean => records.some((r) => r.path !== path && r.links.some((l) => linkResolvesTo(l, path)));
 
@@ -135,7 +135,7 @@ function renderReport(h: GraphHealth, generatedAt: string): string {
 export const graph_health: Fn = {
 	name: "graph_health",
 	description:
-		"Read-only vault graph-health report (#1208): orphan notes (zero inbound AND zero outbound links), dead [[wikilinks]] (a link target with no matching note), a stale-date distribution (<30d/30-90d/90-365d/>365d/unknown, keyed off frontmatter updated/modified/last_verified/created/date), and per-folder note counts. Scans the vault via the same cached index vault_backlinks/vault_query use, then writes a regenerable Meta/Graph-Health.md summary and returns the same metrics as JSON. The instrumentation a prune/connect pass steers by — measurement, never a mutation of note content.",
+		"Read-only vault graph-health report (#1208): orphan notes (zero inbound AND zero outbound links), dead [[wikilinks]] (a link target with no matching note), a stale-date distribution (<30d/30-90d/90-365d/>365d/unknown, keyed off frontmatter updated/modified/last_verified/created/date), and per-folder note counts. Scans the vault via the same cached index vault_backlinks/vault_query use, then writes a regenerable _meta/Graph-Health.md summary and returns the same metrics as JSON. The instrumentation a prune/connect pass steers by — measurement, never a mutation of note content.",
 	inputSchema: { type: "object", additionalProperties: false, required: [], properties: {} },
 	cacheable: false,
 	annotations: { readOnlyHint: true, openWorldHint: false },

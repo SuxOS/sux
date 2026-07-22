@@ -375,7 +375,7 @@ export const study: Fn = {
 			if (action === "forget") {
 				if (!topic) return failWith("bad_input", 'action=forget requires a `topic` — the whitelisted knowledge base to delete.');
 				// Delegate to oracle's forget (same KV key space) — reversible: the git-versioned
-				// vault mirror (sux/Knowledge.md, sux/Whitelisted.md) stays as legible history.
+				// vault mirror (02-knowledge/sux/Knowledge.md, 02-knowledge/sux/Whitelisted.md) stays as legible history.
 				const r = await oracle.run(env, { action: "forget", topic });
 				if (r.isError) return r;
 				const j = (() => {

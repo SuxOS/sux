@@ -915,7 +915,7 @@ const METRICS_CRON = "*/5 * * * *";
 // One living-wiki synthesis, driven by the same Cron Trigger. FAIL-CLOSED: early-returns
 // doing nothing unless LIFE_WIKI_ENABLED is set (the cron fires daily regardless, but is a
 // total no-op — reading nothing, writing nothing — until Colin flips the flag). When armed
-// it regenerates the wiki ONLY inside the sandboxed vault subdir (sux/wiki/), never touching
+// it regenerates the wiki ONLY inside the sandboxed vault subdir (02-knowledge/sux/wiki/), never touching
 // the user's own notes. Dynamically imported so the cron path pulls the retrieval+synthesis
 // surface in only when armed; self-bounds nothing beyond recall's own per-facet failures.
 async function lifeWikiTick(env: RtEnv): Promise<void> {

@@ -201,12 +201,12 @@ describe("runConsolidate", () => {
 		expect(covered.size).toBe(total);
 	});
 
-	it("writes the digest to Consolidation/<week>.md", async () => {
+	it("writes the digest to _meta/consolidation/<week>.md", async () => {
 		const env = envWith({ CONSOLIDATE_ENABLED: "1" });
 		const deps = mkDeps({ "A.md": fm("title: A") });
 		await runConsolidate(env, { week: "2026-W15" }, deps);
 		const [, path, content] = deps.digested.mock.calls[0];
-		expect(path).toBe("Consolidation/2026-W15.md");
+		expect(path).toBe("_meta/consolidation/2026-W15.md");
 		expect(content).toContain("Consolidation sweep");
 		expect(content).toContain("never verified");
 	});

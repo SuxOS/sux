@@ -22,7 +22,7 @@
 // silently swallowed, never ingested.
 //
 // vault@ → the plain-text body, provenance (from/date/message-id) folded in, fed through the
-// `ingest` fn's toss-path (a provenance-stamped Inbox/ note). files@ → attachments land in R2
+// `ingest` fn's toss-path (a provenance-stamped 00-inbox/ note). files@ → attachments land in R2
 // (content-addressed, via putBlob) and a ref-note (never raw bytes) goes into the vault Inbox —
 // the message body becomes the note's text content.
 //

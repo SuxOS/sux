@@ -15,11 +15,11 @@ import { obsidian } from "./obsidian";
 // failure. When the vault is unconfigured (no OBSIDIAN_VAULT_REPO / remote), the append
 // returns isError and the hook simply no-ops — fail-closed, never fatal to the caller.
 
-const LEARN_NOTE = "sux/Learned.md";
-const SEARCH_NOTE = "sux/Searches.md";
-const ORACLE_NOTE = "sux/Knowledge.md";
-const PREFS_NOTE = "sux/Voice.md";
-const WHITELIST_NOTE = "sux/Whitelisted.md";
+const LEARN_NOTE = "02-knowledge/sux/Learned.md";
+const SEARCH_NOTE = "02-knowledge/sux/Searches.md";
+const ORACLE_NOTE = "02-knowledge/sux/Knowledge.md";
+const PREFS_NOTE = "02-knowledge/sux/Voice.md";
+const WHITELIST_NOTE = "02-knowledge/sux/Whitelisted.md";
 
 /** Append via obsidian, deduped by `dedupKey` (the SEMANTIC content — not the rendered line,
  *  whose batch marker is unique per call). Returns true iff it actually wrote. */

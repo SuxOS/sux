@@ -360,7 +360,7 @@ describe("vault MCP tools", () => {
 		};
 		const out = await tool("vault_daily_append").run(ENV, { content: "- [ ] task" });
 		expect(out.isError).toBeFalsy();
-		expect(putPath).toBe(`Daily/${date}.md`);
+		expect(putPath).toBe(`06-daily/${date}.md`);
 	});
 
 	it("vault_delete stages a preview (with inbound-link note), then commits on the token", async () => {
@@ -416,7 +416,7 @@ describe("vault MCP tools", () => {
 		const out = await tool("vault_capture").run(ENV, { text: "quick thought", title: "Thought" });
 		expect(out.isError).toBeFalsy();
 		const note = parse(out);
-		expect(note.note).toBe(`Inbox/${date} thought.md`);
+		expect(note.note).toBe(`00-inbox/${date} thought.md`);
 		expect(puts[note.note]).toContain("type: capture");
 	});
 
@@ -443,7 +443,7 @@ describe("vault MCP tools", () => {
 		};
 		await tool("vault_daily_append").run(ENV, { content: "x" });
 		const pacific = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-		expect(putPath).toBe(`Daily/${pacific}.md`);
+		expect(putPath).toBe(`06-daily/${pacific}.md`);
 	});
 
 	it("vault_capture allowlists fields — a stray `path` can't reach ingest's overwrite branch", async () => {
@@ -456,9 +456,9 @@ describe("vault MCP tools", () => {
 			return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 		};
 		// `path: Home.md` is NOT in vault_capture's schema; it must be dropped, so the
-		// capture lands in Inbox/, never overwriting the Home MOC.
+		// capture lands in 00-inbox/, never overwriting the Home MOC.
 		await tool("vault_capture").run(ENV, { text: "jot", title: "Jot", path: "Home.md" });
-		expect(putPath).toMatch(/^Inbox\//);
+		expect(putPath).toMatch(/^00-inbox\//);
 		expect(putPath).not.toBe("Home.md");
 	});
 

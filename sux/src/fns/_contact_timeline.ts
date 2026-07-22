@@ -197,7 +197,7 @@ async function fromCalendar(env: RtEnv, p: ResolvedPerson): Promise<TimelineItem
 	return items;
 }
 
-/** Extract a YYYY-MM-DD from a vault path (Daily/2026-05-15.md and other dated notes); null otherwise. */
+/** Extract a YYYY-MM-DD from a vault path (06-daily/2026-05-15.md and other dated notes); null otherwise. */
 function dateFromVaultPath(path: string): string | null {
 	const m = path.match(/(\d{4})-(\d{2})-(\d{2})/);
 	return m ? `${m[1]}-${m[2]}-${m[3]}` : null;

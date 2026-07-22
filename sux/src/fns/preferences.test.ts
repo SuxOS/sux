@@ -87,7 +87,7 @@ describe("preferences", () => {
 		// One vault append with the profile-headed section containing the spec.
 		expect(obs).toHaveBeenCalledTimes(1);
 		const [, append] = obs.mock.calls[0];
-		expect(append).toMatchObject({ action: "append", path: "sux/Voice.md" });
+		expect(append).toMatchObject({ action: "append", path: "02-knowledge/sux/Voice.md" });
 		expect(append.content).toContain("## colin —");
 		expect(append.content).toContain("Terse. No hedging.");
 

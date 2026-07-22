@@ -5,7 +5,7 @@ import { errMsg } from "./_util";
 // life_wiki — the manual + cron entrypoint for the life-learning living wiki. It synthesizes
 // a two-audience wiki about YOUR life from YOUR own signals (notes, files, mail, taught
 // examples) — a HUMAN set of readable notes + a ROBOT llms.txt index — into a SANDBOXED vault
-// subdir (`sux/wiki/`). NON-DESTRUCTIVE by construction: every write is sandbox-fenced, never
+// subdir (`02-knowledge/sux/wiki/`). NON-DESTRUCTIVE by construction: every write is sandbox-fenced, never
 // touching your own notes. DORMANT unless LIFE_WIKI_ENABLED is set. Edge-private (Workers-AI):
 // personal signals never leave for a frontier model. The same run() rides the daily cron.
 export const life_wiki: Fn = {

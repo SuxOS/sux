@@ -71,7 +71,7 @@ describe("handleIngestBatch", () => {
 		const m = msg(ev("scan/2026/07/scan_20260721.pdf"));
 		await handleIngestBatch({ messages: [m] } as any, { INGEST_R2: r2 } as any);
 		expect(dbx.puts[0].path).toBe("/Scans/2026/07/scan_20260721.pdf");
-		expect(vault.writes[0].path).toMatch(/^Inbox\/scan-.*scan_20260721-e\.md$/);
+		expect(vault.writes[0].path).toMatch(/^00-inbox\/scan-.*scan_20260721-e\.md$/);
 		expect(vault.writes[0].content).toContain("source: ");
 		expect(r2.delete).toHaveBeenCalledWith("scan/2026/07/scan_20260721.pdf");
 		expect(m.acked).toBe(true);
@@ -86,7 +86,7 @@ describe("handleIngestBatch", () => {
 	});
 
 	it("existing vault note (partial re-delivery) still deletes + acks", async () => {
-		vault.existing.push("Inbox/scan-2026-07-21 dup-e.md");
+		vault.existing.push("00-inbox/scan-2026-07-21 dup-e.md");
 		const objects = { "scan/2026/07/dup.pdf": new Uint8Array([9]) };
 		const r2 = r2Stub(objects);
 		const m = msg(ev("scan/2026/07/dup.pdf"));

@@ -40,7 +40,7 @@ export const briefing: Fn = {
 		try {
 			if (action === "log") {
 				// The durable record is the Daily notes (git-reversible), not a second store — point there.
-				return ok(oj({ note: "Past briefings are appended to your Daily notes (Daily/<date>.md), which are git-reversible. Re-run `briefing` to regenerate today's; pass dry_run:true to preview without writing.", stage_drafts_enabled: hasBriefingStageDrafts(env) }));
+				return ok(oj({ note: "Past briefings are appended to your Daily notes (06-daily/<date>.md), which are git-reversible. Re-run `briefing` to regenerate today's; pass dry_run:true to preview without writing.", stage_drafts_enabled: hasBriefingStageDrafts(env) }));
 			}
 			const deps = await defaultDeps();
 			const report = await runBriefing(

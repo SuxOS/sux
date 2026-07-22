@@ -16,7 +16,7 @@ import { tryRenderNsldsNote } from "./_nslds";
 // Capture — the intake half of the knowledge core (docs/proposals/domains.md §3), and the
 // UNIVERSAL TOSS-PATH INBOX: the one verb for "toss me information you want remembered."
 // Exactly one source in (url | text | query), one provenance-stamped markdown
-// note out, into Inbox/ of the git-backed vault (git = truth; vaultPut warms the
+// note out, into 00-inbox/ of the git-backed vault (git = truth; vaultPut warms the
 // KV cache). A prose capture is ALSO handed to the assimilation spine (_assimilate.ts,
 // #1287) — fire-and-forget, dark unless ASSIMILATE_ENABLED — which distills and indexes it
 // so the oracle can retrieve it later; the note write never waits on (or fails from) that.
@@ -29,7 +29,7 @@ const BLOB_VAULT_MAX = 1_048_576;
 const BODY_MAX = 150_000;
 
 // Content-fingerprint dedup (#1175): a repeat capture of the same resolved text lands the
-// existing note's ref instead of a fresh Inbox/-N twin. Namespaced separately from other
+// existing note's ref instead of a fresh 00-inbox/-N twin. Namespaced separately from other
 // ledgers; 180d covers the realistic "did I already capture this" recall window without
 // pinning it forever.
 const DEDUP_TTL_SECONDS = 180 * 24 * 3600;
@@ -146,7 +146,7 @@ export const ingest: Fn = {
 	name: "ingest",
 	cost: 3,
 	description:
-		"The universal toss-path inbox — \"toss me information\" for anything you want remembered: capture it into the Obsidian vault (git-backed = the undo; the KV cache is warmed) AND, when the assimilation spine is enabled, learn it — the note is distilled and indexed so `oracle ask` can later retrieve it with a citation back to this note. Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). A repeat capture whose resolved content exactly matches an earlier one returns that note's ref instead of minting a new one (content-fingerprint dedup, not a URL/path match) — pass force:true to capture again anyway. A pasted/uploaded NSLDS `MyStudentData.txt` (federal student-loan aggregate download) auto-detects and parses into a structured per-loan note (servicer/status/rate/PSLF months) instead of landing as raw text. `portal: <name>` instead drives a login-gated source with no API (e.g. credit_karma) through the render/scrape stack + CapSolver, extracts the target data (credit score / loan detail) and captures it as a structured note the oracle then tracks over time — credentials come from named secrets (never the request); a missing credential returns not_configured, and an MFA/bot-wall is reported honestly (blocked), never faked as success. Returns { note, created, commit, source, pass?, blob?, duplicate? }.",
+		"The universal toss-path inbox — \"toss me information\" for anything you want remembered: capture it into the Obsidian vault (git-backed = the undo; the KV cache is warmed) AND, when the assimilation spine is enabled, learn it — the note is distilled and indexed so `oracle ask` can later retrieve it with a citation back to this note. Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to 00-inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[_attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). A repeat capture whose resolved content exactly matches an earlier one returns that note's ref instead of minting a new one (content-fingerprint dedup, not a URL/path match) — pass force:true to capture again anyway. A pasted/uploaded NSLDS `MyStudentData.txt` (federal student-loan aggregate download) auto-detects and parses into a structured per-loan note (servicer/status/rate/PSLF months) instead of landing as raw text. `portal: <name>` instead drives a login-gated source with no API (e.g. credit_karma) through the render/scrape stack + CapSolver, extracts the target data (credit score / loan detail) and captures it as a structured note the oracle then tracks over time — credentials come from named secrets (never the request); a missing credential returns not_configured, and an MFA/bot-wall is reported honestly (blocked), never faked as success. Returns { note, created, commit, source, pass?, blob?, duplicate? }.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -156,7 +156,7 @@ export const ingest: Fn = {
 			query: { type: "string", description: "Run a web search and capture the results." },
 			portal: { type: "string", description: "Scrape a credentialed login-gated source by name (e.g. 'credit_karma') via the render stack + CapSolver, capturing the extracted data as a structured note. Credentials come from named secrets, never here." },
 			title: { type: "string", description: "Note title (derived from the source when omitted)." },
-			path: { type: "string", description: "Explicit vault note path (default Inbox/<date> <slug>.md)." },
+			path: { type: "string", description: "Explicit vault note path (default 00-inbox/<date> <slug>.md)." },
 			tags: { type: "array", items: { type: "string" }, description: "Extra frontmatter tags ('capture' is always included)." },
 			blobs: { type: "string", enum: ["auto", "dropbox"], default: "auto", description: "Blob routing: auto = ≤1MB into the vault repo, larger to Dropbox; dropbox = always Dropbox." },
 			summarize: { type: "boolean", default: false, description: "Prepend an AI summary section above the captured body." },
@@ -271,7 +271,7 @@ export const ingest: Fn = {
 					} else {
 						// No-clobber: two different files sharing a name on the same day get
 						// distinct attachments instead of the second overwriting the first.
-						const w = await vaultPutNoClobber(env, cfg, `Attachments/${date}-${name}`, bytes, `sux: ingest attachment ${name}`);
+						const w = await vaultPutNoClobber(env, cfg, `_attachments/${date}-${name}`, bytes, `sux: ingest attachment ${name}`);
 						if (!w.ok) return fail(w.error);
 						blob = { placement: "vault", link: w.path, size: bytes.length, content_type: ct || undefined };
 						body = [`![[${w.path}]]`, "", ...meta, "- stored: vault"].join("\n");
@@ -311,9 +311,9 @@ export const ingest: Fn = {
 			}
 
 			// Content-fingerprint dedup (#1175): a repeat capture of the same resolved text
-			// returns the existing note's ref instead of minting a fresh Inbox/-N twin. Fingerprinted
+			// returns the existing note's ref instead of minting a fresh 00-inbox/-N twin. Fingerprinted
 			// over the resolved `body` (not the source url/query), so the same URL genuinely
-			// changing content still lands a new note. Only applies to the default Inbox path (an
+			// changing content still lands a new note. Only applies to the default 00-inbox path (an
 			// explicit `path` already means "write exactly here") and skips blob captures (those
 			// dedupe differently, via R2/Dropbox content-addressing on the bytes themselves).
 			const explicit = String(args?.path ?? "").trim();
