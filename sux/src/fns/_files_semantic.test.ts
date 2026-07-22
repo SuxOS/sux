@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./_dropbox-full", () => ({ hasDropboxFull: vi.fn(), readFull: vi.fn(), listFullChanges: vi.fn() }));
+vi.mock("./_vectorize", async (importOriginal) => ({ ...(await importOriginal<object>()), deleteCorpusIds: vi.fn(async () => {}) }));
 
 import { hasDropboxFull, listFullChanges, readFull } from "./_dropbox-full";
 import { filesSemanticIndex, topKFilesByCosine } from "./_files_semantic";
 import { encodeEmbedding } from "./_embed";
+import { deleteCorpusIds, vectorId } from "./_vectorize";
 
 const dbxHas = hasDropboxFull as unknown as ReturnType<typeof vi.fn>;
 const listChanges = listFullChanges as unknown as ReturnType<typeof vi.fn>;
 const read = readFull as unknown as ReturnType<typeof vi.fn>;
+const deleteIds = deleteCorpusIds as unknown as ReturnType<typeof vi.fn>;
 
 function kvStub() {
 	const store = new Map<string, string>();
@@ -71,7 +74,7 @@ describe("_files_semantic", () => {
 		expect(idx?.truncated).toBe(true); // the index doesn't fully represent every candidate file
 	});
 
-	it("incremental update (list_folder/continue from the cached cursor) only re-embeds changed paths and drops deleted ones", async () => {
+	it("incremental update (list_folder/continue from the cached cursor) only re-embeds changed paths and drops deleted ones, purging the deleted path's Vectorize vector (#1353)", async () => {
 		dbxHas.mockReturnValue(true);
 		const env = aiEnv();
 		const cached = {
@@ -95,6 +98,31 @@ describe("_files_semantic", () => {
 		expect(read).toHaveBeenCalledWith(env, "/notes/new.md");
 		expect(env.AI.run.mock.calls.length).toBe(1);
 		expect(env.AI.run.mock.calls[0][1].text).toEqual(["Fresh content here."]); // plan.md's cached embedding wasn't recomputed
+		expect(deleteIds).toHaveBeenCalledTimes(1);
+		expect(deleteIds).toHaveBeenCalledWith(env, [await vectorId("files", "/notes/old.md", 0)]); // new.md has no prior chunks, so nothing to delete for it
+	});
+
+	it("a CHANGED path's every old sub-index chunk is purged from Vectorize, not just the first — a re-chunk can shrink the chunk count", async () => {
+		dbxHas.mockReturnValue(true);
+		const env = aiEnv();
+		const cached = {
+			cursor: "cur-1",
+			version: 1,
+			at: 0,
+			total: 1,
+			truncated: false,
+			chunks: [
+				{ path: "/notes/multi.md", text: "old chunk 0", embedding: encodeEmbedding([1, 0, 0]) },
+				{ path: "/notes/multi.md", text: "old chunk 1", embedding: encodeEmbedding([1, 0, 0]) },
+			],
+		};
+		env.OAUTH_KV.store.set("sux:files:semantic", JSON.stringify(cached));
+		listChanges.mockResolvedValue({ entries: [{ kind: "file", path: "/notes/multi.md", size: 50 }], deleted: [], has_more: false, cursor: "cur-2" });
+		read.mockResolvedValue({ text: "shorter replacement text" });
+		await filesSemanticIndex(env);
+		expect(deleteIds).toHaveBeenCalledTimes(1);
+		const [, ids] = deleteIds.mock.calls[0];
+		expect(ids.sort()).toEqual([await vectorId("files", "/notes/multi.md", 0), await vectorId("files", "/notes/multi.md", 1)].sort());
 	});
 
 	it("a no-op incremental pass (nothing changed) skips the KV write", async () => {

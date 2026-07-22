@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
+vi.mock("./_vectorize", async (importOriginal) => ({ ...(await importOriginal<object>()), deleteCorpusIds: vi.fn(async () => {}) }));
 
 import { jmap } from "./jmap";
 import { contactSemanticIndex, topKContactByCosine } from "./_contact_semantic";
 import { encodeEmbedding } from "./_embed";
+import { deleteCorpusIds, vectorId } from "./_vectorize";
 
 const okR = (v: unknown) => ({ content: [{ type: "text", text: JSON.stringify(v) }] });
 const errR = (text: string) => ({ content: [{ type: "text", text }], isError: true });
 const run = jmap.run as unknown as ReturnType<typeof vi.fn>;
+const deleteIds = deleteCorpusIds as unknown as ReturnType<typeof vi.fn>;
 
 function kvStub() {
 	const store = new Map<string, string>();
@@ -116,7 +119,7 @@ describe("_contact_semantic", () => {
 		expect(env.AI.run.mock.calls.length).toBe(embedCallsAfterBuild); // no re-embed
 	});
 
-	it("drops a destroyed id from the cached chunk set without re-embedding anything", async () => {
+	it("drops a destroyed id from the cached chunk set without re-embedding anything, and purges its Vectorize vector (#1353)", async () => {
 		const env = aiEnv();
 		mockBatch({
 			"ContactCard/query": () => ["ContactCard/query", { ids: ["c1", "c2"], total: 2 }],
@@ -129,6 +132,20 @@ describe("_contact_semantic", () => {
 		const idx2 = await contactSemanticIndex(env);
 		expect(idx2?.chunks.map((c) => c.id)).toEqual(["c2"]);
 		expect(env.AI.run.mock.calls.length).toBe(embedCallsAfterBuild);
+		expect(deleteIds).toHaveBeenCalledTimes(1);
+		expect(deleteIds).toHaveBeenCalledWith(env, [await vectorId("contacts", "c1", 0)]);
+	});
+
+	it("an `updated` id is never sent to deleteCorpusIds — it re-embeds and upserts in place under the same id", async () => {
+		const env = aiEnv();
+		mockBatch({
+			"ContactCard/query": () => ["ContactCard/query", { ids: ["c1"], total: 1 }],
+			"ContactCard/get": (a) => ["ContactCard/get", { state: "s1", list: (a.ids as string[]).map((id) => CARDS[id]) }],
+		});
+		await contactSemanticIndex(env);
+		mockBatch({ "ContactCard/changes": (a) => ["ContactCard/changes", { oldState: a.sinceState, newState: "s2", hasMoreChanges: false, created: [], updated: ["c1"], destroyed: [] }] });
+		await contactSemanticIndex(env);
+		expect(deleteIds).not.toHaveBeenCalled();
 	});
 
 	it("falls back to a full rebuild when the server can no longer diff from the cached state (cannotCalculateChanges)", async () => {
