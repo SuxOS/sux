@@ -13,7 +13,7 @@ import type { MedicalEventInput } from "../op-engine/_medical_timeline_plan";
 // MedicationRequest/DiagnosticReport → appointment/medication/result, redacted to the same
 // level `summarizeMyChart` already uses). Then starts a durable run (op:'medical-timeline-plan')
 // that validates/sorts them and PAUSES for one human "write this medical timeline?" approval
-// before regenerating `Timeline/Medical.md`. Mirrors mychart_reconcile_plan.ts's fetch-in-the-
+// before regenerating `01-records/timeline/Medical.md`. Mirrors mychart_reconcile_plan.ts's fetch-in-the-
 // calling-fn shape (a leaf only sees `caps`, not env) and _life_wiki.ts's "never hand-edited,
 // re-run to refresh" convention. Gated behind MEDICAL_TIMELINE_ENABLED — fail-closed, same
 // two-stage shape as the other plan-op entrypoints.
@@ -50,7 +50,7 @@ export const medical_timeline_plan: Fn = {
 	surface: "leaf",
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 	description:
-		"Durable medical-timeline synthesis (#1205, W2): gathers dated health events from the vault's Health/ folder (frontmatter date/kind/title/detail, cited to the note path), any `records` you pass in (e.g. already-fetched MyChart entries — cite each with a `source` string), and — with `myChart:true` (#1220) — the last `mychart {op:'pull'}` snapshot for every connected org (Encounter/MedicationRequest/DiagnosticReport, mapped to appointment/medication/result and cited `mychart:{org}:{type}/{id}`). Then starts a durable run (op:'medical-timeline-plan') that validates and chronologically sorts them (no LLM — every title/detail is copied verbatim, nothing invented), then PAUSES for one human 'write this medical timeline?' approval. Approval regenerates ONE note, `Timeline/Medical.md`, as a full overwrite (never hand-edit it — re-run this to refresh; git is the undo). Returns {instanceId}: poll with `run {action:'status', instanceId}`; approve with `run {action:'answer', instanceId, prompt:\"write this medical timeline?\", payload:{approved:true}}`, or veto with {approved:false}. An unanswered gate writes nothing after 24h (fails closed). Needs MEDICAL_TIMELINE_ENABLED.",
+		"Durable medical-timeline synthesis (#1205, W2): gathers dated health events from the vault's Health/ folder (frontmatter date/kind/title/detail, cited to the note path), any `records` you pass in (e.g. already-fetched MyChart entries — cite each with a `source` string), and — with `myChart:true` (#1220) — the last `mychart {op:'pull'}` snapshot for every connected org (Encounter/MedicationRequest/DiagnosticReport, mapped to appointment/medication/result and cited `mychart:{org}:{type}/{id}`). Then starts a durable run (op:'medical-timeline-plan') that validates and chronologically sorts them (no LLM — every title/detail is copied verbatim, nothing invented), then PAUSES for one human 'write this medical timeline?' approval. Approval regenerates ONE note, `01-records/timeline/Medical.md`, as a full overwrite (never hand-edit it — re-run this to refresh; git is the undo). Returns {instanceId}: poll with `run {action:'status', instanceId}`; approve with `run {action:'answer', instanceId, prompt:\"write this medical timeline?\", payload:{approved:true}}`, or veto with {approved:false}. An unanswered gate writes nothing after 24h (fails closed). Needs MEDICAL_TIMELINE_ENABLED.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -100,7 +100,7 @@ export const medical_timeline_plan: Fn = {
 				oj({
 					scanned: input.length,
 					...res,
-					note: 'durable run started — validates and chronologically sorts these events, then pauses for a human \'write this medical timeline?\' approval. Poll with `run {action:\'status\', instanceId}`; approve/reject with `run {action:\'answer\', instanceId, prompt:"write this medical timeline?"}` ({approved:true|false}). Approval regenerates Timeline/Medical.md — never hand-edit it.',
+					note: 'durable run started — validates and chronologically sorts these events, then pauses for a human \'write this medical timeline?\' approval. Poll with `run {action:\'status\', instanceId}`; approve/reject with `run {action:\'answer\', instanceId, prompt:"write this medical timeline?"}` ({approved:true|false}). Approval regenerates 01-records/timeline/Medical.md — never hand-edit it.',
 				}),
 			);
 		} catch (e) {

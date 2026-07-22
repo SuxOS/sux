@@ -12,7 +12,7 @@
 //     nothing and — critically — writing nothing. Nothing runs until Colin flips the flag.
 //   • SANDBOXED / non-destructive by construction. EVERY write is funneled through
 //     wikiPath(), which prefixes the SANDBOX dir and REFUSES (throws) any relative path
-//     that would escape it. The wiki lives ONLY under `sux/wiki/` — adjacent to, never
+//     that would escape it. The wiki lives ONLY under `02-knowledge/sux/wiki/` — adjacent to, never
 //     overwriting, the user's own notes. Deleting that subdir has zero impact on real files.
 //   • EDGE-PRIVATE. All synthesis is `recall` → llm() = Workers-AI at the edge; personal
 //     signals never leave for a frontier model. (recall itself fences untrusted material.)
@@ -34,9 +34,9 @@ export const hasLifeWiki = (env: RtEnv): boolean => flagOn(env.LIFE_WIKI_ENABLED
 // ── Sandbox ──────────────────────────────────────────────────────────────────────
 // The ONE directory the wiki is allowed to touch. Non-dot on purpose: the obsidian fn
 // refuses dot-prefixed path segments on writes, so a `.sux-wiki/` sandbox couldn't be
-// written through the git backend — `sux/wiki/` can, and stays visibly separate from the
+// written through the git backend — `02-knowledge/sux/wiki/` can, and stays visibly separate from the
 // user's notes. Everything the synthesis emits is regenerable; git history is its undo.
-export const SANDBOX_DIR = "sux/wiki";
+export const SANDBOX_DIR = "02-knowledge/sux/wiki";
 
 /** Resolve a wiki-relative path to its full vault path INSIDE the sandbox, or throw. This is
  *  the non-destructive-by-construction choke point: it rejects absolute paths, empty/`.`/`..`

@@ -1,5 +1,6 @@
 import type { RtEnv } from "../registry";
 import { cosine, decodeEmbedding, embed, encodeEmbedding } from "./_embed";
+import { deleteCorpusIds, vectorId } from "./_vectorize";
 import { jmap } from "./jmap";
 
 // contact_semantic — the vault_semantic pattern (_vault_semantic.ts: brute-force KV cosine kNN
@@ -164,6 +165,15 @@ async function applyChanges(env: RtEnv, cached: ContactSemanticIndex): Promise<{
 	for (const id of destroyed) {
 		created.delete(id);
 		updated.delete(id);
+	}
+	// Delete the Vectorize vectors for destroyed ids (#1353) — a deleted contact's vector
+	// otherwise lingers in `sux-corpus`, citing from `oracle ask` until a full rebuild. Same
+	// (domain, id, sub=0) id scheme `_reindex.ts`'s enumerateContacts upserts under; an
+	// `updated` id re-embeds and upserts in place under the SAME id, so only `destroyed` needs
+	// an explicit delete.
+	if (destroyed.size) {
+		const staleIds = await Promise.all([...destroyed].map((id) => vectorId("contacts", id, 0)));
+		await deleteCorpusIds(env, staleIds);
 	}
 	// A card can be "updated" for a field this index doesn't embed (e.g. a note field JMAP still
 	// reports as a change) — only re-embed an id when we don't already hold a valid embedding for

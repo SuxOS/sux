@@ -5,12 +5,12 @@ import { errMsg, oj } from "./_util";
 // citation — turn a scholarly result into a durable, exportable reference. Three
 // actions over one normalized entry shape (vault-backends.md Part 3):
 //   format  — PURE: entries[] → BibTeX + CSL-JSON (no vault; the testable core).
-//   capture — write a `type: citation` note to References/<citekey>.md in the vault
+//   capture — write a `type: citation` note to 02-knowledge/references/<citekey>.md in the vault
 //             (via the obsidian fn, git backend → every write a revertible commit).
-//   export  — walk References/*.md, parse the frontmatter, emit a combined .bib string.
+//   export  — walk 02-knowledge/references/*.md, parse the frontmatter, emit a combined .bib string.
 // Handle-first: PDFs live as a `pdf:` dropbox handle in the note, never inlined here.
 
-const REF_DIR = "References";
+const REF_DIR = "02-knowledge/references";
 const STOPWORDS = new Set(["a", "an", "the", "on", "of", "in", "for", "and", "to", "with"]);
 
 type Author = { family: string; given?: string };
@@ -154,7 +154,7 @@ async function obs(env: RtEnv, args: Record<string, unknown>): Promise<any> {
 /** citation needs a vault backend (git or remote) to capture/export. */
 const hasVault = (env: RtEnv): boolean => Boolean(env.OBSIDIAN_VAULT_REPO || env.OBSIDIAN_REMOTE_URL);
 
-/** Read one References/ note, returning its parsed citation entry or null if absent/non-citation. */
+/** Read one 02-knowledge/references/ note, returning its parsed citation entry or null if absent/non-citation. */
 async function readCitation(env: RtEnv, key: string): Promise<Entry | null> {
 	try {
 		const note = await obs(env, { action: "read", path: `${REF_DIR}/${key}.md` });
@@ -184,7 +184,7 @@ export const citation: Fn = {
 	cost: 1,
 	cacheable: false,
 	description:
-		"Reference management over a vault References/ folder. action: format (entries[] → BibTeX + CSL-JSON, PURE, no vault) | capture (write a type:citation note to References/<citekey>.md from title/authors/year/doi/url/container/pdf, returns the citekey + BibTeX) | export (walk References/*.md and emit a combined .bib; pass `write:true` to save it to References/library.bib). " +
+		"Reference management over a vault 02-knowledge/references/ folder. action: format (entries[] → BibTeX + CSL-JSON, PURE, no vault) | capture (write a type:citation note to 02-knowledge/references/<citekey>.md from title/authors/year/doi/url/container/pdf, returns the citekey + BibTeX) | export (walk 02-knowledge/references/*.md and emit a combined .bib; pass `write:true` to save it to 02-knowledge/references/library.bib). " +
 		"An entry: {title, authors:[\"Family, Given\"|{family,given}], year, type:article|book|inproceedings, doi?, url?, container?, publisher?, volume?, pages?, pdf?(a dropbox handle)}. capture/export use the obsidian fn (git backend) so every write is a revertible commit; needs OBSIDIAN_VAULT_REPO (+ GITHUB_TOKEN for writes).",
 	inputSchema: {
 		type: "object",
@@ -193,7 +193,7 @@ export const citation: Fn = {
 		properties: {
 			action: { type: "string", enum: ["format", "capture", "export"] },
 			entries: { type: "array", items: { type: "object" }, description: "format: the entries to render." },
-			write: { type: "boolean", description: "export: also write the .bib to References/library.bib." },
+			write: { type: "boolean", description: "export: also write the .bib to 02-knowledge/references/library.bib." },
 			// A single inline entry's fields (capture, or format of one entry):
 			title: { type: "string" },
 			authors: { type: "array", items: {} },

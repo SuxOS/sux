@@ -1,6 +1,6 @@
 // POST /hooks/grafana — land Grafana alerts in SuxOS itself, not a placeholder inbox (#1193,
 // platform audit .github#636 A1). Grafana's webhook contact point fires this on every alert
-// state change; each firing alert gets upserted as one line in a vault note (Meta/Alerts.md) +
+// state change; each firing alert gets upserted as one line in a vault note (_meta/Alerts.md) +
 // a push notification, keyed/deduped by alertname. A resolved alert removes its line instead of
 // leaving a stale "firing" entry behind. Fail-closed: unset GRAFANA_WEBHOOK_TOKEN ⇒ 404 (route
 // doesn't exist), a present-but-wrong token ⇒ 401 — never processes an alert without a match.
@@ -14,7 +14,7 @@ import { errMsg } from "./_util";
 import { obsidian } from "./obsidian";
 import { hasWebPush, notify } from "./_webpush";
 
-const ALERTS_NOTE_PATH = "Meta/Alerts.md";
+const ALERTS_NOTE_PATH = "_meta/Alerts.md";
 const NOTE_HEADER = "---\ntype: grafana_alerts\ntags: [alerts, grafana]\n---\n\n# Grafana Alerts\n\nAuto-updated by sux's `/hooks/grafana` webhook. Firing alerts are listed below; resolved alerts are removed.\n";
 
 export type GrafanaAlert = {

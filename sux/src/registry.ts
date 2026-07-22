@@ -192,9 +192,10 @@ export type RtEnv = Env &
 		// IANA tz for the vault owner's "today" (daily-note tools). Default Pacific.
 		VAULT_TZ?: string;
 
-		// Vault folder names, for the eventual colinxs/vault taxonomy rename (Daily/ →
-		// 06-daily/, Inbox/ → 00-inbox/) — see fns/_vaultpaths.ts. Unset ⇒ current
-		// names ("Daily"/"Inbox"); the migration hasn't happened yet, don't flip these.
+		// Vault folder names, for the colinxs/vault taxonomy rename (Daily/ →
+		// 06-daily/, Inbox/ → 00-inbox/) — see fns/_vaultpaths.ts. The migration has
+		// landed; unset ⇒ the numbered names ("06-daily"/"00-inbox"). These vars remain
+		// an escape hatch for pointing at a differently-shaped vault.
 		VAULT_DAILY_DIR?: string;
 		VAULT_INBOX_DIR?: string;
 
@@ -481,8 +482,8 @@ export type RtEnv = Env &
 		// Medical timeline synthesis (fns/medical_timeline_plan.ts + op-engine/_medical_timeline_
 		// plan.ts, #1205, W2): a durable propose→ask→sink plan (mychart-reconcile-plan's shape)
 		// that gathers dated health events from the vault's Health/ folder (+ any caller-supplied
-		// MyChart-sourced records) and, on human approval, regenerates ONE note, `Timeline/
-		// Medical.md` — a chronological, per-event-cited synthesis, never hand-edited (re-run to
+		// MyChart-sourced records) and, on human approval, regenerates ONE note, `01-records/
+		// timeline/Medical.md` — a chronological, per-event-cited synthesis, never hand-edited (re-run to
 		// refresh; git is the undo). Deliberately conservative: no LLM in the leaf, every entry's
 		// title/detail is copied verbatim from its source, never summarized or embellished. Unset/
 		// "0"/"false"/"off" ⇒ inert, same fail-closed convention as MYCHART_RECONCILE_ENABLED.
@@ -560,7 +561,7 @@ export type RtEnv = Env &
 		// Grafana alert webhook (POST /hooks/grafana), bearer-gated by this shared secret
 		// (Authorization header or ?t= query param — Grafana's webhook contact point supports
 		// custom headers, but not every notifier setup can attach one). Unset ⇒ 404 (feature
-		// off). Lands firing/resolved alerts into Meta/Alerts.md + a push notification instead
+		// off). Lands firing/resolved alerts into _meta/Alerts.md + a push notification instead
 		// of the placeholder email contact point the platform audit (.github#636 A1) found.
 		GRAFANA_WEBHOOK_TOKEN?: string;
 
@@ -593,7 +594,7 @@ export type RtEnv = Env &
 		// the autonomous synthesis). Declared in wrangler.jsonc vars, default "0" = OFF: unset or
 		// falsy ("0"/"false"/"off"/empty) ⇒ the fn and the cron tick are a total no-op, reading
 		// nothing and writing nothing. When truthy it regenerates a two-audience wiki ONLY inside
-		// the sandboxed vault subdir (sux/wiki/), non-destructive by construction — never touches
+		// the sandboxed vault subdir (02-knowledge/sux/wiki/), non-destructive by construction — never touches
 		// the user's own notes. Flip to "1" to arm; the sandbox subdir is deletable with zero impact.
 		LIFE_WIKI_ENABLED?: string;
 

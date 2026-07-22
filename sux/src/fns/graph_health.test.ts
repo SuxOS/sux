@@ -22,7 +22,7 @@ describe("graph_health.run", () => {
 					rec("Folder/B.md"),
 					// The report's own generated body: cites other notes' dead links as literal
 					// `[[wikilink]]`-style text, which a naive re-scan would parse as outgoing links.
-					rec("Meta/Graph-Health.md", ["Nonexistent1", "Nonexistent2", "Nonexistent3"]),
+					rec("_meta/Graph-Health.md", ["Nonexistent1", "Nonexistent2", "Nonexistent3"]),
 				],
 				total: 3,
 				truncated: false,
@@ -47,7 +47,7 @@ describe("graph_health.run", () => {
 		vi.resetModules();
 		vi.doMock("../vault-mcp", () => ({
 			scanVault: async () => ({
-				records: [rec("Home.md", ["Graph-Health"]), rec("Meta/Graph-Health.md", ["Nonexistent"])],
+				records: [rec("Home.md", ["Graph-Health"]), rec("_meta/Graph-Health.md", ["Nonexistent"])],
 				total: 2,
 				truncated: false,
 			}),

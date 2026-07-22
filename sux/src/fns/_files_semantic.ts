@@ -235,6 +235,15 @@ async function applyChanges(env: RtEnv, cached: FilesSemanticIndex): Promise<{ i
 	// re-diffs from the same (still-valid) cached.cursor.
 	if (!changedPaths.size && !deletedPaths.size) return { index: cached, changed: false };
 	const dropped = new Set([...changedPaths, ...deletedPaths]);
+	// Delete the OLD Vectorize vectors for every dropped path (#1353) — a changed path may
+	// re-chunk into a different chunk count than before, and a deleted path re-chunks into none,
+	// so the old per-path sub-index ids can't just be overwritten in place by a later reindex;
+	// they'd otherwise linger in `sux-corpus` citing stale/vanished content until a full rebuild.
+	// Same (domain, path, sub) id scheme `_reindex.ts`'s enumerateFiles upserts under.
+	const byPath = new Map<string, FilesSemanticChunk[]>();
+	for (const c of cached.chunks) (byPath.get(c.path) ?? byPath.set(c.path, []).get(c.path)!).push(c);
+	const staleIds = await Promise.all([...dropped].flatMap((path) => (byPath.get(path) ?? []).map((_, sub) => vectorId("files", path, sub))));
+	await deleteCorpusIds(env, staleIds);
 	const perFile = await Promise.all([...toEmbedPaths].map((path) => chunkFile(env, path)));
 	const freshParts = perFile.flat();
 	const vecs = freshParts.length ? await embed(env, freshParts.map((p) => p.text)) : [];

@@ -261,7 +261,7 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 	}
 
 	try {
-		await deps.digestAppend(env, `Consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
+		await deps.digestAppend(env, `_meta/consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
 		await led.mark(key);
 		await led.mark(CURSOR_KEY, String(nextOffset));
 		await led.mark(

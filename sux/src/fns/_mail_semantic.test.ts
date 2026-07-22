@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
+vi.mock("./_vectorize", async (importOriginal) => ({ ...(await importOriginal<object>()), deleteCorpusIds: vi.fn(async () => {}) }));
 
 import { jmap } from "./jmap";
 import { mailSemanticIndex, topKMailByCosine } from "./_mail_semantic";
 import { encodeEmbedding } from "./_embed";
+import { deleteCorpusIds, vectorId } from "./_vectorize";
 
 const okR = (v: unknown) => ({ content: [{ type: "text", text: JSON.stringify(v) }] });
 const errR = (text: string) => ({ content: [{ type: "text", text }], isError: true });
 const run = jmap.run as unknown as ReturnType<typeof vi.fn>;
+const deleteIds = deleteCorpusIds as unknown as ReturnType<typeof vi.fn>;
 
 function kvStub() {
 	const store = new Map<string, string>();
@@ -119,7 +122,7 @@ describe("_mail_semantic", () => {
 		expect(env.AI.run.mock.calls.length).toBe(embedCallsAfterBuild); // the cached embedding was already valid — no Email/get, no re-embed
 	});
 
-	it("drops a destroyed id from the cached chunk set without re-embedding anything", async () => {
+	it("drops a destroyed id from the cached chunk set without re-embedding anything, and purges its Vectorize vector (#1353)", async () => {
 		const env = aiEnv();
 		mockBatch({
 			"Email/query": () => ["Email/query", { ids: ["e1", "e2"], total: 2 }],
@@ -132,6 +135,20 @@ describe("_mail_semantic", () => {
 		const idx2 = await mailSemanticIndex(env);
 		expect(idx2?.chunks.map((c) => c.id)).toEqual(["e2"]);
 		expect(env.AI.run.mock.calls.length).toBe(embedCallsAfterBuild); // nothing new to embed
+		expect(deleteIds).toHaveBeenCalledTimes(1);
+		expect(deleteIds).toHaveBeenCalledWith(env, [await vectorId("mail", "e1", 0)]);
+	});
+
+	it("an `updated` id is never sent to deleteCorpusIds — it re-embeds and upserts in place under the same id", async () => {
+		const env = aiEnv();
+		mockBatch({
+			"Email/query": () => ["Email/query", { ids: ["e1"], total: 1 }],
+			"Email/get": (a) => ["Email/get", { state: "s1", list: (a.ids as string[]).map((id) => EMAILS[id]) }],
+		});
+		await mailSemanticIndex(env);
+		mockBatch({ "Email/changes": (a) => ["Email/changes", { oldState: a.sinceState, newState: "s2", hasMoreChanges: false, created: [], updated: ["e1"], destroyed: [] }] });
+		await mailSemanticIndex(env);
+		expect(deleteIds).not.toHaveBeenCalled();
 	});
 
 	it("falls back to a full rebuild when the server can no longer diff from the cached state (cannotCalculateChanges)", async () => {

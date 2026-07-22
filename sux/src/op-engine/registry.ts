@@ -101,7 +101,7 @@ import type { OpCaps } from "./caps.js";
 // (`proposeMedicalEvent` — no LLM, nothing invented, title/detail copied verbatim from the
 // source) and sorted chronologically (`compactMedicalTimelinePlan`), the human approves the
 // WHOLE batch once, and only on approval does the `medical-timeline` sink (caps.ts) regenerate
-// ONE note, `Timeline/Medical.md`, as a full overwrite — never an append, since the point is a
+// ONE note, `01-records/timeline/Medical.md`, as a full overwrite — never an append, since the point is a
 // REGENERABLE synthesis (mirrors _life_wiki.ts's philosophy: re-run to refresh, git is the
 // undo). onTimeout:'fail' — an unanswered gate writes nothing.
 //

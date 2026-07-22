@@ -122,7 +122,7 @@ describe("oracle — learn", () => {
 		// re-consolidated (the chunk IS the KB), so the mirrored body is the distilled chunk.
 		expect(obs).toHaveBeenCalledTimes(1);
 		const [, append] = obs.mock.calls[0];
-		expect(append).toMatchObject({ action: "append", path: "sux/Knowledge.md" });
+		expect(append).toMatchObject({ action: "append", path: "02-knowledge/sux/Knowledge.md" });
 		expect(append.content).toContain("## bio —");
 		expect(append.content).toContain("DISTILLED-CHUNK");
 

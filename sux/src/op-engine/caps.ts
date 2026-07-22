@@ -423,7 +423,7 @@ function filesDuplicatesSink(env: RtEnv): SinkTarget {
 }
 
 // The `medical-timeline-plan` op's terminal (registry.ts): applies a batch of already-approved,
-// chronologically-sorted MedicalTimelineItems as ONE regenerated note, `Timeline/Medical.md` —
+// chronologically-sorted MedicalTimelineItems as ONE regenerated note, `01-records/timeline/Medical.md` —
 // a full overwrite, never an append, since the whole point is a REGENERABLE synthesis (mirrors
 // _life_wiki.ts's sandboxed-profile philosophy): re-running this op with an updated source set
 // replaces the note wholesale rather than accumulating duplicate blocks. Dynamically imported
@@ -446,8 +446,8 @@ function medicalTimelineSink(env: RtEnv): SinkTarget {
 				const source = typeof it?.source === "string" ? it.source : "unknown";
 				lines.push(`- **${date}** (${kind}) ${title}${detail} — _source: ${source}_`);
 			}
-			const w = await obsidian.run(env, { action: "write", path: "Timeline/Medical.md", content: `${lines.join("\n")}\n`, backend: "git" });
-			if (w.isError) throw new Error(`run: the medical-timeline sink failed to write Timeline/Medical.md: ${JSON.stringify(w.content?.[0])}`);
+			const w = await obsidian.run(env, { action: "write", path: "01-records/timeline/Medical.md", content: `${lines.join("\n")}\n`, backend: "git" });
+			if (w.isError) throw new Error(`run: the medical-timeline sink failed to write 01-records/timeline/Medical.md: ${JSON.stringify(w.content?.[0])}`);
 			return { written: items.length };
 		},
 	};

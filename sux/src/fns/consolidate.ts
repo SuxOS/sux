@@ -10,7 +10,7 @@ import { hasConsolidate, runConsolidate, defaultDeps } from "./_consolidate";
 export const consolidate: Fn = {
 	name: "consolidate",
 	description:
-		"Scan the vault for stale notes (no `last_verified` frontmatter, or older than the staleness threshold — 90d default) and likely-duplicate notes (same-looking title). DETECTION ONLY: reports findings and appends a digest to Consolidation/<ISO-week>.md — nothing is merged, deleted, or auto-patched. Dormant unless CONSOLIDATE_ENABLED is set (fail-closed); the scan itself is gated to once per ISO week unless `force:true`. Needs a configured vault (git-backed Obsidian).",
+		"Scan the vault for stale notes (no `last_verified` frontmatter, or older than the staleness threshold — 90d default) and likely-duplicate notes (same-looking title). DETECTION ONLY: reports findings and appends a digest to _meta/consolidation/<ISO-week>.md — nothing is merged, deleted, or auto-patched. Dormant unless CONSOLIDATE_ENABLED is set (fail-closed); the scan itself is gated to once per ISO week unless `force:true`. Needs a configured vault (git-backed Obsidian).",
 	inputSchema: { type: "object", additionalProperties: false, properties: { force: { type: "boolean", description: "Run the scan even if this ISO week already ran." } } },
 	cacheable: false,
 	annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

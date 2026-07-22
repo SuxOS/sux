@@ -45,12 +45,12 @@ describe("ingest (capture → vault)", () => {
 		expect(r.content[0].text).toMatch(/CREDIT_KARMA_USERNAME/);
 	});
 
-	it("captures text into Inbox with provenance frontmatter", async () => {
+	it("captures text into 00-inbox with provenance frontmatter", async () => {
 		const gh = ghMock();
 		routes.handler = gh.handler;
 		const r = await ingest.run(ENV, { text: "# Meeting notes\nAlice said yes.", tags: ["meeting"] });
 		const out = JSON.parse(r.content[0].text);
-		expect(out).toMatchObject({ ok: true, note: `Inbox/${date} meeting-notes.md`, commit: "c1", source: "text" });
+		expect(out).toMatchObject({ ok: true, note: `00-inbox/${date} meeting-notes.md`, commit: "c1", source: "text" });
 		const note = gh.puts[out.note];
 		expect(note).toContain("type: capture");
 		expect(note).toContain('source: "text"');
@@ -69,7 +69,7 @@ describe("ingest (capture → vault)", () => {
 		};
 		const r = await ingest.run(ENV, { url: "https://blog.example/post" });
 		const out = JSON.parse(r.content[0].text);
-		expect(out.note).toBe(`Inbox/${date} great-post.md`);
+		expect(out.note).toBe(`00-inbox/${date} great-post.md`);
 		const note = gh.puts[out.note];
 		expect(note).toContain('source: "https://blog.example/post"');
 		expect(note).toContain("# Great Post");
@@ -85,12 +85,12 @@ describe("ingest (capture → vault)", () => {
 		const r = await ingest.run(ENV, { url: "https://files.example/report.pdf" });
 		const out = JSON.parse(r.content[0].text);
 		expect(out.blob).toMatchObject({ placement: "vault", size: 4, content_type: "application/pdf" });
-		expect(gh.puts[`Attachments/${date}-report.pdf`]).toBeDefined();
-		expect(gh.puts[out.note]).toContain(`![[Attachments/${date}-report.pdf]]`);
+		expect(gh.puts[`_attachments/${date}-report.pdf`]).toBeDefined();
+		expect(gh.puts[out.note]).toContain(`![[_attachments/${date}-report.pdf]]`);
 	});
 
 	it("disambiguates a same-day attachment name instead of overwriting the first file", async () => {
-		const taken = `Attachments/${date}-report.pdf`;
+		const taken = `_attachments/${date}-report.pdf`;
 		const gh = ghMock([taken]); // a report.pdf already captured today
 		routes.handler = (url, init) => {
 			if (url.includes("api.github.com")) return gh.handler(url, init);
@@ -98,9 +98,9 @@ describe("ingest (capture → vault)", () => {
 		};
 		const r = await ingest.run(ENV, { url: "https://other.example/x/report.pdf" });
 		const out = JSON.parse(r.content[0].text);
-		expect(out.blob.link).toBe(`Attachments/${date}-report-1.pdf`); // the extension is preserved
+		expect(out.blob.link).toBe(`_attachments/${date}-report-1.pdf`); // the extension is preserved
 		expect(gh.puts[taken]).toBeUndefined(); // first file's bytes untouched
-		expect(gh.puts[out.note]).toContain(`![[Attachments/${date}-report-1.pdf]]`);
+		expect(gh.puts[out.note]).toContain(`![[_attachments/${date}-report-1.pdf]]`);
 	});
 
 	it("routes a large binary to Dropbox and links the shared URL", async () => {
@@ -119,7 +119,7 @@ describe("ingest (capture → vault)", () => {
 		const out = JSON.parse(r.content[0].text);
 		expect(out.blob).toMatchObject({ placement: "dropbox", link: "https://www.dropbox.com/s/x/big.zip" });
 		expect(gh.puts[out.note]).toContain("[big.zip](https://www.dropbox.com/s/x/big.zip)");
-		expect(gh.puts[`Attachments/${date}-big.zip`]).toBeUndefined();
+		expect(gh.puts[`_attachments/${date}-big.zip`]).toBeUndefined();
 	});
 
 	it("blobs:'dropbox' forces even a small binary to Dropbox", async () => {
@@ -191,7 +191,7 @@ describe("ingest (capture → vault)", () => {
 		expect(gh.puts[out.note]).toContain(`(${out.blob.link})`); // note links the R2 blob
 	});
 
-	it("explicit path overrides the Inbox default", async () => {
+	it("explicit path overrides the 00-inbox default", async () => {
 		const gh = ghMock();
 		routes.handler = gh.handler;
 		const r = await ingest.run(ENV, { text: "quick thought", path: "Inbox/thought.md" });
@@ -236,22 +236,22 @@ describe("ingest (capture → vault)", () => {
 	});
 
 	it("a same-day slug collision disambiguates instead of overwriting", async () => {
-		const taken = `Inbox/${date} untitled.md`;
+		const taken = `00-inbox/${date} untitled.md`;
 		const gh = ghMock([taken]);
 		routes.handler = gh.handler;
 		const r = await ingest.run(ENV, { text: "second capture", title: "Untitled" });
 		const out = JSON.parse(r.content[0].text);
-		expect(out.note).toBe(`Inbox/${date} untitled-1.md`);
+		expect(out.note).toBe(`00-inbox/${date} untitled-1.md`);
 		expect(gh.puts[taken]).toBeUndefined(); // the first capture survives
 		expect(gh.puts[out.note]).toContain("second capture");
 	});
 
 	it("disambiguates again when both the base and -1 are taken (no same-second loss)", async () => {
-		const base = `Inbox/${date} note.md`;
-		const gh = ghMock([base, `Inbox/${date} note-1.md`]);
+		const base = `00-inbox/${date} note.md`;
+		const gh = ghMock([base, `00-inbox/${date} note-1.md`]);
 		routes.handler = gh.handler;
 		const r = await ingest.run(ENV, { text: "third", title: "Note" });
-		expect(JSON.parse(r.content[0].text).note).toBe(`Inbox/${date} note-2.md`);
+		expect(JSON.parse(r.content[0].text).note).toBe(`00-inbox/${date} note-2.md`);
 	});
 
 	it("an explicit path still overwrites deliberately", async () => {

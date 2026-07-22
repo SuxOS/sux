@@ -40,15 +40,15 @@ describe("citation.format (pure)", () => {
 });
 
 describe("citation.capture", () => {
-	it("writes a type:citation note to References/<citekey>.md and returns the key + bibtex", async () => {
+	it("writes a type:citation note to 02-knowledge/references/<citekey>.md and returns the key + bibtex", async () => {
 		obs.mockImplementation(async (_e: any, a: any) => {
 			if (a.action === "read") throw new Error("404"); // no existing note → the key is free
 			return okR(JSON.stringify({ ok: true })); // the write
 		});
 		const out = parse(await citation.run({ OBSIDIAN_VAULT_REPO: "me/vault" } as any, { action: "capture", ...PAPER } as any));
-		expect(out).toMatchObject({ ok: true, citekey: "preskill2019quantum", path: "References/preskill2019quantum.md" });
+		expect(out).toMatchObject({ ok: true, citekey: "preskill2019quantum", path: "02-knowledge/references/preskill2019quantum.md" });
 		const write = obs.mock.calls.find((c: any) => c[1].action === "write");
-		expect(write?.[1]).toMatchObject({ action: "write", path: "References/preskill2019quantum.md", backend: "git" });
+		expect(write?.[1]).toMatchObject({ action: "write", path: "02-knowledge/references/preskill2019quantum.md", backend: "git" });
 		expect(write?.[1].content).toContain("type: citation");
 		expect(write?.[1].content).toContain("# On Quantum Supremacy");
 		expect(out.bibtex).toContain("@article{preskill2019quantum,");
@@ -57,13 +57,13 @@ describe("citation.capture", () => {
 	it("disambiguates a collision with a DIFFERENT paper (suffix), reuses the slot for the SAME paper", async () => {
 		// A different paper already occupies the base key → new capture must not clobber it.
 		obs.mockImplementation(async (_e: any, a: any) => {
-			if (a.action === "read" && a.path === "References/preskill2019quantum.md") return okR(JSON.stringify({ content: '---\ntype: citation\ncitekey: preskill2019quantum\ntitle: "Different"\ndoi: "10.9/other"\n---\n' }));
+			if (a.action === "read" && a.path === "02-knowledge/references/preskill2019quantum.md") return okR(JSON.stringify({ content: '---\ntype: citation\ncitekey: preskill2019quantum\ntitle: "Different"\ndoi: "10.9/other"\n---\n' }));
 			if (a.action === "read") throw new Error("404"); // the 'a' slot is free
 			return okR(JSON.stringify({ ok: true }));
 		});
 		expect(parse(await citation.run({ OBSIDIAN_VAULT_REPO: "r" } as any, { action: "capture", ...PAPER } as any)).citekey).toBe("preskill2019quantuma");
 		// The SAME paper (same DOI) already there → reuse the base key (idempotent overwrite).
-		obs.mockImplementation(async (_e: any, a: any) => (a.action === "read" && a.path === "References/preskill2019quantum.md" ? okR(JSON.stringify({ content: '---\ntype: citation\ncitekey: preskill2019quantum\ntitle: "On Quantum Supremacy"\ndoi: "10.1/x"\n---\n' })) : okR(JSON.stringify({ ok: true }))));
+		obs.mockImplementation(async (_e: any, a: any) => (a.action === "read" && a.path === "02-knowledge/references/preskill2019quantum.md" ? okR(JSON.stringify({ content: '---\ntype: citation\ncitekey: preskill2019quantum\ntitle: "On Quantum Supremacy"\ndoi: "10.1/x"\n---\n' })) : okR(JSON.stringify({ ok: true }))));
 		expect(parse(await citation.run({ OBSIDIAN_VAULT_REPO: "r" } as any, { action: "capture", ...PAPER } as any)).citekey).toBe("preskill2019quantum");
 	});
 
@@ -77,9 +77,9 @@ describe("citation.capture", () => {
 });
 
 describe("citation.export", () => {
-	it("walks References/, parses citation frontmatter, and emits a combined .bib", async () => {
+	it("walks 02-knowledge/references/, parses citation frontmatter, and emits a combined .bib", async () => {
 		obs.mockImplementation(async (_e: any, a: any) => {
-			if (a.action === "list") return okR(JSON.stringify({ files: ["References/preskill2019quantum.md", "References/notes.md"] }));
+			if (a.action === "list") return okR(JSON.stringify({ files: ["02-knowledge/references/preskill2019quantum.md", "02-knowledge/references/notes.md"] }));
 			if (a.action === "read" && a.path.includes("preskill")) return okR(JSON.stringify({ content: '---\ntype: citation\ncitekey: preskill2019quantum\ntitle: "On Quantum Supremacy"\nauthors: ["Preskill, John"]\nyear: 2019\ncontainer: "Nature"\ndoi: "10.1/x"\n---\n\n# On Quantum Supremacy\n' }));
 			return okR(JSON.stringify({ content: "# just a note, no frontmatter" }));
 		});
@@ -92,7 +92,7 @@ describe("citation.export", () => {
 	it("strips OBSIDIAN_VAULT_DIR before reading (no double-prefix 404 → empty bib)", async () => {
 		const readPaths: string[] = [];
 		obs.mockImplementation(async (_e: any, a: any) => {
-			if (a.action === "list") return okR(JSON.stringify({ files: ["notes/References/x.md"] }));
+			if (a.action === "list") return okR(JSON.stringify({ files: ["notes/02-knowledge/references/x.md"] }));
 			if (a.action === "read") {
 				readPaths.push(a.path);
 				return okR(JSON.stringify({ content: '---\ntype: citation\ncitekey: doe2020report\ntitle: "T"\nauthors: ["Doe, Jane"]\nyear: 2020\n---\n' }));
@@ -100,19 +100,19 @@ describe("citation.export", () => {
 			return okR("{}");
 		});
 		const out = parse(await citation.run({ OBSIDIAN_VAULT_REPO: "r", OBSIDIAN_VAULT_DIR: "notes" } as any, { action: "export" } as any));
-		expect(readPaths[0]).toBe("References/x.md"); // dir stripped, NOT "notes/References/x.md"
+		expect(readPaths[0]).toBe("02-knowledge/references/x.md"); // dir stripped, NOT "notes/02-knowledge/references/x.md"
 		expect(out.count).toBe(1); // the citation was read, not lost to a 404
 	});
 
-	it("write:true saves the combined bib to References/library.bib", async () => {
+	it("write:true saves the combined bib to 02-knowledge/references/library.bib", async () => {
 		obs.mockImplementation(async (_e: any, a: any) => {
-			if (a.action === "list") return okR(JSON.stringify({ files: ["References/doe2020report.md"] }));
+			if (a.action === "list") return okR(JSON.stringify({ files: ["02-knowledge/references/doe2020report.md"] }));
 			if (a.action === "read") return okR(JSON.stringify({ content: '---\ntype: citation\ncitekey: doe2020report\ntitle: "A Report"\nauthors: ["Doe, Jane"]\nyear: 2020\n---\n' }));
 			return okR(JSON.stringify({ ok: true }));
 		});
 		const out = parse(await citation.run({ OBSIDIAN_VAULT_REPO: "r" } as any, { action: "export", write: true } as any));
-		expect(out.written).toBe("References/library.bib");
-		const writeCall = obs.mock.calls.find((c: any) => c[1].action === "write" && c[1].path === "References/library.bib");
+		expect(out.written).toBe("02-knowledge/references/library.bib");
+		const writeCall = obs.mock.calls.find((c: any) => c[1].action === "write" && c[1].path === "02-knowledge/references/library.bib");
 		expect(writeCall?.[1].content).toContain("@misc{doe2020report,");
 	});
 

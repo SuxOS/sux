@@ -197,7 +197,7 @@ const TOOLS: VaultTool[] = [
 			type: "object",
 			additionalProperties: false,
 			required: ["path"],
-			properties: { path: { type: "string", description: "Note path, e.g. Inbox/idea.md" }, with_sha: { type: "boolean", description: "Return JSON `{path, body, sha}` instead of the bare body string." } },
+			properties: { path: { type: "string", description: "Note path, e.g. 00-inbox/idea.md" }, with_sha: { type: "boolean", description: "Return JSON `{path, body, sha}` instead of the bare body string." } },
 		},
 		run: (env, a) => obsidian.run(env, git({ action: "read", path: a?.path, ...(a?.with_sha === true ? { with_sha: true } : {}) })),
 	},

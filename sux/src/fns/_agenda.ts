@@ -440,7 +440,7 @@ export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, we
 				dedupe: `consolidate::stale::${consolidate.week}::${fingerprint([...consolidate.stale.map((s) => s.path), String(staleCount)])}`,
 				title: `${staleCount} stale vault note(s) need review`,
 				emoji: "🗂️",
-				action: task(`Review ${staleCount} stale vault note(s) — see Consolidation/${consolidate.week}.md`),
+				action: task(`Review ${staleCount} stale vault note(s) — see _meta/consolidation/${consolidate.week}.md`),
 				evidence: { week: consolidate.week, paths: consolidate.stale.map((s) => s.path) },
 			});
 		}
@@ -452,7 +452,7 @@ export function detectKnowledgeDrops(consolidate: ConsolidateFindings | null, we
 				dedupe: `consolidate::dupes::${consolidate.week}::${fingerprint([...consolidate.duplicate_candidates.map((d) => `${d.a}|${d.b}`), String(duplicateCount)])}`,
 				title: `${duplicateCount} possible duplicate vault note(s)`,
 				emoji: "🗂️",
-				action: task(`Review ${duplicateCount} possible duplicate vault note(s) — see Consolidation/${consolidate.week}.md`),
+				action: task(`Review ${duplicateCount} possible duplicate vault note(s) — see _meta/consolidation/${consolidate.week}.md`),
 				evidence: { week: consolidate.week, pairs: consolidate.duplicate_candidates },
 			});
 		}

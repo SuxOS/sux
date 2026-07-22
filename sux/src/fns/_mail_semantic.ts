@@ -1,5 +1,6 @@
 import type { RtEnv } from "../registry";
 import { cosine, decodeEmbedding, embed, encodeEmbedding } from "./_embed";
+import { deleteCorpusIds, vectorId } from "./_vectorize";
 import { jmap } from "./jmap";
 
 // mail_semantic — the vault_semantic pattern (_vault_semantic.ts: brute-force KV cosine kNN
@@ -160,6 +161,15 @@ async function applyChanges(env: RtEnv, cached: MailSemanticIndex): Promise<{ in
 	for (const id of destroyed) {
 		created.delete(id);
 		updated.delete(id);
+	}
+	// Delete the Vectorize vectors for destroyed ids (#1353) — a removed/expunged message's
+	// vector otherwise lingers in `sux-corpus`, citing from `oracle ask` until a full rebuild.
+	// Same (domain, id, sub=0) id scheme `_reindex.ts`'s enumerateMail upserts under; an
+	// `updated` id re-embeds and upserts in place under the SAME id, so only `destroyed`
+	// needs an explicit delete.
+	if (destroyed.size) {
+		const staleIds = await Promise.all([...destroyed].map((id) => vectorId("mail", id, 0)));
+		await deleteCorpusIds(env, staleIds);
 	}
 	// An Email's CONTENT (subject/preview) is immutable once received — JMAP reports "updated"
 	// for a keyword/mailbox move too (mail_triage relabels constantly), which would otherwise
