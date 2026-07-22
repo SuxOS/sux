@@ -90,8 +90,8 @@ const fetchRouter =
 afterEach(() => vi.restoreAllMocks());
 
 describe("MYCHART_ORGS registry", () => {
-	it("seeds the three verified orgs with name + fhirBase", () => {
-		expect(Object.keys(MYCHART_ORGS).sort()).toEqual(["bozeman", "swedish", "uwmedicine"]);
+	it("seeds the registered orgs with name + fhirBase", () => {
+		expect(Object.keys(MYCHART_ORGS).sort()).toEqual(["bozeman", "evergreen", "swedish", "uwmedicine"]);
 		for (const org of Object.values(MYCHART_ORGS)) {
 			expect(org.name).toBeTruthy();
 			expect(org.fhirBase).toMatch(/^https:\/\//);
