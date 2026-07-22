@@ -586,6 +586,13 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   fn/secret/fix an issue claims already exists is cheap insurance against building on a false
   premise.
 
+- **`next_review` frontmatter is a generic due-date mechanism, not NSLDS-specific** —
+  `weekly_recall`'s `listReviewDueNotes` (`_weekly_recall.ts`, #1326) scans ANY vault note
+  for a past-due `next_review` date; `_nslds.ts:167` just happens to be its only writer
+  today (#1337). A new periodic-recheck feature (insurance renewal, subscription trial
+  ending, warranty expiry, ...) should write `next_review` frontmatter on its own note
+  rather than building bespoke reminder plumbing — no scan-side change is needed to opt in.
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s
