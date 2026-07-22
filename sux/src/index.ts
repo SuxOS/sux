@@ -856,6 +856,19 @@ async function imessageReplyTick(env: RtEnv): Promise<unknown> {
 	return mod.runImessageReply(env, {}, deps);
 }
 
+// The agenda loop's ask-me-by-email spoke (#1243) — batches sux's own open questions
+// (queued via _agenda_ask.ts's askAgendaQuestion) into a digest mail and reads an answer
+// back out of a reply or a star. Rides the same frequent (~5min) cron as agenda_reply/
+// imessage_reply for the same reason: a reply should be picked up within minutes.
+// FAIL-CLOSED: no-op unless AGENDA_ASK_ENABLED (and AGENDA_ENABLED). Dynamically imported
+// so the cron path pulls in the mail surface only when armed.
+async function agendaAskTick(env: RtEnv): Promise<unknown> {
+	const mod = await import("./fns/_agenda_ask");
+	if (!mod.hasAgendaAsk(env)) return { dormant: true };
+	const deps = await mod.defaultDeps();
+	return mod.runAgendaAsk(env, {}, deps);
+}
+
 // Outbound Web Push (#219) for the agenda loop's highest-signal drops — mirrors
 // notifyMailTriageSummary's shape. The roadmap's Layer 3 ("Proposal inbox") wants
 // today-urgency proposals to reach the phone in near-real-time instead of only sitting
@@ -1035,6 +1048,7 @@ export default {
 			ctx.waitUntil(runSubJob(env, "mail_triage_plan", () => mailTriagePlanTick(env)));
 			ctx.waitUntil(runSubJob(env, "ask_gate_reminder", () => askGateReminderTick(env)));
 			ctx.waitUntil(runSubJob(env, "agenda_reply", () => agendaReplyTick(env)));
+			ctx.waitUntil(runSubJob(env, "agenda_ask", () => agendaAskTick(env)));
 			ctx.waitUntil(runSubJob(env, "imessage_reply", () => imessageReplyTick(env)));
 			return;
 		}
@@ -1153,9 +1167,10 @@ export default {
 					else if (job === "briefing") out = await briefingTick(env);
 					else if (job === "agenda") out = await agendaTick(env);
 					else if (job === "agenda-reply") out = await agendaReplyTick(env);
+					else if (job === "agenda-ask") out = await agendaAskTick(env);
 					else if (job === "self-improve") out = await selfImproveTick(env);
 					else if (job === "maintenance") { await maintenanceTick(env, ctx); out = { ok: true }; }
-					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "agenda-reply", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
+					else return new Response(JSON.stringify({ error: "unknown job", jobs: ["mail-triage", "weekly-recall", "briefing", "agenda", "agenda-reply", "agenda-ask", "self-improve", "maintenance"] }), { status: 400, headers: { "content-type": "application/json" } });
 					return new Response(JSON.stringify({ ok: true, job, result: out }, null, 2), { headers: { "content-type": "application/json" } });
 				} catch (e) {
 					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });

@@ -368,6 +368,13 @@ export type RtEnv = Env &
 		// ignored untouched, never parsed. Dispatch never bypasses the kernel's own locks
 		// (allow-listed reversible fns only, no force).
 		AGENDA_REPLY_ENABLED?: string;
+		// Agenda ASK loop (fns/_agenda_ask.ts, #1243/W1 "d") — batches sux's own open
+		// questions (queued via askAgendaQuestion; nothing calls it yet, so armed-but-empty
+		// is the common case) into one digest mail to Colin, and reads an answer back out of
+		// a reply (`answer <id> <text>`) or a star on that digest. Same two-stage fail-closed
+		// gate, ALSO requires AGENDA_ENABLED. Uses its OWN ledger namespace, entirely separate
+		// from AGENDA_REPLY_ENABLED's, so the two inbound loops can never cross-match a reply.
+		AGENDA_ASK_ENABLED?: string;
 		// W7 — Monarch financial-signal detector thresholds (fns/_agenda.ts's detectMonarchDrops).
 		// Both optional; unset ⇒ sane defaults ($100 / $500). Only ever read, never gates whether
 		// the detectors run at all — that's MONARCH_TOKEN (via hasMonarch), same as every other
