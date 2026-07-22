@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_QUESTIONS, MAX_QUESTIONS, hasWeeklyRecall, isoWeek, runWeeklyRecall, standingQuestions, type WeeklyRecallDeps } from "./_weekly_recall";
+
+const REVIEW_RECORDS = [
+	{ path: "Inbox/loans.md", fm: { next_review: "2026-01-01" }, links: [], tags: [], tasks: [], excerpt: "", keywords: [] },
+	{ path: "Inbox/future.md", fm: { next_review: "2099-01-01" }, links: [], tags: [], tasks: [], excerpt: "", keywords: [] },
+	{ path: "Inbox/none.md", fm: {}, links: [], tags: [], tasks: [], excerpt: "", keywords: [] },
+	{ path: "Inbox/bad-date.md", fm: { next_review: "not-a-date" }, links: [], tags: [], tasks: [], excerpt: "", keywords: [] },
+];
+vi.mock("../vault-mcp", () => ({ scanVault: async () => ({ records: REVIEW_RECORDS, total: REVIEW_RECORDS.length, truncated: false }) }));
+
+import { DEFAULT_QUESTIONS, MAX_QUESTIONS, hasWeeklyRecall, isoWeek, listReviewDueNotes, runWeeklyRecall, standingQuestions, type WeeklyRecallDeps } from "./_weekly_recall";
 
 // A single OAUTH_KV stub, TTL-aware only enough for the ledger (opts ignored) — mirrors the
 // fakeKV in _mail_triage.test.ts. The whole feature is exercised through the injected deps:
@@ -128,5 +137,46 @@ describe("runWeeklyRecall", () => {
 		const report = await runWeeklyRecall(env, { week: "2026-W50", force: true }, d2);
 		expect(report.skipped).toBeUndefined();
 		expect(d2.digested).toHaveBeenCalledTimes(1);
+	});
+
+	it("appends a review-due section when reviewDueNotes finds overdue notes (#1326)", async () => {
+		const env = envWith({ WEEKLY_RECALL_ENABLED: "1", WEEKLY_RECALL_QUESTIONS: "a?" });
+		const deps = mkDeps() as WeeklyRecallDeps & { digested: ReturnType<typeof vi.fn> };
+		deps.reviewDueNotes = vi.fn(async () => [{ path: "Inbox/loans.md", next_review: "2026-01-01" }]);
+		const report = await runWeeklyRecall(env, { week: "2026-W60" }, deps);
+		expect(report.digest_written).toBe(true);
+		const content = deps.digested.mock.calls[0][2] as string;
+		expect(content).toContain("### Notes due for review");
+		expect(content).toContain("[[Inbox/loans.md]]");
+		expect(content).toContain("next_review was 2026-01-01");
+	});
+
+	it("omits the review section when nothing is overdue", async () => {
+		const env = envWith({ WEEKLY_RECALL_ENABLED: "1", WEEKLY_RECALL_QUESTIONS: "a?" });
+		const deps = mkDeps() as WeeklyRecallDeps & { digested: ReturnType<typeof vi.fn> };
+		deps.reviewDueNotes = vi.fn(async () => []);
+		const report = await runWeeklyRecall(env, { week: "2026-W61" }, deps);
+		expect(report.digest_written).toBe(true);
+		const content = deps.digested.mock.calls[0][2] as string;
+		expect(content).not.toContain("Notes due for review");
+	});
+
+	it("a throwing reviewDueNotes degrades to no review section, never sinks the digest", async () => {
+		const env = envWith({ WEEKLY_RECALL_ENABLED: "1", WEEKLY_RECALL_QUESTIONS: "a?" });
+		const deps = mkDeps() as WeeklyRecallDeps & { digested: ReturnType<typeof vi.fn> };
+		deps.reviewDueNotes = vi.fn(async () => {
+			throw new Error("scan failed");
+		});
+		const report = await runWeeklyRecall(env, { week: "2026-W62" }, deps);
+		expect(report.digest_written).toBe(true);
+		const content = deps.digested.mock.calls[0][2] as string;
+		expect(content).not.toContain("Notes due for review");
+	});
+});
+
+describe("listReviewDueNotes", () => {
+	it("returns only notes whose next_review has passed, skipping unparseable/missing/future dates", async () => {
+		const out = await listReviewDueNotes({} as any, "2026-06-01");
+		expect(out).toEqual([{ path: "Inbox/loans.md", next_review: "2026-01-01", title: undefined }]);
 	});
 });
