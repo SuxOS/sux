@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	MAX_BINARIES_PER_TYPE,
 	MYCHART_ORGS,
 	buildPullPlan,
 	connectedOrgs,
@@ -17,6 +18,7 @@ import {
 	resolveOrg,
 	substancesOverlap,
 	summarizeMyChart,
+	throttledPullType,
 } from "./mychart";
 import { handleObservability } from "./observability";
 
@@ -452,6 +454,40 @@ describe("buildPullPlan / pullType / reconcilePull — the durable `mychart-pull
 		const result = await pullType(env, item);
 		expect(result.status).toBe("unsupported");
 		expect(result.count).toBe(0);
+	});
+
+	it("pullType caps the DocumentReference→Binary fan-out at MAX_BINARIES_PER_TYPE and flips status to 'truncated' — never an unbounded per-attachment fan-out", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:token:${ORG}`, "AT");
+		const overCap = MAX_BINARIES_PER_TYPE + 5;
+		const page = {
+			resourceType: "Bundle",
+			entry: Array.from({ length: overCap }, (_, i) => ({ resource: { resourceType: "DocumentReference", id: `d${i}`, content: [{ attachment: { url: `${BASE}/Binary/b${i}` } }] } })),
+		};
+		vi.stubGlobal(
+			"fetch",
+			fetchRouter({
+				"/Binary/": () => new Response(JSON.stringify({ resourceType: "Binary", contentType: "text/plain", data: "aGk=" }), { status: 200 }),
+				"/DocumentReference": () => new Response(JSON.stringify(page), { status: 200 }),
+			}),
+		);
+		const item = { type: "DocumentReference", label: "DocumentReference", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" };
+		const result = await pullType(env, item);
+		expect(result.binaries).toBe(MAX_BINARIES_PER_TYPE);
+		expect(result.status).toBe("truncated");
+		expect(result.count).toBe(overCap);
+		expect([...env.R2.map.keys()].filter((k: string) => k.includes("/Binary/")).length).toBe(MAX_BINARIES_PER_TYPE);
+	});
+
+	it("throttledPullType degrades a retry-exhausted type to status:'throttled', and reconcilePull surfaces it in `errors` — one bad type never sinks the pull", () => {
+		const item = { type: "Condition", label: "Condition", query: "patient=P1&_count=100", org: ORG, patient: "P1", stamp: "STAMP" };
+		const throttled = throttledPullType(item);
+		expect(throttled).toEqual({ org: ORG, patient: "P1", label: "Condition", count: 0, pages: 0, binaries: 0, keys: 0, status: "throttled" });
+		const out = reconcilePull([{ org: ORG, patient: "P1", label: "Patient", count: 1, pages: 1, binaries: 0, keys: 1, status: "ok" as const }, throttled]);
+		expect(out.truncated).toBe(true);
+		expect(out.errors).toHaveProperty("Condition");
+		expect(out.errors!.Condition).toMatch(/throttled/);
+		expect(out.counts.Patient).toBe(1);
 	});
 
 	it("reconcilePull merges per-type results into counts, and surfaces a truncated type in `errors` — never silently reports a partial sync as clean", () => {
