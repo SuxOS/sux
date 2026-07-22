@@ -61,8 +61,13 @@ describe("selftest", () => {
 		const r = await selftest.run(FULL_ENV, {});
 		expect(r.isError).toBeFalsy();
 		const out = parse(r);
-		expect(Object.keys(out)).toEqual(["rungs", "grafana", "configured"]);
+		expect(Object.keys(out)).toEqual(["rungs", "grafana", "configured", "version"]);
 		expect(Object.keys(out.rungs)).toEqual(["direct", "scrape", "render_cf"]);
+	});
+
+	it("reports version as null when SUX_VERSION is unset, and echoes it when set", async () => {
+		expect(parse(await selftest.run(FULL_ENV, {})).version).toBeNull();
+		expect(parse(await selftest.run({ ...FULL_ENV, SUX_VERSION: "1.2.3" }, {})).version).toBe("1.2.3");
 	});
 
 	it("reports every rung up when each probe answers", async () => {

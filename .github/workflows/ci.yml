@@ -87,6 +87,11 @@ jobs:
       - name: Wrangler compat_date/flags in sync (prod vs e2e)
         run: npm run check:wrangler-compat
 
+      # package.json and the plugin manifest's "version" must move together — the only
+      # thing keeping them in sync today is a human remembering to bump both (#1238).
+      - name: package.json / plugin.json version in sync
+        run: npm run check:version-sync
+
       # The generated fn manifest (index.ts) must include every fns/*.ts
       # (fix: npm run gen:index) — a new fn that isn't registered ships silently.
       - name: Function index in sync
