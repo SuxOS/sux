@@ -42,6 +42,7 @@ import type { WeeklyRecallFindings } from "./_weekly_recall";
 import { dueForReview, hasStudyReview, reviewIntervalDays, studyReviewCandidates, type DueReview, type StudiedTopicRef } from "./_study_review";
 import { documentRadarArmed, listTrackedDocuments, type TrackedDocumentRef } from "./_document_radar";
 import { hasAI } from "../ai";
+import { hasCalDav } from "./_caldav";
 
 // ── Gates ────────────────────────────────────────────────────────────────────
 const flagOn = (v: string | undefined): boolean => {
@@ -977,6 +978,48 @@ export function detectDocumentExpiryDrops(today: string, docs: TrackedDocumentRe
 	return sortByUrgency(drops);
 }
 
+// ── Task-deadline detector (split from #1203's "(a) deadline extraction" — the follow-up
+// detector (b) and ask-me-by-email (d) are tracked separately in #1217; (c) last-contacted
+// staleness already shipped via #930/#981's detectRelationshipDrops) ─────────────────────
+// A CalDAV VTODO's own `due` date is already-structured — no text-extraction needed, unlike
+// BILL_CUE's regex-over-mail-subject heuristic above. The agenda loop's calEvents dep already
+// EXCLUDES task calendars (`!c.isTasks`, see defaultDeps), so a task's due date has never once
+// been surfaced here; this closes that gap the same "date about to slip" shape
+// detectDocumentExpiryDrops uses for tracked documents.
+export type TaskRef = { uid?: string; summary?: string; due?: string; status?: string; href?: string };
+
+const TASK_DEADLINE_WARN_DAYS_DEFAULT = 3;
+
+/** Tasks (VTODO) whose `due` lands within `warnDays` (default 3) or is already overdue.
+ *  A completed task (status === "COMPLETED", case-insensitive) never fires — its deadline
+ *  already landed. A task with no `due` or no `uid` is skipped (nothing to dedupe against). */
+export function detectTaskDeadlineDrops(today: string, tasks: TaskRef[], opts?: { warnDays?: number }): Drop[] {
+	const warnDays = opts?.warnDays ?? TASK_DEADLINE_WARN_DAYS_DEFAULT;
+	const todayMs = Date.parse(`${today}T00:00:00Z`);
+	const drops: Drop[] = [];
+	for (const t of tasks) {
+		if (!t.uid || !t.due) continue;
+		if (String(t.status ?? "").toUpperCase() === "COMPLETED") continue;
+		const dueMs = Date.parse(t.due);
+		if (!Number.isFinite(dueMs)) continue;
+		const daysLeft = Math.round((dueMs - todayMs) / DOC_RADAR_DAY_MS);
+		if (daysLeft > warnDays) continue;
+		const summary = t.summary || "(untitled task)";
+		const urgency: Urgency = daysLeft <= 1 ? "today" : "soon";
+		const title = daysLeft < 0 ? `Task overdue ${-daysLeft}d: ${summary}` : daysLeft === 0 ? `Task due today: ${summary}` : `Task due in ${daysLeft}d: ${summary}`;
+		drops.push({
+			kind: "task_deadline",
+			urgency,
+			dedupe: `task_deadline::${t.uid}::${t.due}`,
+			title,
+			emoji: "⏰",
+			action: task(`Handle task: ${summary}`, t.due),
+			evidence: { uid: t.uid, due: t.due, daysLeft },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
 /** Load each tracked thread's cached cadence baseline — one KV key per thread id, unlike
  *  Monarch's single combined snapshot, since there's no fixed shape to bound one key's size
  *  against. A missing or unparseable entry is simply absent, same as lastMonarchSnapshot
@@ -1101,6 +1144,10 @@ export type AgendaDeps = {
 	 *  the plain title/content it already had. Only ever called when hasAI(env); injected so
 	 *  tests can stub it without a real Workers AI binding. */
 	voiceRestyle: (env: RtEnv, text: string) => Promise<string | null>;
+	/** Every incomplete VTODO across every task-list calendar (split from #1203's "(a) deadline
+	 *  extraction") — mirrors calEvents' cal_list fan-out, but over the isTasks calendars
+	 *  calEvents itself deliberately excludes. Only called when hasCalDav(env). */
+	taskList: (env: RtEnv) => Promise<TaskRef[]>;
 };
 
 export type AgendaOpts = { date?: string; max_mail?: number; horizon_days?: number; dry_run?: boolean; cycle_id?: string };
@@ -1181,6 +1228,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let mychartConflicts: MyChartConflictRef[] = [];
 	let mychartAllergyGaps: MyChartAllergyGapRef[] = [];
 	let trackedDocuments: TrackedDocumentRef[] = [];
+	let taskList: TaskRef[] = [];
 	await Promise.all([
 		(async () => {
 			mail = await deps.mailSearch(env, { limit: maxMail });
@@ -1306,6 +1354,16 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		})().catch((e) => {
 			status.document_radar = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
+		(async () => {
+			if (!hasCalDav(env)) {
+				status.tasks = "not_configured";
+				return;
+			}
+			taskList = await deps.taskList(env);
+			status.tasks = `${taskList.length} task(s)`;
+		})().catch((e) => {
+			status.tasks = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
 	]);
 
 	const lowBalanceThreshold = numClamp(env.MONARCH_LOW_BALANCE_THRESHOLD, 0, 1_000_000, 100);
@@ -1343,6 +1401,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectMychartConflictDrops(mychartConflicts),
 		...detectMychartAllergyGapDrops(mychartAllergyGaps),
 		...detectDocumentExpiryDrops(date, trackedDocuments),
+		...detectTaskDeadlineDrops(date, taskList),
 	]);
 
 	// Advance the "since last check" baseline every successful Monarch fetch, regardless of
@@ -1653,6 +1712,25 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			const r = await voice.run(env, { text });
 			if (r.isError) return null;
 			return r.content?.[0]?.text ?? null;
+		},
+		taskList: async (env) => {
+			const listTool = tool("cal_list");
+			const taskTool = tool("task_list");
+			if (!listTool || !taskTool) throw new Error("task tools not found");
+			const lr = await listTool.run(env, {});
+			if (lr.isError) throw new Error(lr.content?.[0]?.text ?? "cal_list failed");
+			const cals = (JSON.parse(lr.content?.[0]?.text ?? "{}").calendars ?? []) as Array<{ href: string; isTasks?: boolean }>;
+			const out: TaskRef[] = [];
+			for (const c of cals.filter((c) => c.isTasks)) {
+				try {
+					const tr = await taskTool.run(env, { calendar: c.href });
+					if (tr.isError) continue;
+					for (const t of (JSON.parse(tr.content?.[0]?.text ?? "{}").tasks ?? []) as any[]) out.push({ uid: t?.uid, summary: t?.summary, due: t?.due ?? undefined, status: t?.status ?? undefined, href: t?.href });
+				} catch {
+					/* skip a single unreadable task list */
+				}
+			}
+			return out;
 		},
 	};
 }
