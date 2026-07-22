@@ -365,6 +365,48 @@ async function draftRelationshipOpeners(env: RtEnv, drops: Drop[], voiceRestyle:
 	});
 }
 
+// ── Follow-up detector (#1217, split from #1203 W1(b)) ──────────────────────────────
+// Sent-mail threads awaiting a reply — the inverse of detectTextDrops/mailRelationshipThreads'
+// "they sent last, I haven't replied" check: here I SENT last and they haven't replied.
+const FOLLOW_UP_MIN_DAYS = 4;
+// Scans sent mail this far back (days) for candidate threads to check.
+const FOLLOW_UP_LOOKBACK_DAYS = 30;
+// Caps the worst-case mail_thread round trips per cycle, same posture as textThreads' 15-thread cap.
+const FOLLOW_UP_SCAN_CAP = 15;
+
+export type FollowUpThreadRef = { id: string; subject?: string; to?: string; lastAt?: string; lastFromMe?: boolean };
+
+/** A sent-mail thread whose LAST message was sent by me (`lastFromMe === true`) and has sat
+ *  unanswered for at least `minDays` is a follow-up worth nudging on — mirrors detectTextDrops'
+ *  fail-closed posture (anything other than exactly `true` is skipped: undefined "couldn't
+ *  resolve who sent last" is treated the same as "they already replied"). */
+export function detectFollowUpDrops(now: number, threads: FollowUpThreadRef[], opts?: { minDays?: number }): Drop[] {
+	const minDays = opts?.minDays ?? FOLLOW_UP_MIN_DAYS;
+	const drops: Drop[] = [];
+	for (const t of threads) {
+		if (t.lastFromMe !== true) continue;
+		if (!t.lastAt) continue;
+		const lastAtMs = Date.parse(t.lastAt);
+		if (!Number.isFinite(lastAtMs)) continue;
+		const days = (now - lastAtMs) / 86_400_000;
+		if (days < minDays) continue;
+		const who = t.to || "someone";
+		const subj = t.subject || "(no subject)";
+		drops.push({
+			kind: "follow_up",
+			urgency: "fyi",
+			// Bucketed by week (mirrors relationship_drop) so an ongoing wait nudges roughly weekly
+			// instead of re-proposing a fresh Todoist task every tick.
+			dedupe: `follow_up::${t.id}::${Math.floor(days / 7)}`,
+			title: `Follow up with ${who} — no reply in ${Math.round(days)}d: ${subj}`,
+			emoji: "📮",
+			action: task(`Follow up with ${who} — sent ${Math.round(days)}d ago, no reply: ${subj}`),
+			evidence: { id: t.id, to: t.to, subject: subj, days },
+		});
+	}
+	return sortByUrgency(drops);
+}
+
 /** A short, stable content fingerprint (FNV-1a) over a finding set — used to keep the agenda
  *  dedupe key sensitive to WHICH findings were proposed, not just which ISO week (#782): a
  *  forced consolidate re-run mid-week can overwrite the cache with a different slice of the
@@ -1144,6 +1186,9 @@ export type AgendaDeps = {
 	 *  the plain title/content it already had. Only ever called when hasAI(env); injected so
 	 *  tests can stub it without a real Workers AI binding. */
 	voiceRestyle: (env: RtEnv, text: string) => Promise<string | null>;
+	/** Sent-mail threads awaiting a reply (#1217, split from #1203 W1(b)) — always called, same
+	 *  as mailSearch/mailRelationshipSearch (mail is core, no feature flag gates it). */
+	followUpThreads: (env: RtEnv, opts: { since: string }) => Promise<FollowUpThreadRef[]>;
 	/** Every incomplete VTODO across every task-list calendar (split from #1203's "(a) deadline
 	 *  extraction") — mirrors calEvents' cal_list fan-out, but over the isTasks calendars
 	 *  calEvents itself deliberately excludes. Only called when hasCalDav(env). */
@@ -1228,6 +1273,7 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	let mychartConflicts: MyChartConflictRef[] = [];
 	let mychartAllergyGaps: MyChartAllergyGapRef[] = [];
 	let trackedDocuments: TrackedDocumentRef[] = [];
+	let followUpThreads: FollowUpThreadRef[] = [];
 	let taskList: TaskRef[] = [];
 	await Promise.all([
 		(async () => {
@@ -1355,6 +1401,12 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 			status.document_radar = `unavailable (${errMsg(e).slice(0, 90)})`;
 		}),
 		(async () => {
+			followUpThreads = await deps.followUpThreads(env, { since: addDays(date, -FOLLOW_UP_LOOKBACK_DAYS) });
+			status.follow_up = `${followUpThreads.length} thread(s) scanned`;
+		})().catch((e) => {
+			status.follow_up = `unavailable (${errMsg(e).slice(0, 90)})`;
+		}),
+		(async () => {
 			if (!hasCalDav(env)) {
 				status.tasks = "not_configured";
 				return;
@@ -1390,6 +1442,8 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 		...detectDrops(mail, events),
 		...detectTextDrops(textThreads),
 		...relationshipDropsWithOpeners,
+		...detectFollowUpDrops(Date.parse(`${date}T00:00:00Z`), followUpThreads),
+		...relationshipResult.drops,
 		...detectKnowledgeDrops(consolidateFindings, weeklyRecallFindings),
 		...detectWatchDrops(watchFindings),
 		...detectStudyReviewDrops(studyReviewDue),
@@ -1712,6 +1766,36 @@ export async function defaultDeps(): Promise<AgendaDeps> {
 			const r = await voice.run(env, { text });
 			if (r.isError) return null;
 			return r.content?.[0]?.text ?? null;
+		},
+		followUpThreads: async (env, o) => {
+			const searchTool = tool("mail_search");
+			const threadTool = tool("mail_thread");
+			const idTool = tool("mail_identities");
+			if (!searchTool || !threadTool || !idTool) throw new Error("mail tools not found");
+			const ir = await idTool.run(env, {});
+			if (ir.isError) throw new Error(ir.content?.[0]?.text ?? "mail_identities failed");
+			const myEmails = new Set(((JSON.parse(ir.content?.[0]?.text ?? "{}").identities ?? []) as Array<{ email?: string }>).map((i) => i?.email?.toLowerCase()).filter(Boolean));
+			const sr = await searchTool.run(env, { mailbox: "sent", after: o.since, limit: 50 });
+			if (sr.isError) throw new Error(sr.content?.[0]?.text ?? "mail_search failed");
+			const sent = (JSON.parse(sr.content?.[0]?.text ?? "{}").emails ?? []) as Array<{ threadId?: string; to?: string; subject?: string }>;
+			const seenThreads = new Set<string>();
+			const out: FollowUpThreadRef[] = [];
+			for (const s of sent) {
+				if (!s.threadId || seenThreads.has(s.threadId) || out.length >= FOLLOW_UP_SCAN_CAP) continue;
+				seenThreads.add(s.threadId);
+				try {
+					const tr = await threadTool.run(env, { threadId: s.threadId });
+					if (tr.isError) continue;
+					const messages = (JSON.parse(tr.content?.[0]?.text ?? "{}").messages ?? []) as Array<{ from?: string; subject?: string; receivedAt?: string; to?: string }>;
+					const last = messages[messages.length - 1];
+					if (!last) continue;
+					const lastFromMe = myEmails.has(String(last.from ?? "").toLowerCase());
+					out.push({ id: s.threadId, subject: last.subject ?? s.subject, to: last.to ?? s.to, lastAt: last.receivedAt, lastFromMe });
+				} catch {
+					/* skip a single unreadable thread */
+				}
+			}
+			return out;
 		},
 		taskList: async (env) => {
 			const listTool = tool("cal_list");
