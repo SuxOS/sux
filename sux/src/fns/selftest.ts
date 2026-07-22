@@ -107,7 +107,7 @@ async function probeGrafana(
 export const selftest: Fn = {
 	name: "selftest",
 	description:
-		"Probe the fetch ladder and report which rungs are up. Live health check: fetches a tiny known URL through each egress path — direct (worker fetch), scrape (residential proxy / OpenWRT node) — and reports whether the BROWSER binding (render_cf) is present. Also actively probes the Grafana Cloud Loki push endpoint (`grafana`): POSTs one health-check line with the configured URL/user/token and reports the HTTP status, so a misconfigured stack (all secrets set yet nothing lands) shows as a 401/403/404 instead of failing silently in the fire-and-forget ship path. Every probe is guarded and hard time-bounded (default 8s each, override with timeout_ms) so a hung node can never hang selftest. Also reports `configured` — which credentials/bindings are present as booleans, WITHOUT calling the upstreams (no key spent, no rate limit touched). Returns JSON { rungs:{direct,scrape,render_cf}, grafana, configured }. Never cached.",
+		"Probe the fetch ladder and report which rungs are up. Live health check: fetches a tiny known URL through each egress path — direct (worker fetch), scrape (residential proxy / OpenWRT node) — and reports whether the BROWSER binding (render_cf) is present. Also actively probes the Grafana Cloud Loki push endpoint (`grafana`): POSTs one health-check line with the configured URL/user/token and reports the HTTP status, so a misconfigured stack (all secrets set yet nothing lands) shows as a 401/403/404 instead of failing silently in the fire-and-forget ship path. Every probe is guarded and hard time-bounded (default 8s each, override with timeout_ms) so a hung node can never hang selftest. Also reports `configured` — which credentials/bindings are present as booleans, WITHOUT calling the upstreams (no key spent, no rate limit touched) — and `version`, the deployed Worker's package.json version (stamped in at deploy time; unset outside production). Returns JSON { rungs:{direct,scrape,render_cf}, grafana, configured, version }. Never cached.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -153,6 +153,6 @@ export const selftest: Fn = {
 			unlocker: Boolean(env.UNLOCKER_API_URL && env.UNLOCKER_API_KEY),
 		};
 
-		return ok(oj({ rungs: { direct, scrape, render_cf }, grafana, configured }));
+		return ok(oj({ rungs: { direct, scrape, render_cf }, grafana, configured, version: env.SUX_VERSION ?? null }));
 	},
 };

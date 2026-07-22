@@ -1,0 +1,27 @@
+# Publishes the GitHub Release story a version tag implies (#1238) — before this,
+# pushing a v* tag was a no-op: zero Releases existed on this repo and nothing
+# surfaced "what shipped in this version" anywhere. `gh release create
+# --generate-notes` derives the changelog from merged PRs since the previous tag,
+# so the only manual step left is tagging `vX.Y.Z` (after bumping package.json +
+# plugin.json together, enforced by check:version-sync in ci.yml).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # gh release create needs to write the Release object
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes

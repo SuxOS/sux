@@ -488,6 +488,12 @@ export type RtEnv = Env &
 		// of the placeholder email contact point the platform audit (.github#636 A1) found.
 		GRAFANA_WEBHOOK_TOKEN?: string;
 
+		// package.json's version, stamped in at deploy time via `wrangler deploy --var
+		// SUX_VERSION:<version>` (deploy.yml, #1238) — NOT set in wrangler.jsonc's committed
+		// vars, so `wrangler dev`/tests simply see it unset. Lets production answer "what
+		// version am I" (selftest surfaces it) without a separate release-metadata fetch.
+		SUX_VERSION?: string;
+
 		// Recovery dead-drop (src/recovery.ts) — the out-of-band control channel the home
 		// router (owl-tegu) phones home to when it's unreachable inbound. All fail-closed,
 		// default OFF, set via `wrangler secret` (NOT declared in wrangler.jsonc — like

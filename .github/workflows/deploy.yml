@@ -86,6 +86,13 @@ jobs:
       - name: Function index in sync
         run: npm run gen:index && git diff --exit-code sux/src/fns/index.ts
 
+      # Stamp package.json's version into the deployed Worker (#1238) — --var overrides
+      # wrangler.jsonc's own vars, so production becomes queryable (selftest surfaces it)
+      # without hand-editing wrangler.jsonc on every bump.
+      - name: Resolve version to stamp
+        id: version
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
       # Deploys code + wrangler.jsonc vars (including the Cron Trigger). Does NOT
       # touch secrets (KAGI_API_KEY, GITHUB_CLIENT_ID/SECRET, COOKIE_ENCRYPTION_KEY,
       # ALLOWED_GITHUB_LOGIN, KROGER_CLIENT_ID/SECRET) — manage those with
@@ -95,7 +102,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --config sux/wrangler.jsonc
+          command: deploy --config sux/wrangler.jsonc --var SUX_VERSION:${{ steps.version.outputs.value }}
 
       # A failed prod deploy is otherwise invisible: a merged fix silently never
       # ships. On any failure above (build gate or wrangler deploy), open a fresh

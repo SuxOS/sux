@@ -544,3 +544,15 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   be wrong until `caps.governors`/`caps.cache` get threaded into `makeCaps` for the durable
   path (`op-engine/caps.ts`) and `interpretDurable` calls `runGoverned` (or an equivalent)
   instead of the bare `node.fn(input, caps)` it calls today.
+
+## Version coherence (#1238)
+
+Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s
+`version` together — `npm run check:version-sync` (wired into CI + `npm run ci`)
+fails the build if they drift. After bumping both, tag `vX.Y.Z` and push the tag;
+`.github/workflows/release.yml` publishes the GitHub Release itself
+(`gh release create --generate-notes`). `deploy.yml` stamps that same
+`package.json` version into the deployed Worker as `SUX_VERSION` on every prod
+deploy (`--var`, not committed to `wrangler.jsonc`), so `selftest`'s `version`
+field answers "what's live in production" — `SUX_VERSION` is unset outside
+deploy.yml (local `wrangler dev`, tests), so `selftest` reports `null` there.
