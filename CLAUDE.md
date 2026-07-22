@@ -350,6 +350,15 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   Part A's state from scratch (`git grep MYCHART_ORGS origin/main` settles it in one call) —
   go straight to scoping Part B alone, and expect it to need its own dedicated session per the
   `effort:large` precedent (see the `#920` gotcha above), not a batch slot alongside other work.
+  Confirmed directly (#1178, dropped for this exact reason): `op-engine/registry.ts`'s own
+  comments state a durable op leaf only ever receives `caps` (store/llm/clock/sinks), never
+  `env` — every existing durable op does its one env-needing fetch ONCE in the calling fn
+  before the run starts. `mychart.ts`'s `pull` is dozens of INTERLEAVED paginated FHIR fetches
+  + OAuth token-refresh KV reads/writes + R2 `phi/mychart/{org}/{patient}/{label}/` writes —
+  that can't collapse into one upfront fetch without defeating durability's whole point, and
+  `caps.store`'s content-addressed CAS layout isn't a drop-in replacement for the path
+  structure `summarizeMyChart` depends on either. This needs real `caps`/`interpretDurable`
+  surface work (per Part B's own scope above), not a leaf-shape workaround.
 - **A `building`-labeled issue can already be fully shipped on `main`** if the PR that built it
   skipped/lost its disposition record — PR #1010's body literally says "Related to #1008 (not
   auto-closed — no disposition record, please verify)" for both #1008 and #1009, yet its diff
@@ -474,6 +483,12 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   a real `main` break, no matter how specific/real the error looks. Don't hand-fix the sux-side
   call site to match your sandbox's suxlib shape; it'd likely just break it again against
   real CI's actual (possibly older, possibly newer) suxlib.
+- **Fastmail "Labels" are Mailboxes with `showAsLabel:true`, NOT IMAP keywords** — `addflag`/
+  keyword tagging (the original `mail_sieve_hc`/`mail_domain_backfill` model) is INVISIBLE in
+  Fastmail's UI. To apply a visible label you must `fileinto` the label's mailbox (JMAP
+  `Email/set`: add that mailbox's membership; also drop the Inbox mailbox to skip-inbox,
+  `fileinto :copy` to keep it). This is the root cause of the keyword sieve/backfill appearing
+  to "do nothing" (#1196) — any new labeling path must set mailbox membership, never a keyword.
 
 ## House style
 

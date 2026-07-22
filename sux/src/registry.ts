@@ -413,6 +413,16 @@ export type RtEnv = Env &
 		AGENDA_RELATIONSHIP_SILENCE_MULTIPLIER?: string;
 		AGENDA_RELATIONSHIP_MIN_SILENCE_DAYS?: string;
 
+		// Medical timeline synthesis (fns/medical_timeline_plan.ts + op-engine/_medical_timeline_
+		// plan.ts, #1205, W2): a durable propose→ask→sink plan (mychart-reconcile-plan's shape)
+		// that gathers dated health events from the vault's Health/ folder (+ any caller-supplied
+		// MyChart-sourced records) and, on human approval, regenerates ONE note, `Timeline/
+		// Medical.md` — a chronological, per-event-cited synthesis, never hand-edited (re-run to
+		// refresh; git is the undo). Deliberately conservative: no LLM in the leaf, every entry's
+		// title/detail is copied verbatim from its source, never summarized or embellished. Unset/
+		// "0"/"false"/"off" ⇒ inert, same fail-closed convention as MYCHART_RECONCILE_ENABLED.
+		MEDICAL_TIMELINE_ENABLED?: string;
+
 		// Ask-gate reminder (fns/_ask_gate_reminder.ts) — proactively surfaces durable
 		// `run` instances paused on a human `ask` gate (op-engine) instead of relying on
 		// someone remembering to poll `run {action:'list'}`. Rides the FREQUENT cron (same
@@ -465,6 +475,13 @@ export type RtEnv = Env &
 		// rotates independently. Same egress class as store_put (mints a world-readable URL),
 		// so the token IS the containment.
 		SUX_UPLOAD_TOKEN?: string;
+
+		// Grafana alert webhook (POST /hooks/grafana), bearer-gated by this shared secret
+		// (Authorization header or ?t= query param — Grafana's webhook contact point supports
+		// custom headers, but not every notifier setup can attach one). Unset ⇒ 404 (feature
+		// off). Lands firing/resolved alerts into Meta/Alerts.md + a push notification instead
+		// of the placeholder email contact point the platform audit (.github#636 A1) found.
+		GRAFANA_WEBHOOK_TOKEN?: string;
 
 		// Recovery dead-drop (src/recovery.ts) — the out-of-band control channel the home
 		// router (owl-tegu) phones home to when it's unreachable inbound. All fail-closed,

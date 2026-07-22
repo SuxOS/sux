@@ -24,6 +24,7 @@ import { handleDashboardRoutes } from "./dashboard";
 import { handleRecovery } from "./recovery";
 import { handleAppleHealth, handleMychartRoutes, refreshMychartToken } from "./mychart";
 import { handlePortalRoutes } from "./portal";
+import { handleGrafanaWebhook } from "./fns/_grafana_hook";
 import { normalizeArgs, normalizeText } from "./normalize";
 import { cancelTask, createTask, getTask, isTerminal, listTasks, toPublicTask, toTaskResult, waitForTerminal } from "./tasks";
 import { timingSafeEqual } from "./crypto-util";
@@ -75,7 +76,7 @@ const MAX_ARG_BYTES = 256_000;
 // ⇒ "forbidden", the spec default) — most of sux's ~95 fns are fast enough
 // that task augmentation would just add a round-trip. Extend this set as more
 // fns want it; no dispatch change needed.
-const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_fetch", "shop", "onboard", "recall", "advise", "life_wiki", "consolidate"]);
+const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_fetch", "shop", "onboard", "recall", "advise", "life_wiki", "consolidate", "mychart"]);
 
 // Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout
 // we RESOLVE (not reject) with a clean isError ToolResult and abandon the run
@@ -1076,6 +1077,12 @@ export default {
 		// src/portal.ts.
 		const portal = await handlePortalRoutes(new URL(request.url), request, env);
 		if (portal) return portal;
+
+		// Grafana alert webhook (POST /hooks/grafana) — same pre-OAuth reason as the routes
+		// above; Grafana authenticates with its own shared-secret bearer, not GitHub OAuth.
+		// Fail-closed on GRAFANA_WEBHOOK_TOKEN. See src/fns/_grafana_hook.ts.
+		const grafanaHook = await handleGrafanaWebhook(new URL(request.url), request, env);
+		if (grafanaHook) return grafanaHook;
 
 		// Raw-bytes upload door — POST /s/up, bearer-gated by SUX_UPLOAD_TOKEN (unset ⇒ 404).
 		// The write-twin of the public GET /s/<uuid> read route (observability.ts): a local
