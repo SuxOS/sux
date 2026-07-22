@@ -593,6 +593,18 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   ending, warranty expiry, ...) should write `next_review` frontmatter on its own note
   rather than building bespoke reminder plumbing — no scan-side change is needed to opt in.
 
+- **A PR body's merely-descriptive "…which also closes #N" (about a LATER follow-up, not this
+  PR) still trips GitHub's closing-keyword parser on merge** — it scans the whole body/commit
+  text for `close(s|d)`/`fix(es|ed)`/`resolve(s|d)` + `#N` ANYWHERE, not just a dedicated
+  "Closes #N" line. PR #1311's body said "…the strip-follow-up… which also closes #1308" while
+  describing FUTURE work; #1308 (the still-unbuilt `oracle ask` assim-domain read leg) was
+  auto-closed COMPLETED on that merge even though the fix was never written — #1289's build
+  (the arc's own E2E acceptance eval) had to actually implement it from scratch. Never write
+  "close/fix/resolve #N" in prose describing work a PR does NOT itself land; say "relates to
+  #N" or similar instead. And don't trust a CLOSED/COMPLETED issue at face value when its own
+  linked PRs' diffs don't obviously touch the area it describes (an extension of the existing
+  "closed issue doesn't guarantee it shipped" gotcha above) — check the actual diff.
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s
