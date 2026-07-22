@@ -326,6 +326,13 @@ export interface PullResult {
 // single durable step's wall-clock budget.
 const MAX_PAGES_PER_TYPE = 50;
 
+// A hard ceiling on DocumentReference→Binary fetches per plan item (design §3.1) — a
+// note-heavy chart can reference thousands of attachments, and each Binary is its own
+// FHIR round-trip + R2 write, so an unbounded fan-out could exhaust the instance's
+// subrequest budget from inside ONE step. Hitting the cap flips the type's status to
+// "truncated" (surfaced via reconcilePull's `errors`), never a silent partial.
+export const MAX_BINARIES_PER_TYPE = 200;
+
 // ---------------- pull: durable op-engine leaves (op-engine/registry.ts's "mychart-pull") ----------------
 //
 // `pull` used to be one synchronous function looping the WHOLE plan (every USCDI type,
@@ -358,7 +365,7 @@ export interface PullTypeResult {
 	pages: number;
 	binaries: number;
 	keys: number;
-	status: "ok" | "unsupported" | "truncated";
+	status: "ok" | "unsupported" | "truncated" | "throttled";
 }
 
 /** Page through ONE resource type's searchset, resolve DocumentReference → Binary
@@ -368,7 +375,9 @@ export interface PullTypeResult {
  * THROWS so the durable interpreter's `step.do` retries this ONE type with backoff
  * (durable.ts's `stepConfig`, driven by the leaf's declared `retries`) instead of the
  * old behavior of silently `break`ing and losing the whole type. A 404 (org doesn't
- * support this type) is reported as `status:'unsupported'`, never an error. */
+ * support this type) is reported as `status:'unsupported'`, never an error. Binary
+ * fan-out is bounded by MAX_BINARIES_PER_TYPE — past the cap the type reports
+ * `status:'truncated'` and stops fetching attachments (pages still land). */
 export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullTypeResult> {
 	const base = fhirBase(item.org);
 	let url: string | null = `${base}/${item.type}?${item.query}`;
@@ -404,8 +413,16 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 		keys += 1;
 		await putPhi(env, `mychart/${item.org}/${item.patient}/${item.label}/${item.stamp}-p${page}.json`, JSON.stringify(bundle), "application/fhir+json");
 		if (item.type === "DocumentReference") {
-			for (const doc of resources) {
+			docs: for (const doc of resources) {
+				if (binaries >= MAX_BINARIES_PER_TYPE) {
+					status = "truncated";
+					break;
+				}
 				for (const bin of await resolveBinaries(env, item.org, base, doc)) {
+					if (binaries >= MAX_BINARIES_PER_TYPE) {
+						status = "truncated";
+						break docs;
+					}
 					await putPhi(env, `mychart/${item.org}/${item.patient}/Binary/${bin.id}.json`, bin.body, "application/fhir+json");
 					binaries++;
 					keys++;
@@ -418,9 +435,20 @@ export async function pullType(env: RtEnv, item: PullPlanItem): Promise<PullType
 	return { org: item.org, patient: item.patient, label: item.label, count, pages: page, binaries, keys, status };
 }
 
+/** The `pull-type` leaf's retry-exhaustion fallback (design §3.1): when a type's
+ * transient 429/5xx throw outlives the durable step's whole retry budget, the op's
+ * `catchOp` wrapper (op-engine/registry.ts) lands here instead of letting one bad type
+ * sink the ENTIRE pull — every other type's already-memoized result survives, and this
+ * type reports `status:'throttled'` (zero counts — nothing this attempt wrote is
+ * countable), which reconcilePull surfaces in `errors`, never as a clean sync. */
+export function throttledPullType(item: PullPlanItem): PullTypeResult {
+	return { org: item.org, patient: item.patient, label: item.label, count: 0, pages: 0, binaries: 0, keys: 0, status: "throttled" };
+}
+
 /** Merge the per-type fan-out results (op-engine `map` output) into the summary
  * `PullResult` the `mychart` fn returns — `errors` non-empty means the caller KNOWS
- * the sync was partial (a truncated/errored type is never silently reported clean). */
+ * the sync was partial (a truncated/errored/throttled type is never silently reported
+ * clean). */
 export function reconcilePull(results: PullTypeResult[]): PullResult {
 	const counts: Record<string, number> = {};
 	const errors: Record<string, string> = {};
@@ -435,7 +463,10 @@ export function reconcilePull(results: PullTypeResult[]): PullResult {
 		keys += r.keys;
 		if (r.status === "truncated") {
 			truncated = true;
-			errors[r.label] = "truncated (page cap or non-retryable HTTP error)";
+			errors[r.label] = "truncated (page/binary cap or non-retryable HTTP error)";
+		} else if (r.status === "throttled") {
+			truncated = true;
+			errors[r.label] = "throttled (retry budget exhausted on a transient HTTP error)";
 		}
 	}
 	const org = results[0]?.org ?? "";
