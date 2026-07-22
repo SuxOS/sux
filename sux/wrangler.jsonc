@@ -13,6 +13,14 @@
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	// KV: OAuth state + tool-result cache (same scheme as the core Worker).
 	"kv_namespaces": [{ "binding": "OAUTH_KV", "id": "d0dadc11fdd64598992f4a84a958bafb" }],
+	// Vectorize — the ONE unified oracle retrieval index (#1290, v5 keystone): every domain's
+	// embedded chunks (vault/mail/files/contacts/oracle/assim) live in `sux-corpus` (768-dim,
+	// cosine — matching bge-base-en-v1.5) partitioned by a per-domain NAMESPACE, so `oracle ask`
+	// queries an out-of-band-built ANN index instead of rebuilding a brute-force KV cosine index
+	// on the query path (the #1298 timeout root cause). Provisioned out-of-band 2026-07-22
+	// (`wrangler vectorize create sux-corpus --dimensions=768 --metric=cosine`); populate it with
+	// `oracle {action:"reindex"}` post-deploy. See src/fns/_vectorize.ts.
+	"vectorize": [{ "binding": "VECTORIZE", "index_name": "sux-corpus" }],
 	// Workers AI — edge inference for summarize/translate/classify/embed/ocr (~300× cheaper).
 	// AI Gateway routing (#1060, improvement-backlog.md item 9) is configured entirely
 	// out-of-band, NOT declared here (like MONARCH_TOKEN / OBSIDIAN_VAULT_REPO): set the

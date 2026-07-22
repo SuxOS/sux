@@ -1,6 +1,7 @@
 import { llm } from "../ai";
 import type { RtEnv } from "../registry";
 import { cosine } from "./_embed";
+import { upsertSourceChunks } from "./_vectorize";
 
 // The AUTHORITATIVE-SOURCE substrate behind the `advise` fn — the tier-1 store the
 // grounded advisor is gated by. Modeled one-for-one on _examples.ts: a KV-backed set of
@@ -109,6 +110,12 @@ export function chunkText(text: string, target = TARGET, max = MAX): string[] {
 
 export async function putChunk(env: RtEnv, c: SourceChunk): Promise<void> {
 	await env.OAUTH_KV?.put(chunkKey(c.domain, c.id), JSON.stringify(c));
+	// Write-path tap into the unified Vectorize index (#1290): every chunk that lands in KV
+	// ALSO upserts into `sux-corpus` under its coarse namespace, keyed by the SAME KV id the
+	// backfill uses — so live writes and a reindex sweep never duplicate. Best-effort and
+	// fail-open (upsertSourceChunks no-ops without the binding and never throws); the KV write
+	// above is the source of truth and must never be gated on the index accelerator.
+	await upsertSourceChunks(env, [c]);
 }
 
 /** Load every chunk in a domain, paginating KV list() (caps at 1000 keys/page). The linear scan

@@ -1,6 +1,8 @@
 import { hasAI, llm } from "../ai";
 import { type Fn, failWith, ok, type RtEnv } from "../registry";
 import { ASK_LOG_KEY, type AskVerdict, recordAskFeedback, runAsk } from "./_answer";
+import { type ReindexDomain, reindexCorpus } from "./_reindex";
+import { hasVectorize } from "./_vectorize";
 import { embed, embedOne } from "./_embed";
 import { maybeCompressString, maybeDecompressString } from "./_gzip";
 import { appendOnOracle } from "./_kb";
@@ -239,10 +241,11 @@ export const oracle: Fn = {
 			problem: { type: "string", description: "A question/problem to answer using own + learned knowledge." },
 			knowledge: { type: "string", description: "Raw text to learn from, OR an http(s) URL (article/book/website) to fetch, distill, and remember." },
 			topic: { type: "string", default: "default", description: "Knowledge-base namespace — keep separate bodies of knowledge (default \"default\")." },
-			action: { type: "string", enum: ["get", "list", "status", "forget", "ask", "feedback"], description: "get | list | status | forget (manage) — or ask (topic-free cited answering over the semantic indices + every KB) | feedback (thumbs verdict on a prior ask)." },
+			action: { type: "string", enum: ["get", "list", "status", "forget", "ask", "feedback", "reindex"], description: "get | list | status | forget (manage) — or ask (topic-free cited answering over the unified Vectorize index + every KB) | feedback (thumbs verdict on a prior ask) | reindex (admin: (re)populate the sux-corpus Vectorize index from the existing corpus — idempotent)." },
 			answer_id: { type: "string", description: "feedback only: the `answer_id` a prior ask returned." },
 			verdict: { type: "string", enum: ["up", "down"], description: "feedback only: thumbs up or down on that answer." },
 			note: { type: "string", description: "feedback only: optional short note on why." },
+			domain: { type: "string", enum: ["vault", "mail", "files", "contacts", "source"], description: "reindex only: limit the backfill to ONE corpus domain (resumable — run one at a time if a full pass exceeds the request budget). Omit to reindex all." },
 		},
 	},
 	cacheable: false,
@@ -332,7 +335,14 @@ export const oracle: Fn = {
 				return ok(oj({ action, ...(await runAsk(env, problem)) }));
 			}
 
-			if (action) return failWith("bad_input", `Unknown action '${action}'. Use get | list | status | forget | ask | feedback, or pass \`problem\`/\`knowledge\`.`);
+			if (action === "reindex") {
+				if (!hasVectorize(env)) return failWith("not_configured", "Vectorize binding VECTORIZE not bound (add the sux-corpus vectorize binding to wrangler) — nothing to (re)populate.");
+				if (!hasAI(env)) return failWith("not_configured", 'Workers AI binding not configured (add "ai" to wrangler) — needed to (re)build the source semantic indices before upserting.');
+				const only = args?.domain ? [String(args.domain).trim() as ReindexDomain] : undefined;
+				return ok(oj({ action, ...(await reindexCorpus(env, only ? { domains: only } : {})) }));
+			}
+
+			if (action) return failWith("bad_input", `Unknown action '${action}'. Use get | list | status | forget | ask | feedback | reindex, or pass \`problem\`/\`knowledge\`.`);
 
 			// ---- Learn / answer ----
 			if (!knowledge && !problem) return failWith("bad_input", "Provide `problem` to answer, `knowledge` to learn, or an `action` (get | list | status | forget | ask | feedback).");

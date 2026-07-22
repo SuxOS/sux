@@ -9,6 +9,7 @@ import { maybeDecompressString } from "./_gzip";
 import { mailSemanticIndexCached, topKMailByCosine } from "./_mail_semantic";
 import { chunkText, listChunks, newId } from "./_source";
 import { errMsg } from "./_util";
+import { hasVectorize, queryCorpus, type VecDomain } from "./_vectorize";
 import { topKByCosine, vaultSemanticIndexCached } from "./_vault_semantic";
 import { vaultCfg } from "./obsidian";
 
@@ -262,11 +263,38 @@ async function fromOracleKbs(env: RtEnv, vec: number[]): Promise<DomainGather> {
 	return { passages: passages.slice(0, PER_DOMAIN_K), indexed_at };
 }
 
+/** The unified-index cutover (#1290): a domain leg queries `sux-corpus`'s per-domain namespace
+ *  FIRST (an out-of-band-built ANN index — no query-path rebuild, the #1298 fix), and only if
+ *  Vectorize is unbound, errors, or its namespace is empty (not yet backfilled) does it fall
+ *  back to the retained KV cosine core. This is the measured, parity-first cutover: Vectorize
+ *  is the PRIMARY read path, the cosine cores the fail-open fallback (#1262), stripped only once
+ *  prod parity is proven. A Vectorize-served leg reports indexed_at=null (Vectorize has no
+ *  per-domain build timestamp); a fallback-served leg keeps the cosine core's indexed_at. */
+function withVectorize(domain: VecDomain, cosineLeg: (env: RtEnv, vec: number[]) => Promise<DomainGather>): (env: RtEnv, vec: number[]) => Promise<DomainGather> {
+	return async (env: RtEnv, vec: number[]): Promise<DomainGather> => {
+		if (hasVectorize(env)) {
+			try {
+				const hits = await queryCorpus(env, domain, vec, PER_DOMAIN_K);
+				if (hits.length) return { passages: hits.map((h) => ({ pointer: h.pointer, text: h.text, score: h.score })), indexed_at: null };
+			} catch (e) {
+				console.log(`oracle ask: vectorize ${domain} leg failed → cosine fallback: ${errMsg(e)}`);
+			}
+		}
+		return cosineLeg(env, vec);
+	};
+}
+
+// vault/mail/files/contacts read Vectorize-first with a cosine fallback. The oracle leg is
+// LEFT ON its KV two-tier path deliberately — #1310's Finding-2 fix (fromOracleKbs unions the
+// pre-embedded detail chunks with query-time-embedded summaries so a summary-only topic still
+// answers) is preserved verbatim; the oracle corpus is small and already within budget, and
+// its Vectorize copy (populated by the backfill) is reserved for the strip-follow-up that
+// unifies its read too (which also closes #1308's assim read-leg gap).
 const ASK_DOMAINS: Record<string, (env: RtEnv, vec: number[]) => Promise<DomainGather>> = {
-	vault: fromVaultIndex,
-	mail: fromMailIndex,
-	files: fromFilesIndex,
-	contacts: fromContactsIndex,
+	vault: withVectorize("vault", fromVaultIndex),
+	mail: withVectorize("mail", fromMailIndex),
+	files: withVectorize("files", fromFilesIndex),
+	contacts: withVectorize("contacts", fromContactsIndex),
 	oracle: fromOracleKbs,
 };
 
