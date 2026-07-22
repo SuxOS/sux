@@ -8,6 +8,7 @@
 import type { RtEnv } from "../registry";
 import { dropboxPut, hasDropbox } from "./dropbox";
 import { vaultCfg, vaultPut } from "./obsidian";
+import { vaultInboxDir } from "./_vaultpaths";
 
 type R2Event = { action?: string; bucket?: string; object?: { key?: string; size?: number; eTag?: string }; eventTime?: string };
 
@@ -63,7 +64,7 @@ async function handleOne(env: RtEnv, ev: R2Event): Promise<boolean> {
 	}
 	const day = (ev.eventTime ?? new Date().toISOString()).slice(0, 10);
 	const stem = name.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_");
-	const notePath = `Inbox/scan-${day} ${stem}.md`;
+	const notePath = `${vaultInboxDir(env)}/scan-${day} ${stem}.md`;
 	const note = [
 		"---",
 		"type: capture",
