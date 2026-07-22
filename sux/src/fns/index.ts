@@ -122,6 +122,7 @@ import { voice } from "./voice";
 import { fontcase } from "./fontcase";
 import { recall } from "./recall";
 import { audit_log } from "./audit_log";
+import { consensus } from "./consensus";
 import { contact_consolidate_plan } from "./contact_consolidate_plan";
 import { evidence_packet } from "./evidence_packet";
 import { files_consolidate_plan } from "./files_consolidate_plan";
@@ -259,6 +260,7 @@ export const FUNCTIONS: Fn[] = [
 	fontcase,
 	recall,
 	audit_log,
+	consensus,
 	contact_consolidate_plan,
 	evidence_packet,
 	files_consolidate_plan,
