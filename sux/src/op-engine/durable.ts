@@ -23,9 +23,13 @@
 // Concurrency: `map` and `sink` fan out with `Promise.all` of `step.do` — a pattern
 // Cloudflare's "Rules of Workflows" explicitly supports ("works correctly across
 // engine lifetimes"); only `Promise.race`/`Promise.any` need wrapping. `map` stays
-// bounded by the op's own limiter (`node.concurrency`), matching `runInline`.
+// bounded by the op's own limiter (`node.concurrency`), matching `runInline`. `race`
+// (#1350) wraps its winner-selection (indices only, not values) in its own step.do so
+// replay honors the original settle order instead of re-deciding from memo-collapsed
+// settle order.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig, type WorkflowTimeoutDuration } from "cloudflare:workers";
 import { memoKey, runReconcile, type Caps, type CondPredicate, type LeafOpts, type Op, type SinkOpts } from "@suxos/lib";
+import { errMsg } from "../prim.js";
 import type { RtEnv } from "../registry.js";
 
 // Above this, the fan-out would blow through the per-instance step ceiling (25k) —
@@ -270,45 +274,81 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 			// Mirrors suxlib's inline race semantics (suxlib #431/#432): settle on the
 			// `need`-th success (need absent/1 resolves the BARE winning value; need>1
 			// collects the quorum into an array in settle order), and reject the moment
-			// the quorum is mathematically unreachable (one failure as-is, several as an
-			// AggregateError). Losing branches are not cancelled — a durable step in
-			// flight runs to completion, the same non-preemptive contract as suxlib's
-			// cooperative cancellation; their late settlements are ignored via `done`.
+			// the quorum is mathematically unreachable. Losing branches are not cancelled
+			// — a durable step in flight runs to completion, the same non-preemptive
+			// contract as suxlib's cooperative cancellation; their late settlements are
+			// ignored via `done`. Extends suxlib #444's mirror-image guard: `need < 1` (or
+			// non-integer) with every branch failing must not hang the promise forever —
+			// in a durable Workflow that wedges the instance until its timeout instead of
+			// hanging a process.
 			const need = node.need ?? 1;
 			const total = node.ops.length;
-			if (need > total) throw new Error(`race: \`need\` (${need}) exceeds its \`ops\` array's length (${total})`);
-			return new Promise((resolve, reject) => {
-				const wins: unknown[] = [];
-				const failures: unknown[] = [];
-				let settled = 0;
-				let done = false;
-				node.ops.forEach((branchOp, i) => {
-					interpretDurable(branchOp, input, step, caps, `${path}.${i}`).then(
-						(v) => {
-							settled++;
-							if (done) return;
-							wins.push(v);
-							if (wins.length >= need) {
-								done = true;
-								resolve(need === 1 ? wins[0] : wins);
-							}
-						},
-						(e) => {
-							settled++;
-							if (done) return;
-							failures.push(e);
-							if (wins.length + (total - settled) < need) {
-								done = true;
-								reject(
-									failures.length === 1
-										? failures[0]
-										: new AggregateError(failures, `race: only ${wins.length} of ${need} needed branches succeeded (${total} total, ${failures.length} failed)`),
-								);
-							}
-						},
-					);
+			if (!Number.isInteger(need) || need < 1 || need > total) {
+				throw new Error(`race: \`need\` (${need}) must be an integer between 1 and its \`ops\` array's length (${total})`);
+			}
+
+			// #1350: settle order is real-time non-determinism happening OUTSIDE any
+			// step.do — the header's own REPLAY DETERMINISM note (line 25) flags exactly
+			// this as the one case Promise.race/any needs wrapping for. Left unwrapped, a
+			// replay (isolate eviction, retry) sees every branch's step.do resolve near-
+			// instantly from memo, collapsing settle order to scheduling order — which can
+			// crown a DIFFERENT winner than the original run, silently mixing that branch's
+			// value into already-memoized downstream steps.
+			//
+			// Fix: kick off every branch (each branch's own leaves/sinks are independently
+			// memoized via their own step.do calls, so they replay near-instantly regardless
+			// of which branch "wins" here), then persist only the DECISION — which branch
+			// index(es) won, not their values — inside its own step.do. Replay hands back the
+			// original decision instead of re-observing settle order, so the winner never
+			// flips across runs.
+			const branchPromises = node.ops.map((branchOp, i) => interpretDurable(branchOp, input, step, caps, `${path}.${i}`));
+			// A losing branch can reject before the decision step below attaches its own
+			// handlers — swallow here so it never surfaces as an unhandled rejection; the
+			// real failure (if it matters) is captured by the decision logic itself.
+			for (const p of branchPromises) p.catch(() => {});
+
+			type RaceDecision = { winners: number[] } | { failed: string[] };
+			const decision = await step.do(`${path}.decide`, (): Promise<RaceDecision> => {
+				return new Promise<RaceDecision>((resolve) => {
+					const wins: number[] = [];
+					const failures: string[] = [];
+					let settled = 0;
+					let done = false;
+					branchPromises.forEach((p, i) => {
+						p.then(
+							() => {
+								settled++;
+								if (done) return;
+								wins.push(i);
+								if (wins.length >= need) {
+									done = true;
+									resolve({ winners: wins });
+								}
+							},
+							(e) => {
+								settled++;
+								if (done) return;
+								failures.push(errMsg(e));
+								if (wins.length + (total - settled) < need) {
+									done = true;
+									resolve({ failed: failures });
+								}
+							},
+						);
+					});
 				});
 			});
+
+			if ("failed" in decision) {
+				throw decision.failed.length === 1
+					? new Error(decision.failed[0])
+					: new AggregateError(
+							decision.failed.map((m) => new Error(m)),
+							`race: only ${total - decision.failed.length} of ${need} needed branches succeeded (${total} total, ${decision.failed.length} failed)`,
+						);
+			}
+			const values = await Promise.all(decision.winners.map((i) => branchPromises[i]));
+			return need === 1 ? values[0] : values;
 		}
 		default: {
 			const _exhaustive: never = node;
