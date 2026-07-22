@@ -43,6 +43,12 @@ export type RtEnv = Env &
 		// AnalyticsEngineDataset is declared ambiently by wrangler's generated
 		// worker-configuration.d.ts.
 		ANALYTICS?: AnalyticsEngineDataset;
+		// The unified oracle retrieval index (#1290) — one Vectorize index `sux-corpus`
+		// (768-dim, cosine) partitioned by per-domain namespace. Hand-declared on RtEnv (like
+		// R2Bucket's override) rather than regenerated into worker-configuration.d.ts, per the
+		// CLAUDE.md gotcha about a sandbox `wrangler types` dropping secret-derived Env fields.
+		// `Vectorize` is declared ambiently by worker-configuration.d.ts. See fns/_vectorize.ts.
+		VECTORIZE?: Vectorize;
 
 		BRAVE_API_KEY?: string;
 
