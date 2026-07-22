@@ -205,6 +205,19 @@ export async function acquireFromUrl(env: RtEnv, url: string, as: "pdf" | "archi
 	if (storeRefUuid(url)) return loadBytesFromUrl(env, url);
 
 	if (as === "pdf") {
+		// A non-sux URL can also already serve a raw PDF (a publisher's direct link, a CDN,
+		// ...) — sniff it via a real fetch before committing to render's headless-Chromium
+		// print pass, which has nothing to add over the bytes already on the wire and can
+		// come back an empty husk for the same reasons a store ref did (#1385). Fall through
+		// to render on any sniff failure (network error, non-PDF content) — the extra fetch
+		// only costs the common HTML-page case one wasted round trip.
+		try {
+			const sniffed = await loadBytesFromUrl(env, url);
+			if (isPdfMagic(sniffed.bytes)) return sniffed;
+		} catch {
+			// not fatal — render below gets its own shot at the URL
+		}
+
 		const renderFn = await findFn("render");
 		const r = await renderFn.run(env, { url, as: "pdf", delivery: "base64" });
 		if (r?.isError) throw new Error(r.content?.[0]?.text ?? "render failed");
