@@ -1,5 +1,6 @@
-import { type Fn, type RtEnv, fail, ok } from "../registry";
+import { type Fn, type RtEnv, fail, failWith, ok } from "../registry";
 import { type AssimilateInput, assimilate, hasAssimilate } from "./_assimilate";
+import { runPortalScrape } from "./_portal_scrape";
 import { htmlToMd } from "./_markup";
 import { clampBytes, loadBytes, putBlob, vaultToday, oj } from "./_util";
 import { vaultInboxDir } from "./_vaultpaths";
@@ -144,7 +145,7 @@ export const ingest: Fn = {
 	name: "ingest",
 	cost: 3,
 	description:
-		"The universal toss-path inbox — \"toss me information\" for anything you want remembered: capture it into the Obsidian vault (git-backed = the undo; the KV cache is warmed) AND, when the assimilation spine is enabled, learn it — the note is distilled and indexed so `oracle ask` can later retrieve it with a citation back to this note. Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). A repeat capture whose resolved content exactly matches an earlier one returns that note's ref instead of minting a new one (content-fingerprint dedup, not a URL/path match) — pass force:true to capture again anyway. A pasted/uploaded NSLDS `MyStudentData.txt` (federal student-loan aggregate download) auto-detects and parses into a structured per-loan note (servicer/status/rate/PSLF months) instead of landing as raw text. Returns { note, created, commit, source, pass?, blob?, duplicate? }.",
+		"The universal toss-path inbox — \"toss me information\" for anything you want remembered: capture it into the Obsidian vault (git-backed = the undo; the KV cache is warmed) AND, when the assimilation spine is enabled, learn it — the note is distilled and indexed so `oracle ask` can later retrieve it with a citation back to this note. Exactly one source: url (HTML → markdown; text files verbatim; binary files become attachments; fetch cap 32MB) | text (verbatim body) | query (web-search results). A non-HTML/text URL (e.g. a PDF) is stored as an opaque blob here — never text-extracted or distilled. To actually extract and learn a PDF/book's content (native PDF + OCR, distilled into a whitelisted oracle topic), use `study` instead. Writes a provenance-stamped note (frontmatter type/created/source/tags) to Inbox/<date> <slug>.md — never overwriting (collisions get a time suffix) — or to an explicit `path` (overwrites). Bodies over 150k chars are truncated with a marker. Optional passes (skipped for binary captures, degrade to verbatim when AI is unavailable): summarize:true prepends an AI summary section; compress:true stores only the distilled summary — for url sources the original stays re-fetchable via provenance; for text/query the original is not retained. Blob routing: ≤1MB commits into the vault repo (![[Attachments/…]]); larger — or blobs:'dropbox' — uploads to the Dropbox app folder and the note links the shared URL (PUBLIC anyone-with-the-link; R2 fallback when Dropbox isn't configured — either DROPBOX_TOKEN or the DROPBOX_REFRESH_TOKEN+APP_KEY durable flow). A repeat capture whose resolved content exactly matches an earlier one returns that note's ref instead of minting a new one (content-fingerprint dedup, not a URL/path match) — pass force:true to capture again anyway. A pasted/uploaded NSLDS `MyStudentData.txt` (federal student-loan aggregate download) auto-detects and parses into a structured per-loan note (servicer/status/rate/PSLF months) instead of landing as raw text. `portal: <name>` instead drives a login-gated source with no API (e.g. credit_karma) through the render/scrape stack + CapSolver, extracts the target data (credit score / loan detail) and captures it as a structured note the oracle then tracks over time — credentials come from named secrets (never the request); a missing credential returns not_configured, and an MFA/bot-wall is reported honestly (blocked), never faked as success. Returns { note, created, commit, source, pass?, blob?, duplicate? }.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,
@@ -152,6 +153,7 @@ export const ingest: Fn = {
 			url: { type: "string", description: "Capture a web page or file." },
 			text: { type: "string", description: "Capture raw text/markdown as the note body." },
 			query: { type: "string", description: "Run a web search and capture the results." },
+			portal: { type: "string", description: "Scrape a credentialed login-gated source by name (e.g. 'credit_karma') via the render stack + CapSolver, capturing the extracted data as a structured note. Credentials come from named secrets, never here." },
 			title: { type: "string", description: "Note title (derived from the source when omitted)." },
 			path: { type: "string", description: "Explicit vault note path (default Inbox/<date> <slug>.md)." },
 			tags: { type: "array", items: { type: "string" }, description: "Extra frontmatter tags ('capture' is always included)." },
@@ -168,7 +170,8 @@ export const ingest: Fn = {
 		const url = typeof args?.url === "string" && args.url.trim() ? String(args.url).trim() : undefined;
 		const text = typeof args?.text === "string" && args.text.trim() ? String(args.text) : undefined;
 		const query = typeof args?.query === "string" && args.query.trim() ? String(args.query).trim() : undefined;
-		if ([url, text, query].filter(Boolean).length !== 1) return fail("Provide exactly one source: `url`, `text`, or `query`.");
+		const portal = typeof args?.portal === "string" && args.portal.trim() ? String(args.portal).trim() : undefined;
+		if ([url, text, query, portal].filter(Boolean).length !== 1) return fail("Provide exactly one source: `url`, `text`, `query`, or `portal`.");
 		const tags = Array.isArray(args?.tags) ? args.tags.map(String) : [];
 		const date = vaultToday(env.VAULT_TZ);
 
@@ -191,6 +194,22 @@ export const ingest: Fn = {
 				title ||= query;
 				source = `search: ${query}`;
 				body = got;
+			} else if (portal) {
+				// Credentialed-portal scrape (#portal-scraper): drive the login-gated source,
+				// solve any bot-wall via CapSolver, extract the target data. Non-ok statuses
+				// (missing creds / MFA / bot wall / changed layout) are reported honestly with
+				// the right FailCode instead of writing a bogus note.
+				const pr = await runPortalScrape(env, portal);
+				if (pr.status !== "ok") {
+					if (pr.status === "not_configured") return failWith("not_configured", pr.message ?? `portal '${portal}' not configured`);
+					if (pr.status === "needs_reauth" || pr.status === "bot_wall" || pr.status === "blocked_source") return failWith("blocked", pr.message ?? `portal '${portal}' ${pr.status}`);
+					if (pr.status === "layout_change") return failWith("layout_change", pr.message ?? `portal '${portal}' layout changed`);
+					return fail(pr.message ?? `portal '${portal}' failed`);
+				}
+				title ||= pr.title ?? portal;
+				source = `portal: ${portal}`;
+				body = pr.body ?? "";
+				if (pr.tags?.length) tags.push(...pr.tags);
 			} else {
 				const { bytes, contentType } = await loadBytes(env, { url });
 				const ct = String(contentType ?? "")

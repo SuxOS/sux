@@ -38,6 +38,13 @@ describe("ingest (capture → vault)", () => {
 		expect(r.content[0].text).toMatch(/exactly one source/);
 	});
 
+	it("routes portal: to the credentialed scraper and reports not_configured without creds", async () => {
+		const r = await ingest.run(ENV, { portal: "credit_karma" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("not_configured");
+		expect(r.content[0].text).toMatch(/CREDIT_KARMA_USERNAME/);
+	});
+
 	it("captures text into Inbox with provenance frontmatter", async () => {
 		const gh = ghMock();
 		routes.handler = gh.handler;
