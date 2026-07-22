@@ -1076,6 +1076,14 @@ export default {
 		const { handleIngestBatch } = await import("./fns/_ingest_queue");
 		await handleIngestBatch(batch, env);
 	},
+	async email(message: ForwardableEmailMessage, env: RtEnv, _ctx: ExecutionContext): Promise<void> {
+		// Cloudflare Email Routing → vault@/files@ ingest doors (#1198 P1a, #1199). Zone routing
+		// itself (pointing those addresses at this Worker) is a Cloudflare-dashboard/DNS step an
+		// operator does separately — this is only the handler side. Lazy import, same pattern as
+		// queue() above: the email surface is pulled in only when a message actually arrives.
+		const { handleEmail } = await import("./fns/_email_ingest");
+		await handleEmail(message, env);
+	},
 	async fetch(request: Request, env: RtEnv, ctx: ExecutionContext): Promise<Response> {
 		// Public, unauthenticated observability routes (health/metrics/logs) are
 		// served before the OAuth provider claims every path.

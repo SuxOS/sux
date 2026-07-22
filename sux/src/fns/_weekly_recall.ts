@@ -13,7 +13,7 @@
 // re-implemented here; tests inject fakes instead of a live recall + vault.
 import type { RtEnv } from "../registry";
 import { ledger } from "../ledger";
-import { errMsg } from "./_util";
+import { errMsg, vaultToday } from "./_util";
 
 // A truthy toggle ("0"/"false"/"off"/empty ⇒ off), so an explicit WEEKLY_RECALL_ENABLED=0
 // stays off rather than arming on mere presence — mirrors _mail_triage's flagOn.
@@ -62,9 +62,35 @@ export function isoWeek(tz?: string, now: Date = new Date()): string {
 	return `${dt.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
+export type ReviewDueRef = { path: string; next_review: string; title?: string };
+
+const REVIEW_SCAN_CAP = 2000;
+
+/** Notes anywhere in the vault carrying a `next_review: YYYY-MM-DD` frontmatter date that has
+ *  already passed — e.g. _nslds.ts's quarterly re-download reminder (#1326's cheaper first cut:
+ *  surface these off the existing weekly sweep instead of building bespoke quarterly cron
+ *  plumbing). A plain scanVault + frontmatter filter, no LLM call needed. */
+export async function listReviewDueNotes(env: RtEnv, today: string, cap = REVIEW_SCAN_CAP): Promise<ReviewDueRef[]> {
+	const { scanVault } = await import("../vault-mcp");
+	const { records } = await scanVault(env, undefined, cap);
+	const todayMs = Date.parse(`${today}T00:00:00Z`);
+	const out: ReviewDueRef[] = [];
+	for (const r of records) {
+		const nr = r.fm?.next_review;
+		if (typeof nr !== "string" || !nr) continue;
+		const ms = Date.parse(`${nr}T00:00:00Z`);
+		if (!Number.isFinite(ms) || ms > todayMs) continue;
+		out.push({ path: r.path, next_review: nr, title: typeof r.fm?.title === "string" ? r.fm.title : undefined });
+	}
+	return out;
+}
+
 export type WeeklyRecallDeps = {
 	recall: (env: RtEnv, question: string) => Promise<{ answer: string; citations: string[] }>;
 	digestAppend: (env: RtEnv, path: string, content: string) => Promise<void>;
+	/** Notes whose `next_review` frontmatter has come due (#1326) — optional so pre-existing
+	 *  callers/tests need not supply it; omitted ⇒ the digest just carries no review section. */
+	reviewDueNotes?: (env: RtEnv, today: string) => Promise<ReviewDueRef[]>;
 };
 
 export type WeeklyRecallOpts = { week?: string; force?: boolean };
@@ -121,13 +147,17 @@ export type WeeklyRecallReport = {
 /** Build the markdown block appended to the Weekly note: one section per standing question,
  *  its cited recall answer beneath. Read-only content — no undo handle, because nothing was
  *  mutated anywhere but the vault (and a vault edit is git-reversible like any note). */
-function buildDigest(week: string, sections: WeeklyRecallSection[]): string {
+function buildDigest(week: string, sections: WeeklyRecallSection[], reviewDue: ReviewDueRef[]): string {
 	const lines: string[] = [`\n## Weekly recall — ${week} (${new Date().toISOString()})`];
 	lines.push(`_${sections.length} standing question(s) · recall fan-out across your vault, files, mail, web, learned_`);
 	for (const s of sections) {
 		lines.push(`\n### ${s.question}`);
 		lines.push(s.answer || "(no answer)");
 		if (s.citations.length) lines.push(`\n_sources: ${s.citations.join(", ")}_`);
+	}
+	if (reviewDue.length) {
+		lines.push(`\n### Notes due for review`);
+		for (const r of reviewDue) lines.push(`- [[${r.path}]]${r.title ? ` — ${r.title}` : ""} (next_review was ${r.next_review})`);
 	}
 	return `${lines.join("\n")}\n`;
 }
@@ -162,8 +192,19 @@ export async function runWeeklyRecall(env: RtEnv, opts: WeeklyRecallOpts, deps: 
 		}),
 	);
 
+	// Best-effort, never fails the cycle (#1326) — a deterministic frontmatter scan, not
+	// another recall/LLM call, so a scan failure just degrades to no review section this week.
+	let reviewDue: ReviewDueRef[] = [];
+	if (deps.reviewDueNotes) {
+		try {
+			reviewDue = await deps.reviewDueNotes(env, vaultToday(env.VAULT_TZ));
+		} catch (e) {
+			console.warn(`weekly_recall: review-due scan skipped: ${errMsg(e)}`);
+		}
+	}
+
 	try {
-		await deps.digestAppend(env, `Weekly/${week}.md`, buildDigest(week, sections));
+		await deps.digestAppend(env, `Weekly/${week}.md`, buildDigest(week, sections, reviewDue));
 		await led.mark(key); // mark AFTER a successful write so a failed append retries next tick
 		const content_hash = fingerprint(sections.map((s) => `${s.question}|${s.answer}`));
 		await led.mark(LAST_REPORT_KEY, JSON.stringify({ week, questions: questions.length, content_hash }));
@@ -190,5 +231,6 @@ export async function defaultDeps(): Promise<WeeklyRecallDeps> {
 			const r = await obsidian.run(env, { action: "append", path, content, backend: "git" });
 			if (r.isError) throw new Error(r.content?.[0]?.text ?? "vault append failed");
 		},
+		reviewDueNotes: (env, today) => listReviewDueNotes(env, today),
 	};
 }

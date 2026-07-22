@@ -22,6 +22,22 @@ on:
       - 'docs/claude-profile-snippet.md'
       - 'scripts/check-skill-sync.mjs'
       - '.github/workflows/skill-sync.yml'
+  # #1335: skill-sync isn't in main's required checks, so a PR whose OWN skill-sync run went
+  # red (e.g. a new fn landing without a SKILL.md mention) can still auto-merge — and once
+  # main itself carries the drift, EVERY subsequent PR's skill-sync goes red regardless of
+  # that PR's own content. This push trigger doesn't gate anything (the reusable workflow's
+  # `fix` job only runs on schedule/workflow_dispatch), it just makes main-side drift show up
+  # as a red check on main within minutes instead of silently waiting for the Monday cron.
+  push:
+    branches:
+      - main
+    paths:
+      - '.claude/skills/**'
+      - 'plugins/sux/skills/**'
+      - 'sux/src/fns/**'
+      - 'sux/scripts/gen-docs.mjs'
+      - 'docs/claude-profile-snippet.md'
+      - 'scripts/check-skill-sync.mjs'
 
 jobs:
   skill-sync:
