@@ -159,6 +159,96 @@ describe("oracle ask — answered path", () => {
 	});
 });
 
+// The assimilation spine (#1283) indexes scanned documents, triage-flagged mail, and tossed
+// ingest text under `assim:<stream>` domains (_assimilate.ts's indexLeg) — #1308 tracked the gap
+// where no ask leg ever read them back (closed without the fix landing; see _answer.ts's
+// fromAssimChunks comment), which is exactly what #1289's oracle-feel E2E eval caught. These
+// tests exercise the real KV chunk substrate directly (putChunk), same idiom as seedKbChunk.
+describe("oracle ask — assim leg reads the assimilation spine's chunks (#1289/#1308)", () => {
+	it("cites a scanned document by its stamped Dropbox path", async () => {
+		const { env } = makeEnv();
+		await putChunk(env, {
+			id: "scan1",
+			source_id: "s1",
+			domain: "assim:scan",
+			authority: "contextual",
+			title: "/documents/passport.jpg",
+			text: "Passport expires 2030-01-01.",
+			embedding: [1, 0, 0],
+			ts: 3333,
+		});
+
+		const r = await oracle.run(env, { action: "ask", problem: "when does my passport expire?" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.status).toBe("answered");
+		expect(j.citations).toEqual(["/documents/passport.jpg"]);
+		expect(j.domains.assim).toMatchObject({ status: "ok", hits: 1, kept: 1, indexed_at: 3333 });
+	});
+
+	it("cites triage-flagged mail by its mail:<jmap-id> pointer", async () => {
+		const { env } = makeEnv();
+		await putChunk(env, {
+			id: "mail1",
+			source_id: "s1",
+			domain: "assim:mail",
+			authority: "contextual",
+			title: "mail:m-123",
+			text: "Subject: Renewal notice\nYour policy renews next month.",
+			embedding: [1, 0, 0],
+			ts: 4444,
+		});
+
+		const r = await oracle.run(env, { action: "ask", problem: "when does my policy renew?" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.citations).toEqual(["mail:m-123"]);
+	});
+
+	it("cites a tossed/ingest capture by its vault note path", async () => {
+		const { env } = makeEnv();
+		await putChunk(env, {
+			id: "doc1",
+			source_id: "s1",
+			domain: "assim:doc",
+			authority: "contextual",
+			title: "Inbox/2026-07-22 grocery-list.md",
+			text: "Pick up milk, eggs, and bread.",
+			embedding: [1, 0, 0],
+			ts: 5555,
+		});
+
+		const r = await oracle.run(env, { action: "ask", problem: "what's on my grocery list?" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.citations).toEqual(["Inbox/2026-07-22 grocery-list.md"]);
+	});
+
+	it("phi:medical chunks never surface through the general ask path (#613's fence)", async () => {
+		const { env } = makeEnv();
+		await putChunk(env, {
+			id: "phi1",
+			source_id: "s1",
+			domain: "phi:medical",
+			authority: "contextual",
+			title: "mychart:lab-report.pdf",
+			text: "Creatinine 1.1 mg/dL.",
+			embedding: [1, 0, 0],
+			ts: 6666,
+		});
+
+		const r = await oracle.run(env, { action: "ask", problem: "what was my last creatinine?" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.status).toBe("no_match");
+		expect(j.domains.assim.status).toBe("skipped");
+	});
+
+	it("no assimilated chunks is a fast skip, not a failure", async () => {
+		const { env } = makeEnv();
+		await seedKbChunk(env);
+		const r = await oracle.run(env, { action: "ask", problem: "creatinine?" });
+		const j = JSON.parse(r.content[0].text);
+		expect(j.domains.assim).toMatchObject({ status: "skipped", detail: "no assimilated documents" });
+	});
+});
+
 // Finding 1 (#1298): the large-corpus domains rebuild their index synchronously on the query
 // path and can never finish within a request, so every ask burned the full 8s per-domain budget
 // and degraded. ask now reads cached-only — a cold index skips FAST (the cheap-correct degrade

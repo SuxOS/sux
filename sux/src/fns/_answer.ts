@@ -263,6 +263,34 @@ async function fromOracleKbs(env: RtEnv, vec: number[]): Promise<DomainGather> {
 	return { passages: passages.slice(0, PER_DOMAIN_K), indexed_at };
 }
 
+/** ASSIM ingress leg (v5 W10 #1289 / #1308): the assimilation spine (_assimilate.ts) indexes
+ *  every ingested document — scan-radar photos, triage-flagged mail, tossed/ingest text — under
+ *  `assim:<stream>` domains (scan/mail/doc), each chunk pre-embedded at write time (indexLeg)
+ *  and already upserted live into the Vectorize `assim` namespace (_source.ts's write-path tap,
+ *  #1290/#1311's upsertSourceChunks) — but no ask leg ever queried it. #1308 tracked exactly
+ *  this gap and reads CLOSED, but the fix was never actually landed (a PR body's descriptive
+ *  "which also closes #1308" — about a LATER strip-follow-up, not this PR — tripped GitHub's
+ *  closing-keyword parser on merge); #1289's E2E eval surfaced the same gap for real: a scanned
+ *  document or triage-flagged email indexed by the spine was never retrievable by `oracle ask`.
+ *  Reads Vectorize first like the other domains (queryCorpus's namespace already has live data),
+ *  falling back to the KV cosine core via listChunks(env,"assim") — the same domain-prefix walk
+ *  fromOracleKbs uses for "oracle:<topic>". Pointer is the chunk's own provenance `title`
+ *  (pointerForSourceChunk's convention, mirrored here so a KV-served and Vectorize-served hit
+ *  cite identically): the Dropbox path for a scan, `mail:<jmap-id>` for triage-flagged mail, the
+ *  vault note path for a tossed capture. `phi:medical` is deliberately EXCLUDED — the phi fence
+ *  (#613) keeps medical material out of the general ask path; that's a separate, not-yet-built
+ *  gated leg (arc W7), and `listChunks(env,"assim")`'s prefix (`sux:source:chunk:assim:`) never
+ *  matches `phi:medical` chunks anyway (assimDomain() namespaces them apart, see _assimilate.ts). */
+async function fromAssimChunks(env: RtEnv, vec: number[]): Promise<DomainGather> {
+	const chunks = (await listChunks(env, "assim")).filter((c) => Array.isArray(c.embedding) && c.embedding.length > 0);
+	if (!chunks.length) return { passages: [], indexed_at: null, skipped: "no assimilated documents" };
+	const passages = chunks
+		.map((c) => ({ pointer: c.title || c.domain, text: c.text, score: cosine(vec, c.embedding!) }))
+		.sort((a, b) => b.score - a.score);
+	const indexed_at = chunks.reduce((m, c) => Math.max(m, c.ts || 0), 0) || null;
+	return { passages: passages.slice(0, PER_DOMAIN_K), indexed_at };
+}
+
 /** The unified-index cutover (#1290): a domain leg queries `sux-corpus`'s per-domain namespace
  *  FIRST (an out-of-band-built ANN index — no query-path rebuild, the #1298 fix), and only if
  *  Vectorize is unbound, errors, or its namespace is empty (not yet backfilled) does it fall
@@ -296,6 +324,7 @@ const ASK_DOMAINS: Record<string, (env: RtEnv, vec: number[]) => Promise<DomainG
 	files: withVectorize("files", fromFilesIndex),
 	contacts: withVectorize("contacts", fromContactsIndex),
 	oracle: fromOracleKbs,
+	assim: withVectorize("assim", fromAssimChunks),
 };
 
 /** The ask synthesis prompt — grounded ONLY in the retrieved passages (unlike oracle's
