@@ -1,5 +1,5 @@
 import { test, expect, vi } from "vitest";
-import { ask, catchOp, cond, fixed, map, mapField, op, parallel } from "@suxos/lib";
+import { ask, catchOp, cond, fixed, map, mapField, op, parallel, race } from "@suxos/lib";
 import { answerVerb, cancelVerb, collectAskGates, describeOp, listDurableRuns, needsDurable, run, runVerb, statusVerb } from "./run.js";
 
 // A minimal in-memory KVNamespace — just enough of put/get/list for the run index.
@@ -262,6 +262,15 @@ test("needsDurable/collectAskGates recurse into an ask nested under a parallel b
 	const gated = parallel([op("plain", async (n: number) => n, { kind: "pure" }), ask("approve branch?", { timeout: "1 hour", onTimeout: "fail" })]);
 	expect(needsDurable(gated)).toBe(true);
 	expect(collectAskGates(gated)).toEqual([{ prompt: "approve branch?", timeout: "1 hour", onTimeout: "fail" }]);
+});
+
+test("needsDurable/collectAskGates recurse into an ask nested under a race branch", () => {
+	const gated = race([op("plain", async (n: number) => n, { kind: "pure" }), ask("approve race?", { timeout: "1 hour", onTimeout: "fail" })]);
+	expect(needsDurable(gated)).toBe(true);
+	expect(collectAskGates(gated)).toEqual([{ prompt: "approve race?", timeout: "1 hour", onTimeout: "fail" }]);
+	const plainRace = race([op("a", async () => "a", { kind: "pure" }), op("b", async () => "b", { kind: "pure" })]);
+	expect(needsDurable(plainRace)).toBe(false);
+	expect(collectAskGates(plainRace)).toEqual([]);
 });
 
 test("run fn's describe action returns the op's ask gates without an instanceId", async () => {

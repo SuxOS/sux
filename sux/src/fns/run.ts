@@ -104,6 +104,7 @@ export function needsDurable(n: Op): boolean {
 		case "cond":
 			return n.cases.some((c) => needsDurable(c.then)) || (n.default !== undefined && needsDurable(n.default));
 		case "parallel":
+		case "race":
 			return n.ops.some(needsDurable);
 		case "leaf":
 		case "reconcile":
@@ -147,6 +148,7 @@ export function collectAskGates(n: Op, out: AskGate[] = []): AskGate[] {
 			if (n.default) collectAskGates(n.default, out);
 			break;
 		case "parallel":
+		case "race":
 			for (const o of n.ops) collectAskGates(o, out);
 			break;
 		case "leaf":

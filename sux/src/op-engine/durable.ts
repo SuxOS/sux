@@ -248,6 +248,50 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 			await Promise.all(node.ops.map(async (op, i) => (out[i] = await interpretDurable(op, input, step, caps, `${path}.${i}`))));
 			return out;
 		}
+		case "race": {
+			// Mirrors suxlib's inline race semantics (suxlib #431/#432): settle on the
+			// `need`-th success (need absent/1 resolves the BARE winning value; need>1
+			// collects the quorum into an array in settle order), and reject the moment
+			// the quorum is mathematically unreachable (one failure as-is, several as an
+			// AggregateError). Losing branches are not cancelled — a durable step in
+			// flight runs to completion, the same non-preemptive contract as suxlib's
+			// cooperative cancellation; their late settlements are ignored via `done`.
+			const need = node.need ?? 1;
+			const total = node.ops.length;
+			if (need > total) throw new Error(`race: \`need\` (${need}) exceeds its \`ops\` array's length (${total})`);
+			return new Promise((resolve, reject) => {
+				const wins: unknown[] = [];
+				const failures: unknown[] = [];
+				let settled = 0;
+				let done = false;
+				node.ops.forEach((branchOp, i) => {
+					interpretDurable(branchOp, input, step, caps, `${path}.${i}`).then(
+						(v) => {
+							settled++;
+							if (done) return;
+							wins.push(v);
+							if (wins.length >= need) {
+								done = true;
+								resolve(need === 1 ? wins[0] : wins);
+							}
+						},
+						(e) => {
+							settled++;
+							if (done) return;
+							failures.push(e);
+							if (wins.length + (total - settled) < need) {
+								done = true;
+								reject(
+									failures.length === 1
+										? failures[0]
+										: new AggregateError(failures, `race: only ${wins.length} of ${need} needed branches succeeded (${total} total, ${failures.length} failed)`),
+								);
+							}
+						},
+					);
+				});
+			});
+		}
 		default: {
 			const _exhaustive: never = node;
 			throw new Error(`interpretDurable: unhandled op tag: ${(node as Op).tag}`);

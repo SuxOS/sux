@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { MemoryCache, MemoryStore, fixed, op, pipe, map, mapField, reconcile, sink, ask, catchOp, cond, parallel, stamp, type Caps } from "@suxos/lib";
+import { MemoryCache, MemoryStore, fixed, op, pipe, map, mapField, reconcile, sink, ask, catchOp, cond, parallel, race, stamp, type Caps } from "@suxos/lib";
 import { AskRejectedError, interpretDurable } from "./durable.js";
 
 // A FAKE WorkflowStep: `do` runs the callback inline (so the interpreter's step
@@ -325,4 +325,38 @@ test("interpretDurable's parallel propagates a branch's error", async () => {
 		}, { kind: "pure" }),
 	]);
 	await expect(interpretDurable(tree, 1, fakeStep({ events: [] }), caps, "op22")).rejects.toThrow("branch failed");
+});
+
+test("interpretDurable's race resolves the bare first-success value at the need:1 default, even past a failing branch", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tree = race([
+		op("boom", async () => {
+			throw new Error("loser failed");
+		}, { kind: "pure" }),
+		op("win", async (n: number) => n * 10, { kind: "pure" }),
+	]);
+	// bare value, not a length-1 array (suxlib #431/#432 convention)
+	expect(await interpretDurable(tree, 4, fakeStep({ events: [] }), caps, "op23")).toBe(40);
+});
+
+test("interpretDurable's race with need:2 collects the quorum into an array", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tree = race(
+		[op("a", async (n: number) => n + 1, { kind: "pure" }), op("b", async (n: number) => n + 2, { kind: "pure" })],
+		{ need: 2 },
+	);
+	expect(((await interpretDurable(tree, 1, fakeStep({ events: [] }), caps, "op24")) as number[]).sort()).toEqual([2, 3]);
+});
+
+test("interpretDurable's race rejects once the quorum is mathematically unreachable", async () => {
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tree = race([
+		op("boom1", async () => {
+			throw new Error("first failed");
+		}, { kind: "pure" }),
+		op("boom2", async () => {
+			throw new Error("second failed");
+		}, { kind: "pure" }),
+	]);
+	await expect(interpretDurable(tree, 1, fakeStep({ events: [] }), caps, "op25")).rejects.toThrow();
 });
