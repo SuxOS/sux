@@ -10,7 +10,7 @@ vi.mock("./proxy", () => ({
 	smartFetch: vi.fn(async (_env: any, url: string, init?: any) => routes.handler!(url, init)),
 }));
 
-import { handlePortalRoutes } from "./portal";
+import { PROFILES, extractAudienceLabels, handlePortalRoutes, resolveAudience, visibleTo } from "./portal";
 
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
 const ENV = { OBSIDIAN_VAULT_REPO: "me/vault", PORTAL_ENABLED: "1" } as any;
@@ -189,5 +189,63 @@ describe("portal", () => {
 
 	it("returns null for an unrelated Host on a non-/portal path", async () => {
 		expect(await getHost(ENV, "example.com", "/")).toBeNull();
+	});
+});
+
+describe("extractAudienceLabels", () => {
+	it("maps a bare #portal tag to the shared label", () => {
+		expect(extractAudienceLabels({ fm: {}, tags: ["portal"] })).toEqual(new Set(["shared"]));
+	});
+
+	it("maps a nested #portal/medical tag to the medical label", () => {
+		expect(extractAudienceLabels({ fm: {}, tags: ["portal/medical"] })).toEqual(new Set(["medical"]));
+	});
+
+	it("maps visibility: portal frontmatter to the shared label", () => {
+		expect(extractAudienceLabels({ fm: { visibility: "portal" }, tags: [] })).toEqual(new Set(["shared"]));
+	});
+
+	it("maps a portal: [...] frontmatter array to each of its labels", () => {
+		expect(extractAudienceLabels({ fm: { portal: ["legal", "friend"] }, tags: [] })).toEqual(new Set(["legal", "friend"]));
+	});
+
+	it("returns an empty set for a note with no portal tag or frontmatter (stays default-private)", () => {
+		expect(extractAudienceLabels({ fm: {}, tags: ["unrelated"] })).toEqual(new Set());
+	});
+});
+
+describe("visibleTo", () => {
+	it("is true when the record's labels intersect the requester's granted labels", () => {
+		expect(visibleTo({ fm: {}, tags: ["portal/medical"] }, new Set(["shared", "medical"]))).toBe(true);
+	});
+
+	it("is false when the record's labels and the requester's granted labels are disjoint", () => {
+		expect(visibleTo({ fm: {}, tags: ["portal/medical"] }, new Set(["shared", "legal"]))).toBe(false);
+	});
+});
+
+describe("PROFILES", () => {
+	it("resolves each documented profile to its granted label bundle", () => {
+		expect(PROFILES["medical-care-team"]).toEqual(new Set(["shared", "medical"]));
+		expect(PROFILES["legal-general"]).toEqual(new Set(["shared", "legal"]));
+		expect(PROFILES["general-friend"]).toEqual(new Set(["shared", "friend"]));
+		expect(PROFILES["internal-confidential"]).toEqual(new Set(["shared", "medical", "legal", "friend", "internal"]));
+	});
+});
+
+describe("resolveAudience", () => {
+	it("picks the matching profile's bundle from ?as=<profile>", () => {
+		const req = new Request("https://portal.test/portal?as=legal-general");
+		expect(resolveAudience(req, ENV)).toEqual(new Set(["shared", "legal"]));
+	});
+
+	it("falls back to {shared} when ?as= is missing", () => {
+		const req = new Request("https://portal.test/portal");
+		expect(resolveAudience(req, ENV)).toEqual(new Set(["shared"]));
+	});
+
+	it("falls back to {shared} when ?as= names an unknown profile", () => {
+		const req = new Request("https://portal.test/portal?as=nope");
+		expect(resolveAudience(req, ENV)).toEqual(new Set(["shared"]));
 	});
 });

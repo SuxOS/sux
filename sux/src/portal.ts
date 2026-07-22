@@ -20,6 +20,17 @@
 // notes, and resolves wikilinks. Deferred (see design doc's "Open items"):
 // folder-level tagging, and the SuxOS/vault migration/reconciliation pass
 // (blocked on colinxs/vault's GitHub archive/read-only state being repaired).
+//
+// #1191 Phase 1 (this file's audience model): the single `#portal` tag has grown
+// into N audience LABELS — a nested tag (`#portal/medical`) or a `portal: [...]`
+// frontmatter array carries a note into one or more named audiences, while bare
+// `#portal`/`visibility: portal` keeps meaning the shared baseline every gated
+// profile can see (back-compat with existing content). `extractAudienceLabels`
+// parses a record into its label set, `visibleTo` checks that set against a
+// requester's granted labels, `PROFILES` is the code-level (not KV) map of named
+// label bundles, and `resolveAudience` is the one chokepoint every route below
+// calls to find out what a given request may see — today via a `?as=<profile>`
+// preview override only, real share-link/session auth lands in a later phase.
 
 import { obsidian, vaultCfg } from "./fns/obsidian";
 import { obsRateLimited } from "./observability";
@@ -39,13 +50,65 @@ function flagOn(v: string | undefined): boolean {
 	return s !== "" && s !== "0" && s !== "false" && s !== "no" && s !== "off";
 }
 
-/** The access-control mechanic (design doc §"Access control mechanic"): a
- * `#portal` tag OR a `visibility: portal` frontmatter field, checked
- * case-insensitively so `#Portal`/`Visibility: Portal` aren't silently private. */
-function isPortalVisible(record: Pick<VaultRecord, "fm" | "tags">): boolean {
-	if (record.tags.some((t) => t.toLowerCase() === PORTAL_TAG)) return true;
+const SHARED_LABEL = "shared";
+
+/** The access-control mechanic (design doc §"Access control mechanic"), generalized
+ * from one boolean to N named audience labels (#1191 §1): a bare `#portal` tag or
+ * `visibility: portal` frontmatter grants the shared baseline every gated profile
+ * sees; a nested `#portal/<label>` tag or a `portal: [...]` frontmatter array grants
+ * each named label. Checked case-insensitively throughout so `#Portal/Medical`/
+ * `Visibility: Portal` aren't silently private. */
+export function extractAudienceLabels(record: Pick<VaultRecord, "fm" | "tags">): Set<string> {
+	const labels = new Set<string>();
+	for (const t of record.tags) {
+		const tag = t.toLowerCase();
+		if (tag === PORTAL_TAG) labels.add(SHARED_LABEL);
+		else if (tag.startsWith(`${PORTAL_TAG}/`)) {
+			const label = tag.slice(PORTAL_TAG.length + 1).trim();
+			if (label) labels.add(label);
+		}
+	}
 	const vis = record.fm.visibility;
-	return typeof vis === "string" && vis.trim().toLowerCase() === PORTAL_TAG;
+	if (typeof vis === "string" && vis.trim().toLowerCase() === PORTAL_TAG) labels.add(SHARED_LABEL);
+	const fmLabels = record.fm.portal;
+	if (Array.isArray(fmLabels)) {
+		for (const l of fmLabels) {
+			const label = String(l ?? "").trim().toLowerCase();
+			if (label) labels.add(label);
+		}
+	} else if (typeof fmLabels === "string" && fmLabels.trim()) {
+		labels.add(fmLabels.trim().toLowerCase());
+	}
+	return labels;
+}
+
+/** True iff `record`'s audience labels intersect the requester's granted `labelSet`
+ * — the one boolean check every route below filters/gates on, replacing the old
+ * single-tag `isPortalVisible`. */
+export function visibleTo(record: Pick<VaultRecord, "fm" | "tags">, labelSet: Set<string>): boolean {
+	for (const label of extractAudienceLabels(record)) if (labelSet.has(label)) return true;
+	return false;
+}
+
+/** Code-level (not KV) config: "add a profile" is a one-line edit here, deliberately
+ * not a runtime-editable store — see #1191 §1's profile table. */
+export const PROFILES: Record<string, Set<string>> = {
+	"medical-care-team": new Set([SHARED_LABEL, "medical"]),
+	"legal-general": new Set([SHARED_LABEL, "legal"]),
+	"general-friend": new Set([SHARED_LABEL, "friend"]),
+	"internal-confidential": new Set([SHARED_LABEL, "medical", "legal", "friend", "internal"]),
+};
+
+/** THE chokepoint (#1191 §2): every route below asks this, and only this, what a
+ * given request may see. Phase 1 has no real auth wired up yet (share links/
+ * sessions land in a later phase) — `?as=<profile>` is a placeholder preview
+ * override (meant to survive into later phases as an admin-preview escape hatch),
+ * and the fallback is today's existing default: visible to everyone. */
+export function resolveAudience(request: Request, env: RtEnv): Set<string> {
+	void env;
+	const as = new URL(request.url).searchParams.get("as");
+	if (as && PROFILES[as]) return PROFILES[as];
+	return new Set([SHARED_LABEL]);
 }
 
 function esc(s: string): string {
@@ -166,8 +229,10 @@ export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv)
 		return new Response(`portal: vault scan failed: ${String((e as Error)?.message ?? e)}`, { status: 502 });
 	}
 
+	const labelSet = resolveAudience(request, env);
+
 	if (path === "/portal" || path === "/portal/") {
-		return renderIndex(records.filter(isPortalVisible));
+		return renderIndex(records.filter((r) => visibleTo(r, labelSet)));
 	}
 
 	const reqBasename = noteBasename(decodeURIComponent(path.slice("/portal/".length)));
@@ -177,9 +242,9 @@ export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv)
 	// one depending on scan order; fall back to the first match (private stub)
 	// only when none of the candidates are visible.
 	const candidates = records.filter((r) => noteBasename(r.path) === reqBasename);
-	const match = candidates.find(isPortalVisible) ?? candidates[0];
+	const match = candidates.find((r) => visibleTo(r, labelSet)) ?? candidates[0];
 	if (!match) return new Response("not found", { status: 404 });
-	if (!isPortalVisible(match)) return renderStub();
+	if (!visibleTo(match, labelSet)) return renderStub();
 
 	// `records` (from scanVault) only carries a bounded excerpt, not the full body —
 	// re-read the note. `list`/the index return dir-prefixed paths, but `read`
@@ -192,6 +257,6 @@ export async function handlePortalRoutes(url: URL, request: Request, env: RtEnv)
 	// removing #portal could've landed between the two calls) — re-derive visibility
 	// from the just-fetched content itself rather than trusting the cached tags/fm.
 	const freshFm = parseFrontmatter(body);
-	if (!isPortalVisible({ fm: freshFm, tags: extractTags(body, freshFm) })) return renderStub();
+	if (!visibleTo({ fm: freshFm, tags: extractTags(body, freshFm) }, labelSet)) return renderStub();
 	return renderNote(match, body, freshFm);
 }
