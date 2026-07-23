@@ -531,6 +531,24 @@ export const rtServer = {
 			console.warn(`gate: rejected login=${JSON.stringify(login ?? null)}`);
 			return new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { "content-type": "application/json" } });
 		}
+		const isBodyless = request.method === "GET" || request.method === "HEAD";
+		const pathname = new URL(request.url).pathname;
+
+		// MCP Streamable HTTP requires POST; a server that does not offer the optional
+		// server-initiated GET stream MUST answer 405. sux only ever returns SSE as a
+		// reply to POST (see sseResponse in handleRpc), so a bodyless /mcp is never a
+		// valid request. This sits BEFORE the rate limiter deliberately: a polling
+		// client must not drain the budget, and a suppressed request must not burn an
+		// MCP_RATE_LIMITER.limit() op. It sits AFTER the login gate so an unauthenticated
+		// caller cannot probe which routes exist. The connector-discovery routes below
+		// are exempt — they are bodyless GETs by design.
+		if (isBodyless && pathname === "/mcp") {
+			return new Response(JSON.stringify({ error: "method_not_allowed", detail: "MCP Streamable HTTP requires POST" }), {
+				status: 405,
+				headers: { "content-type": "application/json", allow: "POST" },
+			});
+		}
+
 		if (env.MCP_RATE_LIMITER) {
 			// Fail OPEN if the limiter itself throws — an unavailable limiter must never
 			// become an outage (matches the intent of the presence check above).
@@ -543,10 +561,8 @@ export const rtServer = {
 			if (!allowed) return new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "content-type": "application/json", "retry-after": "10" } });
 		}
 
-		const isBodyless = request.method === "GET" || request.method === "HEAD";
 		const bodyText = isBodyless ? undefined : await request.text();
 		const rpc = parseJsonRpc(bodyText);
-		const pathname = new URL(request.url).pathname;
 		// Runtime connector discovery: GET /mcp/connectors self-describes the connector
 		// + tool count from the one CONNECTORS source. Authenticated (post-gate) — exposes
 		// the namespace name + count, never secrets or tool args.

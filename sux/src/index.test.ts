@@ -710,6 +710,72 @@ describe("rtServer.fetch — auth/rate-limit gate (403/429)", () => {
 	});
 });
 
+// MCP Streamable HTTP requires POST. sux does not offer the optional
+// server-initiated GET stream (sseResponse is only ever a reply to POST), so a
+// bodyless /mcp MUST be 405 per the transport spec. The guard sits after the auth
+// gate but BEFORE the rate limiter: a polling client must not drain the budget, and
+// a suppressed request must not burn a limiter op.
+describe("rtServer.fetch — 405 on bodyless /mcp", () => {
+	const ctxFor = (props?: { login?: string }) => ({ waitUntil: () => {}, props }) as unknown as Parameters<typeof rtServer.fetch>[2];
+	const bodyless = (path: string, method = "GET") => new Request(`https://sux.example.dev${path}`, { method });
+
+	it("405s GET /mcp and advertises Allow: POST", async () => {
+		const { kv } = makeKv();
+		const res = await rtServer.fetch(bodyless("/mcp"), makeEnv(kv), ctxFor({ login: ALLOWED }));
+		expect(res.status).toBe(405);
+		expect(res.headers.get("allow")).toBe("POST");
+		expect(await res.json()).toMatchObject({ error: "method_not_allowed" });
+	});
+
+	it("405s HEAD /mcp too", async () => {
+		const { kv } = makeKv();
+		const res = await rtServer.fetch(bodyless("/mcp", "HEAD"), makeEnv(kv), ctxFor({ login: ALLOWED }));
+		expect(res.status).toBe(405);
+	});
+
+	// The load-bearing assertion: placement before the limiter is the entire point.
+	// A suppressed GET must not consume an MCP_RATE_LIMITER.limit() op, or a polling
+	// client still drains the 600/60s budget while being told 405.
+	it("does NOT consume a rate-limiter op for a suppressed GET", async () => {
+		const { kv } = makeKv();
+		const limit = vi.fn(async () => ({ success: true }));
+		const env = { ...makeEnv(kv), MCP_RATE_LIMITER: { limit } } as unknown as RtEnv;
+		const res = await rtServer.fetch(bodyless("/mcp"), env, ctxFor({ login: ALLOWED }));
+		expect(res.status).toBe(405);
+		expect(limit).not.toHaveBeenCalled();
+	});
+
+	// The connector-discovery routes ARE bodyless GETs by design — the guard is
+	// scoped to exactly "/mcp" so it must not swallow them.
+	it("leaves the bodyless connector-discovery routes alone", async () => {
+		const { kv } = makeKv();
+		for (const path of ["/mcp/connectors", "/connectors"]) {
+			const res = await rtServer.fetch(bodyless(path), makeEnv(kv), ctxFor({ login: ALLOWED }));
+			expect(res.status).not.toBe(405);
+			expect(res.status).toBe(200);
+		}
+	});
+
+	it("still serves POST /mcp normally", async () => {
+		const { kv } = makeKv();
+		const req = new Request("https://sux.example.dev/mcp", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+		});
+		const res = await rtServer.fetch(req, makeEnv(kv), ctxFor({ login: ALLOWED }));
+		expect(res.status).toBe(200);
+	});
+
+	// Ordering matters in the other direction too: an unauthenticated caller must not
+	// be able to probe which routes exist, so 403 still precedes 405.
+	it("403s an unauthenticated bodyless /mcp rather than leaking 405", async () => {
+		const { kv } = makeKv();
+		const res = await rtServer.fetch(bodyless("/mcp"), makeEnv(kv), ctxFor({ login: "not-allowed" }));
+		expect(res.status).toBe(403);
+	});
+});
+
 // MCP Tasks primitive (src/tasks.ts) — task-augmented tools/call, plus
 // tasks/get, tasks/result, tasks/list, tasks/cancel, all driven through the
 // real handleRpc dispatch (same helpers as the rest of this file).
