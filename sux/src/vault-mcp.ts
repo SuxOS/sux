@@ -5,7 +5,7 @@ import { staged } from "./stage";
 import { embedOne } from "./fns/_embed";
 import { ingest } from "./fns/ingest";
 import { obsidian, readGitContents, RETRY_ATTEMPTS, retryDelay, readVaultIndexBlob, type VaultCfg, vaultCfg, vaultHead, vaultPut, writeVaultIndexBlob } from "./fns/obsidian";
-import { topKByCosine, vaultSemanticIndex } from "./fns/_vault_semantic";
+import { topKByCosine, vaultSemanticIndexCached } from "./fns/_vault_semantic";
 import { vaultToday } from "./fns/_util";
 import { vaultDailyDir } from "./fns/_vaultpaths";
 import {
@@ -526,7 +526,7 @@ const TOOLS: VaultTool[] = [
 	{
 		name: "vault_semantic",
 		description:
-			"Semantic search over the vault via Workers-AI embeddings — finds notes by MEANING, not substring (complements vault_search_body's exact-text grep). Brute-force cosine kNN over every note chunked+embedded (no Vectorize; KV-cached, HEAD-keyed like the derived index — rebuilds the whole embedded set when the vault changes). Returns the top-k matching chunks with their source note path. Needs the Workers-AI binding.",
+			"Semantic search over the vault via Workers-AI embeddings — finds notes by MEANING, not substring (complements vault_search_body's exact-text grep). Brute-force cosine kNN over every note chunked+embedded (no Vectorize; KV-cached, HEAD-keyed like the derived index). Cached-only (#1361): reads the warm cache, never rebuilds on this call — a cold/stale cache degrades fast instead of exceeding the request budget on a full vault re-embed. Returns the top-k matching chunks with their source note path. Needs the Workers-AI binding.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -543,8 +543,12 @@ const TOOLS: VaultTool[] = [
 			const cfg = vaultCfg(env);
 			if ("error" in cfg) return failWith("not_configured", cfg.error);
 			try {
-				const idx = await vaultSemanticIndex(env, cfg);
-				if (!idx) return failWith("upstream_error", "could not resolve the vault's HEAD (offline or no OAUTH_KV) — needed to build/read the semantic index.");
+				// CACHED, never building (#1361) — a full rebuild on the query path exceeds a
+				// request's lifetime for a real vault and its KV write never lands (#1298's root
+				// cause), so this timed out on every cold call rather than degrading fast. Nothing
+				// currently warms this cache synchronously either (see #1361's follow-up note).
+				const idx = await vaultSemanticIndexCached(env, cfg);
+				if (!idx) return failWith("upstream_error", "vault semantic index isn't warm yet (no cached build, or a version/shape change invalidated it) — no query-path rebuild is attempted (#1361).");
 				const vec = await embedOne(env, q);
 				const k = Math.min(50, Math.max(1, Number(a?.k) || 8));
 				const hits = topKByCosine(vec, idx.chunks, k);

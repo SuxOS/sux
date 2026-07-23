@@ -9,10 +9,10 @@ import { hasCalDav, listCalendars, parseICal, reportObjects } from "./_caldav";
 import { embedOne } from "./_embed";
 import { classifyKnn, listExamples } from "./_examples";
 import { maybeDecompressString } from "./_gzip";
-import { topKByCosine, vaultSemanticIndex } from "./_vault_semantic";
-import { mailSemanticIndex, topKMailByCosine } from "./_mail_semantic";
-import { filesSemanticIndex, topKFilesByCosine } from "./_files_semantic";
-import { contactSemanticIndex, topKContactByCosine } from "./_contact_semantic";
+import { topKByCosine, vaultSemanticIndexCached } from "./_vault_semantic";
+import { mailSemanticIndexCached, topKMailByCosine } from "./_mail_semantic";
+import { filesSemanticIndexCached, topKFilesByCosine } from "./_files_semantic";
+import { contactSemanticIndexCached, topKContactByCosine } from "./_contact_semantic";
 import { errMsg, oj } from "./_util";
 
 // recall — "what do I know about X?" answered from YOUR life. It fans out server-side
@@ -92,12 +92,19 @@ async function fromVault(env: RtEnv, question: string): Promise<Gathered> {
  *  vault-mcp.ts's vault_semantic) against the question via cosine kNN. Same graceful-degrade
  *  contract as the other sources — no AI binding, no vault config, or no resolvable HEAD all
  *  fall back to an empty gather rather than throwing, since a missing embedding substrate is
- *  not a recall failure, just a source with nothing to offer. */
+ *  not a recall failure, just a source with nothing to offer.
+ *
+ *  CACHED, never building (#1361): vaultSemanticIndex (still used by vault-mcp.ts's own
+ *  vault_semantic verb) rebuilds the WHOLE embedded set synchronously on a cache miss/HEAD-
+ *  drift — for the real vault corpus this exceeds a single request's lifetime and the KV write
+ *  never lands, so it reruns and times out every call (#1298's root cause, restated for recall
+ *  by the live 2026-07-22 audit). vaultSemanticIndexCached returns the warm cache or null in
+ *  milliseconds — a cold cache degrades this source fast instead of burning the 8s budget. */
 async function fromVaultSemantic(env: RtEnv, question: string): Promise<Gathered> {
 	if (!hasAI(env)) return { material: "", refs: [] };
 	const cfg = vaultCfg(env);
 	if ("error" in cfg) return { material: "", refs: [] };
-	const idx = await vaultSemanticIndex(env, cfg);
+	const idx = await vaultSemanticIndexCached(env, cfg);
 	if (!idx) return { material: "", refs: [] };
 	const vec = await embedOne(env, question);
 	const hits = topKByCosine(vec, idx.chunks, 5);
@@ -145,7 +152,10 @@ async function fromMail(env: RtEnv, question: string): Promise<Gathered> {
 	}
 	if (hasAI(env)) {
 		try {
-			const idx = await mailSemanticIndex(env);
+			// CACHED, never building (#1361) — mail-mcp.ts's mail_semantic verb still keeps this
+			// cache warm via its cheap incremental catchup (Email/changes); recall only ever reads
+			// what's already there, never rebuilds on the query path.
+			const idx = await mailSemanticIndexCached(env);
 			if (idx) {
 				const vec = await embedOne(env, question);
 				const hits = topKMailByCosine(vec, idx.chunks, 5).filter((h) => !seenIds.has(h.id));
@@ -214,7 +224,12 @@ async function fromFiles(env: RtEnv, question: string): Promise<Gathered> {
 	}
 	if (hasAI(env)) {
 		try {
-			const idx = await filesSemanticIndex(env);
+			// CACHED, never building (#1361) — no first-class verb keeps this warm the way
+			// mail_semantic/contact_semantic do for their domains (there's no standalone
+			// files_semantic verb); a cold cache degrades this leg quietly rather than
+			// burning the 8s budget on a synchronous rebuild. See #1361's follow-up note on
+			// files' warming path.
+			const idx = await filesSemanticIndexCached(env);
 			if (idx) {
 				const vec = await embedOne(env, question);
 				const hits = topKFilesByCosine(vec, idx.chunks, 5).filter((h) => !seen.has(h.path));
@@ -399,7 +414,10 @@ async function fromContacts(env: RtEnv, question: string): Promise<Gathered> {
 	}
 	if (hasAI(env)) {
 		try {
-			const idx = await contactSemanticIndex(env);
+			// CACHED, never building (#1361) — mail-mcp.ts's contact_semantic verb still keeps
+			// this cache warm via its cheap incremental catchup (ContactCard/changes); recall
+			// only ever reads what's already there, never rebuilds on the query path.
+			const idx = await contactSemanticIndexCached(env);
 			if (idx) {
 				const vec = await embedOne(env, question);
 				const hits = topKContactByCosine(vec, idx.chunks, 5).filter((h) => !seenIds.has(h.id));
@@ -477,25 +495,40 @@ function defaultSources(env: RtEnv): string[] {
 	return (env as { KAGI_SESSION?: string }).KAGI_SESSION ? [...BASE_SOURCES, "web"] : BASE_SOURCES;
 }
 
+/** Personal-data-store sources — the grounding gate (#1361) below cares which of these were
+ *  actually requested and whether ANY of them found something. web/learned/oracle draw on
+ *  general/taught/distilled knowledge rather than the user's own live stores, so they're
+ *  deliberately excluded from this set. */
+const STORE_SOURCES = new Set(["vault", "files", "mail", "imessage", "calendar", "contacts"]);
+
 /** The GATHER half of recall: fan out across the chosen stores (each degrading independently)
  *  and return the RAW gathered passages + citations + per-store status — WITHOUT the llm()
  *  synthesis. recall.run wraps this then synthesizes; advise reuses the raw materials directly
  *  and feeds them into its own gate, so it never pays for a synthesis it would immediately
- *  re-process. `chosen` echoes which requested sources were actually searched (unknown ones drop). */
+ *  re-process. `chosen` echoes which requested sources were actually searched (unknown ones drop).
+ *
+ *  `groundingOk` (#1361) is false exactly when at least one personal-data-store source (vault/
+ *  files/mail/imessage/calendar/contacts) was requested and EVERY one of them came back empty —
+ *  the live 2026-07-22 audit found recall still synthesizing an answer from a tangential oracle/
+ *  learned hit while every actual store was dark, a grounding violation on top of the outage.
+ *  A caller that deliberately asked ONLY for a supplementary source (e.g. sources:["oracle"])
+ *  has no store expectation to violate, so groundingOk is trivially true then. */
 export async function gatherRecall(
 	env: RtEnv,
 	question: string,
 	sources?: string[],
-): Promise<{ materials: string[]; citations: string[]; status: Record<string, string>; chosen: string[] }> {
-	const wanted = Array.isArray(sources) && sources.length ? sources.map(String) : defaultSources(env);
+): Promise<{ materials: string[]; citations: string[]; status: Record<string, string>; chosen: string[]; groundingOk: boolean }> {
+	const usingDefaults = !(Array.isArray(sources) && sources.length);
+	const wanted = usingDefaults ? defaultSources(env) : sources!.map(String);
 	const chosen = wanted.filter((s: string) => s in SOURCES);
 	const materials: string[] = [];
 	const citations: string[] = [];
 	const status: Record<string, string> = {};
-	if (!chosen.length) return { materials, citations, status, chosen };
+	if (!chosen.length) return { materials, citations, status, chosen, groundingOk: true };
 
 	const materialSources: string[] = [];
 	const results = await Promise.allSettled(chosen.map((s: string) => withSourceTimeout(SOURCES[s](env, question), SOURCE_TIMEOUT_MS)));
+	let storeHit = false;
 	chosen.forEach((s: string, i: number) => {
 		const r = results[i];
 		if (r.status === "fulfilled") {
@@ -515,10 +548,17 @@ export async function gatherRecall(
 				hits += part.refs.length;
 			}
 			status[s] = hits ? `${hits} hit(s)` : "no matches";
+			if (hits && STORE_SOURCES.has(s)) storeHit = true;
 		} else {
 			status[s] = `unavailable (${errMsg(r.reason).replace(/^\[[a-z_]+\]\s*/, "").slice(0, 90)})`;
 		}
 	});
+	// #1361: web is opt-in and often silently absent from `status` (no free Kagi configured, and
+	// the user didn't force it) — but the default sources map should still SHOW it exists rather
+	// than looking like recall has no web source at all.
+	if (usingDefaults && !chosen.includes("web") && !("web" in status)) {
+		status.web = "not configured — no free Kagi session (KAGI_SESSION); pass sources including \"web\" to force the keyless DDG fallback";
+	}
 	// Whitelisted KBs (learned via `study` — material the user owns) outrank web + the model's own
 	// knowledge, so lead the synthesis input with them: they survive the input truncation and are
 	// read first. recallSystem states the precedence; this makes the retrieval side honor it too.
@@ -528,7 +568,9 @@ export async function gatherRecall(
 	// Only fromOracle ever emits that tag, and only for KBs it verified carry the `whitelist` marker.
 	const lead = materials.filter((_, i) => materialSources[i] === "oracle" && materials[i].includes("[whitelisted:"));
 	const rest = materials.filter((_, i) => !(materialSources[i] === "oracle" && materials[i].includes("[whitelisted:")));
-	return { materials: [...lead, ...rest], citations, status, chosen };
+	const requestedStores = chosen.filter((s) => STORE_SOURCES.has(s));
+	const groundingOk = requestedStores.length === 0 || storeHit;
+	return { materials: [...lead, ...rest], citations, status, chosen, groundingOk };
 }
 
 const recallSystem = (question: string): string =>
@@ -559,11 +601,19 @@ export const recall: Fn = {
 		if (!question) return failWith("bad_input", "recall needs a `question`.");
 		if (!hasAI(env)) return failWith("not_configured", "Workers AI binding not configured — needed to synthesize the answer.");
 
-		const { materials, citations, status, chosen } = await gatherRecall(env, question, Array.isArray(args?.sources) ? args.sources : undefined);
+		const { materials, citations, status, chosen, groundingOk } = await gatherRecall(env, question, Array.isArray(args?.sources) ? args.sources : undefined);
 		if (!chosen.length) return failWith("bad_input", "sources must include at least one of: vault, files, mail, imessage, web, learned, oracle, calendar, contacts.");
 
 		if (!materials.length) {
 			return ok(oj({ question, answer: "I couldn't find anything about that across the stores I could reach.", sources: status, citations: [] }));
+		}
+
+		// #1361 grounding gate: every requested personal-data store came back empty (unavailable
+		// or no matches) — whatever material survived came only from a supplementary source
+		// (web/learned/oracle). Don't let that tangential hit masquerade as a personal answer;
+		// report the outage honestly instead of synthesizing from it.
+		if (!groundingOk) {
+			return ok(oj({ question, answer: "I couldn't reach any of your personal stores for this (vault/files/mail/imessage/calendar/contacts) — not answering from unrelated material instead.", sources: status, citations: [] }));
 		}
 
 		try {

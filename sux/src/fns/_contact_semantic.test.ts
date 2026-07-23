@@ -4,7 +4,7 @@ vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
 vi.mock("./_vectorize", async (importOriginal) => ({ ...(await importOriginal<object>()), deleteCorpusIds: vi.fn(async () => {}) }));
 
 import { jmap } from "./jmap";
-import { contactSemanticIndex, topKContactByCosine } from "./_contact_semantic";
+import { contactSemanticIndex, contactSemanticIndexCached, topKContactByCosine } from "./_contact_semantic";
 import { encodeEmbedding } from "./_embed";
 import { deleteCorpusIds, vectorId } from "./_vectorize";
 
@@ -69,6 +69,33 @@ describe("_contact_semantic", () => {
 		const idx = await contactSemanticIndex({ AI: { run: vi.fn() } } as any);
 		expect(idx).toBeNull();
 		expect(run).not.toHaveBeenCalled();
+	});
+
+	describe("contactSemanticIndexCached (#1361) — read-only, never JMAP round-trips or rebuilds", () => {
+		it("returns null on a cold cache without ever calling JMAP", async () => {
+			const idx = await contactSemanticIndexCached(aiEnv());
+			expect(idx).toBeNull();
+			expect(run).not.toHaveBeenCalled();
+		});
+
+		it("returns the warm cached index as-is, without diffing via ContactCard/changes", async () => {
+			mockBatch({
+				"ContactCard/query": () => ["ContactCard/query", { ids: ["c1"], total: 1 }],
+				"ContactCard/get": (a) => ["ContactCard/get", { state: "s1", list: (a.ids as string[]).map((id) => CARDS[id]) }],
+			});
+			const env = aiEnv();
+			await contactSemanticIndex(env); // warm it via the real building function first
+			run.mockClear();
+			const idx = await contactSemanticIndexCached(env);
+			expect(idx?.state).toBe("s1");
+			expect(idx?.chunks.map((c) => c.id)).toEqual(["c1"]);
+			expect(run).not.toHaveBeenCalled(); // no ContactCard/changes round-trip — pure KV read
+		});
+
+		it("returns null when JMAP isn't configured", async () => {
+			const idx = await contactSemanticIndexCached({ AI: { run: vi.fn() } } as any);
+			expect(idx).toBeNull();
+		});
 	});
 
 	it("builds a full index (ContactCard/query→get) on a cold cache, anchored on the ContactCard/get response's `state`", async () => {

@@ -1,7 +1,7 @@
 import { type Fn, failWith, ok } from "../registry";
 import { runVerb } from "./run";
 import { hasFilesConsolidate, findDuplicateFiles } from "./_files_consolidate";
-import { filesSemanticIndex } from "./_files_semantic";
+import { filesSemanticIndexCached } from "./_files_semantic";
 import { collectBinaryCandidates, findBinaryDuplicateFiles } from "./_files_binary_dup";
 import { hasDropboxFullWrite } from "./_dropbox-full";
 import { errMsg, oj } from "./_util";
@@ -47,8 +47,12 @@ export const files_consolidate_plan: Fn = {
 			return failWith("not_configured", "files_consolidate_plan also needs DROPBOX_FULL_WRITE_ENABLED armed — an approval can never actually relocate a duplicate without the Mode B write arm.");
 		}
 		try {
-			const index = await filesSemanticIndex(env);
-			if (!index) return failWith("not_configured", "files_consolidate_plan needs Dropbox Mode B configured (DROPBOX_FULL_REFRESH_TOKEN + DROPBOX_FULL_APP_KEY) — files_semantic has no index to cluster.");
+			// CACHED, never building (#1361) — this fn's whole premise (see the file-top comment)
+			// is REUSING files_semantic's already-computed embeddings, never a fresh read/embed
+			// pass; a cold cache degrading here (rather than paying for a full rebuild on this
+			// query path) is consistent with that, not a behavior change.
+			const index = await filesSemanticIndexCached(env);
+			if (!index) return failWith("not_configured", "files_consolidate_plan needs a warm files_semantic index (Dropbox Mode B configured and already indexed) — no query-path rebuild is attempted.");
 			const maxClusters = numClamp(a?.maxClusters, 1, 50, 20);
 			const textClusters = findDuplicateFiles(index.chunks);
 			const { files: binaryCandidates, truncated: binaryTruncated } = await collectBinaryCandidates(env);
