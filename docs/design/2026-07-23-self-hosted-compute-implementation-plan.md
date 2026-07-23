@@ -103,6 +103,56 @@ pieces can start immediately.
 class; a trace shows a request crossing Worker→box→vendor with per-tier cost tags; the eval
 harness scores T0 vs T1 on one task class.
 
+### 0.5 addendum — interface gaps from the capabilities arc (feed in *before* the spine sets)
+
+Added 2026-07-23. The capabilities arc's wedge —
+`2026-07-23-capabilities-wedge-router-control-plane.md`, the edge router / graduated-trust /
+memory control plane — consumes the spine as its primary client. It needs six things the spine
+spec above did not anticipate. Fold each into the corresponding 0.5 sub-phase so the payoff arc
+registers cleanly instead of retrofitting. (The substrate arc is source/sensitivity-shaped; the
+router adds the **sink/action and control** shape.)
+
+- **G1 → `0.5a` sink taxonomy gains a sink-side risk axis.** The unified effect shape
+  `{tier, sensitivityCeiling, health, fallbackChain, governor}` is source-driven (where a datum
+  may *go* by its sensitivity). Add `{riskTier, maxAutonomy}` — the **blast radius of the action
+  a sink performs** (archive-newsletter = low, may auto; reply-to-human / delete / send-money =
+  high, never auto). §4's binary direction-axis is the germ; this generalizes it to a graded cap.
+  `riskTier` is a **static** property of the sink; `maxAutonomy` is the ceiling the trust ladder
+  may not cross.
+- **G2 → `0.5a`/`0.5f` expose the consent ceiling as a readable bound.** The 6-axis consent grant
+  (esp. the duration axis: once/session/N-hours/standing) is the **static ceiling**; the wedge's
+  graduated-trust ladder auto-raises *within* it and must be able to **read it and never exceed
+  it** (trust ⊂ consent). Expose `consentCeiling(login, class, vendor|sink) → tier|autonomy` as a
+  pure query the trust engine calls before every promotion.
+- **G3 → `0.5d` one audit/decision schema, two event types.** §4/0.5c's content-free egress audit
+  line `{reqId, login, vendor, class, grantId, bytesOut, redacted}` and the wedge's append-only
+  `decision` ledger `{route, action, confidence, outcome, was_challenge}` are the **same audit
+  substrate** seen from egress vs routing. Define **one** schema in 0.5d with an event-type
+  discriminator; do not build two ledgers. (The wedge stores routing rows in D1; the egress rows
+  stay the Loki line — but the *schema* is shared so a single audit view spans both.)
+- **G4 → `0.5f` degradation contract carries the router fail-safe-default.** Add the control-plane
+  store (D1) to the health registry. When it is unreachable the router **drops every route to
+  `gated`** (propose-only) rather than auto-firing on stale trust — the GAIE fail-safe-default
+  invariant. "Control plane down" is a routing event that removes automation, never one that
+  removes safety.
+- **G5 → `0.5e` eval harness scores routing + trust, not only tier quality.** Extend the golden
+  set with (content → correct sink) pairs (routing precision) and a held-out labeled set for
+  **trust calibration** (are auto-graduated routes actually low-error?) plus a **challenge-
+  acceptance rate** metric (the automation-bias guard: a route that approves injected
+  `was_challenge` decoys it should reject must not graduate).
+- **G6 → `0.5b` at-rest class travels on control records; D1 joins the lattice.** The router's
+  `memory_item` row carries the 0.5b at-rest class so **hygiene eviction is class-aware** (a
+  `phi`/`legal-privileged` item is never soft-hidden into an edge cache that violates its
+  ceiling). Add **D1 to 0.5b's storage lattice** (`KV/R2/Vectorize/box-DB/vault/Dropbox` → add
+  `D1`), classed **first-party-CF**: control *metadata* (route/decision/memory_item bookkeeping)
+  may live there; PHI *content* may not (→ box-DB/vault).
+
+**Net effect on 0.5:** `0.5a` grows a sink/action axis, `0.5b` grows one storage tier + carries
+class on control rows, `0.5d` defines a shared audit schema, `0.5e` grows routing/calibration
+scorers, `0.5f` registers the control plane. No new sub-phase; the spine's shape widens from
+"compute/storage routing" to "compute/storage **and action/control** routing" — which is what
+makes the always-on agent expressible on it.
+
 ---
 
 ## Phase 1 — Warm cache + cloud build plane (no AI)
