@@ -17,12 +17,14 @@ before merge (pull-GitOps converges the box).
 ```
 Phase 1 (Attic cache + cloud runners) ──────────────┐  independent, no box/consent deps
 Phase 6a (classify cascade, sux-only) ──────────────┤  independent
-Phase 0 (connectivity + consent + audit + OCR gate) ─┴─► unblocks box-side work
-        │
-        ├─► Phase 2 (on-prem OCR)          needs 0-connectivity
-        ├─► Phase 3 (embeddings/rerank)    needs 0-connectivity
-        ├─► Phase 4 (T0 small-model tier)  needs 0-connectivity
-        └─► Phase 5 (verify + DeepSeek)    needs 0-consent (vendor axis)
+Phase 0 (connectivity + consent + audit + OCR gate) ─┤─► unblocks box-side work
+        │                                            │
+        └─► Phase 0.5 (glue spine) ──────────────────┴─► the coherence layer 2–5 register into
+                │
+                ├─► Phase 2 (on-prem OCR)          needs 0-connectivity, registers via 0.5
+                ├─► Phase 3 (embeddings/rerank)    needs 0-connectivity, registers via 0.5
+                ├─► Phase 4 (T0 small-model tier)  needs 0-connectivity, registers via 0.5
+                └─► Phase 5 (verify + DeepSeek)    needs 0-consent + 0.5 router/eval
 ```
 
 **Recommended first sprint (parallel, no cross-deps):**
@@ -30,7 +32,9 @@ Phase 0 (connectivity + consent + audit + OCR gate) ─┴─► unblocks box-si
 2. **Phase 6a — `classify` embedding cascade** (sux-only, pure token/cost win, no infra).
 3. **Phase 0a — connectivity** (Tailscale on box + Worker→box transport; unblocks 2/3/4).
 
-Then Phase 2 (closes the real Mistral PHI leak) → Phase 3a (reranker, additive) → Phase 4.
+Then **Phase 0.5 (glue spine)** — the taxonomy + at-rest classification + eval harness that
+Phases 2–5 register into (build it *before* those, or they fragment into point integrations) —
+then Phase 2 (closes the Mistral PHI leak) → Phase 3a (reranker) → Phase 4.
 
 **Transport decision, made concrete so sux-side work isn't blocked:** plan the sux→box client
 as **transport-agnostic** — a base URL + bearer/service-token from env (`SELFHOST_*_URL`,
@@ -63,6 +67,41 @@ the existing un-audited Mistral OCR egress. Prereq for all box-consuming and cro
 1. `[sux]` reuse `proxy.ts`'s egress-audit Loki line — emit `{reqId, login, vendor, class, grantId|null, bytesOut, redacted}` on every third-party LLM/OCR call; **never content**.
 2. `[sux]` `_ocr.ts` — deny `phi`/`personal`-tagged bytes to Mistral by default (extend `_assimilate`'s existing refusal to `study`/`_scan_ingest`/`_document_radar`). This is the interim gate; Phase 2 is the real fix (on-prem path).
 3. **Acceptance:** a PHI-tagged OCR call with no on-prem backend + no consent is denied and audited; a public image still OCRs via Mistral.
+
+---
+
+## Phase 0.5 — The glue spine (build before Phases 2–5)
+
+**Objective:** the coherence layer that makes the arc a *glue layer* instead of 5 point
+integrations. Every box-consuming phase registers into it. Skipping it forces a retrofit.
+**Effort: L** (foundational). Depends on 0a for the cross-tier pieces; the taxonomy/at-rest/eval
+pieces can start immediately.
+
+1. **`0.5a` Capability/sink taxonomy** — `[suxlib]`+`[sux]`. Unify `caps.models` / `caps.storage`
+   / `caps.egress` / `caps.actions` under **one governed effect shape**
+   `{tier, sensitivityCeiling, health, fallbackChain, governor}`. Extends suxlib's existing
+   `caps`/`sink`/governor machinery. Phases 2–5 then *register a sink*, not wire a client.
+2. **`0.5b` At-rest sensitivity** — `[sux]`+`[suxlib]`. The §4 class travels **with the
+   Handle/record through the CAS**, not just in-flight — so the storage router (KV/R2/Vectorize/
+   box-DB/vault/Dropbox) and the compute router share one lattice. A datum's class governs
+   *where it may live*, not only where it may be sent.
+3. **`0.5c` Cross-tier content-addressed cache** — `[suxlib]`. Extend the `Handle`/`Store` CAS so a
+   box-computed embedding/OCR/summary is content-addressed and reused by the Worker (and vice
+   versa). Makes the box a cache-warm tier; storage analog of Phase 1's cache-first insight.
+4. **`0.5d` Per-tier observability + cost/latency** — `[sux]`+`[.github]`. OTel spans **follow a
+   request across the tunnel**, tagged `{tier, vendor, tokens, $, ms}` (telegraf→Grafana already
+   the sink). Generalize the CI budget-governor concept from "minutes" to "per-tier runtime
+   spend." **Routing is unmakeable without this.**
+5. **`0.5e` Eval harness for routing** — `[sux]`. A golden-set scoring each tier on each task
+   class (reuse the `*.test`/`selftest` discipline). Turns the old-vs-new-school framework from a
+   doc into a **policy the router reads** — otherwise tiering is guesswork.
+6. **`0.5f` Graceful-degradation contract + health registry** — `[sux]`. Each capability declares
+   a fallback chain + health probe; `selftest` reports per-tier availability; op-engine
+   circuit-breakers gate each box service. "Box down" is a routing event, never a hard failure.
+
+**Acceptance:** Phase 2's OCR sink registers through `0.5a` with a declared fallback + at-rest
+class; a trace shows a request crossing Worker→box→vendor with per-tier cost tags; the eval
+harness scores T0 vs T1 on one task class.
 
 ---
 
@@ -188,7 +227,8 @@ Depends on 0b/0c (vendor-axis consent).
 | 6a classify cascade | S | sux | — | token/cost ↓ |
 | 0a connectivity | M | metal, sux | — | unblocks box work |
 | 0b/0c consent+audit | M–L | sux | — | privacy invariant |
-| 2 on-prem OCR | M | metal, sux | 0a | closes PHI leak |
+| 0.5 glue spine | L | suxlib, sux, .github | 0a | coherence — 2–5 register into it |
+| 2 on-prem OCR | M | metal, sux | 0a, 0.5 | closes PHI leak |
 | 3a reranker | M | metal, sux | 0a | retrieval quality |
 | 4 T0 model tier | M | metal, sux | 0a | private synthesis |
 | 5 verify + DeepSeek | S–M | sux, .github | 0b/0c | correctness, cost |
@@ -202,3 +242,13 @@ Depends on 0b/0c (vendor-axis consent).
 - **§11 decisions** from the strategy doc (GPU-inference reversal, connectivity A/B, RAM, DeepSeek, consent granularity, cloud build host + Attic location).
 - Each metal module lands only after CI builds the closure green (pull-GitOps).
 - Whether to file these as tracking issues (per-work-item) or keep as this plan — I did **not** file issues (the batch dispatcher would auto-claim them); say the word to break Phase 1/0a/6a into issues.
+
+## North-star capabilities (next arc — not this one)
+
+The *payoff* features the substrate unlocks are deliberately a **separate arc** (build on the
+spine, don't fold in). Seeded for continuation in
+`2026-07-23-next-arc-capabilities-brainstorm-seed.md`: persistent store/graph on the box
+(retire KV-cosine; a graph substrate for the knowledge graph / person-NER), multimodal recall
+(Immich CLIP + Whisper into the same recall/graph), a personal on-prem fine-tune/LoRA (the
+tight-integration north star), an always-on event agent (Home Assistant as source *and* sink),
+and adjacent self-hosted replacements (Paperless/Nextcloud/SearXNG + a control-plane in suxdash).
