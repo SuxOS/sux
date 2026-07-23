@@ -23,12 +23,34 @@ vi.mock("./_caldav", async () => {
 });
 
 import { gatherRecall, recall } from "./recall";
-import { obsidian } from "./obsidian";
+import { obsidian, vaultCfg } from "./obsidian";
 import { webSearch } from "./web_search";
 import { jmap } from "./jmap";
 import { hasImessage, imessage } from "./imessage";
 import { hasDropboxFull, listFullChanges, readFull, searchFull } from "./_dropbox-full";
 import { hasCalDav, listCalendars, reportObjects } from "./_caldav";
+import { vaultSemanticIndex } from "./_vault_semantic";
+import { filesSemanticIndex } from "./_files_semantic";
+
+// recall's vault leg now reads vaultSemanticIndexCached (#1361) — never builds on a cache
+// miss. Tests that need the git-backend vault leg to answer must warm the SAME KV blob first,
+// via the real (still-exported, still used by vault-mcp.ts's vault_semantic verb) building
+// function — exactly what would have warmed it in production before this call.
+async function seedVaultSemantic(env: any) {
+	const cfg = vaultCfg(env);
+	if (!("error" in cfg)) await vaultSemanticIndex(env, cfg);
+}
+
+/** Wipe every key from the shared KV mock. Needed before re-seeding the vault cache with
+ *  DIFFERENT content mid-test: vaultHead caches the resolved HEAD sha in KV with its own TTL
+ *  (obsidian.ts), so it never re-queries the mocked GitHub ref lookup within a test's lifetime
+ *  — and vaultSemanticIndex short-circuits to the already-cached blob whenever that (stale,
+ *  unchanged) sha still matches. Clearing KV forces both a fresh HEAD resolution and a fresh
+ *  build against the test's new obsidian.run mocks. */
+async function clearKv(kvMock: any) {
+	const { keys } = await kvMock.list();
+	for (const { name } of keys) await kvMock.delete(name);
+}
 
 const okR = (text: string) => ({ content: [{ type: "text", text }] });
 const errR = (text: string) => ({ content: [{ type: "text", text }], isError: true });
@@ -55,7 +77,7 @@ let kv: { get: ReturnType<typeof vi.fn>; put: ReturnType<typeof vi.fn>; delete: 
 const env = () => ({ AI: { run: aiRun }, OAUTH_KV: kv, OBSIDIAN_VAULT_REPO: "me/vault" }) as any;
 const noAiEnv = () => ({}) as any;
 
-beforeEach(() => {
+beforeEach(async () => {
 	const store = new Map<string, string>();
 	kv = {
 		get: vi.fn(async (k: string) => store.get(k) ?? null),
@@ -79,6 +101,12 @@ beforeEach(() => {
 	});
 	mail.mockResolvedValue(okR(JSON.stringify({ methodResponses: [["Email/get", { list: [{ id: "e1", subject: "Scan", from: [{ email: "chen@clinic.com" }], receivedAt: "2026-03-01", preview: "next scan in March" }] }, "g"]] })));
 	web.mockResolvedValue(okR("1. Oncology scans — https://ex.com — what to expect from a scan"));
+	// Warm the git-backend vault leg's KV cache with the default note above — recall's vault leg
+	// is cached-only now (#1361) and would otherwise see a cold cache in every test.
+	await seedVaultSemantic(env());
+	// The seed step itself calls aiRun (embedding the vault chunks) — clear that call history so
+	// tests asserting on aiRun.mock.calls[N] see only calls their own test body triggers.
+	aiRun.mockClear();
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -123,6 +151,12 @@ describe("recall", () => {
 		obs.mockImplementation(async (_e: any, a: any) => (a.action === "list" ? okR(JSON.stringify({ notes: [] })) : okR(JSON.stringify({ hits: [] }))));
 		mail.mockResolvedValue(okR(JSON.stringify({ methodResponses: [["Email/get", { list: [] }, "g"]] })));
 		web.mockResolvedValue(okR("(no results)"));
+		// Re-warm (now-empty) the vault cache — beforeEach's seed cached a real note, and both
+		// vaultHead's own KV cache and vaultSemanticIndex's sha-match check would otherwise short-
+		// circuit straight back to that stale content without ever seeing this test's empty vault.
+		await clearKv(kv);
+		await seedVaultSemantic(env());
+		aiRun.mockClear();
 		const out = parse(await recall.run(env(), { question: "obscure thing" }));
 		expect(out.answer).toContain("couldn't find anything");
 		expect(out.citations).toEqual([]);
@@ -165,6 +199,11 @@ describe("recall", () => {
 			const embedVec = (t: string) => [t.toLowerCase().includes("labs") || t.toLowerCase().includes("ca-125") ? 1 : 0, 0.1];
 			return { data: (inputs.text as string[]).map(embedVec) };
 		});
+		// recall's files leg is cached-only now (#1361) — warm the KV cache first via the real
+		// (still-exported) building function, exactly as would have happened in production before
+		// this call. dbxListChanges is exercised HERE, not inside recall.run.
+		await filesSemanticIndex(env());
+		aiRun.mockClear();
 		const out = parse(await recall.run(env(), { question: "labs?", sources: ["files"] }));
 		expect(dbxListChanges).toHaveBeenCalled(); // the semantic index was built (no keyword hits to short-circuit it)
 		expect(dbxRead).toHaveBeenCalledWith(expect.anything(), "/Health/labs.md");
@@ -204,10 +243,15 @@ describe("recall", () => {
 		expect(mail).toHaveBeenCalled();
 	});
 
-	it("web is NOT a default source without free Kagi (KAGI_SESSION unset)", async () => {
+	it("web is NOT a default source without free Kagi (KAGI_SESSION unset), but still reported in `sources` (#1361)", async () => {
 		const out = parse(await recall.run(env(), { question: "oncologist?" })); // no sources → defaults
 		expect(web).not.toHaveBeenCalled(); // web stays opt-in so recall never bills a search
-		expect(out.sources.web).toBeUndefined();
+		expect(out.sources.web).toMatch(/not configured/); // reported, not silently absent
+	});
+
+	it("web is NOT force-reported when the caller explicitly picks sources without it", async () => {
+		const out = parse(await recall.run(env(), { question: "oncologist?", sources: ["vault"] }));
+		expect(out.sources.web).toBeUndefined(); // explicit source list is honored as-is
 	});
 
 	it("web IS a default source when free Kagi is configured (KAGI_SESSION set)", async () => {
@@ -318,6 +362,13 @@ describe("recall", () => {
 			const embedVec = (t: string) => [t.toLowerCase().includes("sodium") ? 1 : 0, t.toLowerCase().includes("exercise") ? 1 : 0, 0.1];
 			return { data: (inputs.text as string[]).map(embedVec) };
 		});
+		// Re-warm the cache with THESE notes/embeddings — beforeEach's seed used the default
+		// single-note fixture, not this test's Diet/Fitness pair. Clear KV first: vaultHead's own
+		// cache + vaultSemanticIndex's sha-match check would otherwise short-circuit back to the
+		// stale beforeEach blob without ever re-listing against this test's new obsidian.run mock.
+		await clearKv(kv);
+		await seedVaultSemantic(env());
+		aiRun.mockClear();
 		const out = parse(await recall.run(env(), { question: "how much sodium can I have", sources: ["vault"] }));
 		expect(out.citations[0]).toBe("vault:Diet/plan.md"); // the sodium note ranks first by cosine similarity
 	});

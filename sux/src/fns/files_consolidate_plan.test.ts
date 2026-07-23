@@ -33,7 +33,7 @@ describe("files_consolidate_plan", () => {
 			{ path: "/b.txt", text: "x", embedding: [0.999, 0.001, 0] },
 			{ path: "/c.txt", text: "x", embedding: [0, 1, 0] },
 		];
-		vi.doMock("./_files_semantic", () => ({ filesSemanticIndex: async () => ({ cursor: "c1", version: 1, at: 0, total: 3, truncated: false, chunks }) }));
+		vi.doMock("./_files_semantic", () => ({ filesSemanticIndexCached: async () => ({ cursor: "c1", version: 1, at: 0, total: 3, truncated: false, chunks }) }));
 		vi.resetModules();
 		const { files_consolidate_plan: freshFn } = await import("./files_consolidate_plan");
 		runVerb.mockResolvedValueOnce({ instanceId: "abc123" });
@@ -52,7 +52,7 @@ describe("files_consolidate_plan", () => {
 	});
 
 	it("merges binary content_hash clusters alongside text-embedding clusters", async () => {
-		vi.doMock("./_files_semantic", () => ({ filesSemanticIndex: async () => ({ cursor: "c1", version: 1, at: 0, total: 0, truncated: false, chunks: [] }) }));
+		vi.doMock("./_files_semantic", () => ({ filesSemanticIndexCached: async () => ({ cursor: "c1", version: 1, at: 0, total: 0, truncated: false, chunks: [] }) }));
 		vi.doMock("./_files_binary_dup", () => ({
 			collectBinaryCandidates: vi.fn(async () => ({ files: [{ path: "/a.png", content_hash: "h1" }, { path: "/b.png", content_hash: "h1" }], truncated: false })),
 			findBinaryDuplicateFiles: vi.fn(() => [{ paths: ["/a.png", "/b.png"] }]),
@@ -76,7 +76,7 @@ describe("files_consolidate_plan", () => {
 			{ path: "/a.txt", text: "x", embedding: [1, 0, 0] },
 			{ path: "/b.txt", text: "x", embedding: [0, 1, 0] },
 		];
-		vi.doMock("./_files_semantic", () => ({ filesSemanticIndex: async () => ({ cursor: "c1", version: 1, at: 0, total: 2, truncated: false, chunks }) }));
+		vi.doMock("./_files_semantic", () => ({ filesSemanticIndexCached: async () => ({ cursor: "c1", version: 1, at: 0, total: 2, truncated: false, chunks }) }));
 		vi.doMock("./_files_binary_dup", () => ({ collectBinaryCandidates: vi.fn(async () => ({ files: [], truncated: false })), findBinaryDuplicateFiles: vi.fn(() => []) }));
 		vi.resetModules();
 		const { files_consolidate_plan: freshFn } = await import("./files_consolidate_plan");
@@ -89,7 +89,7 @@ describe("files_consolidate_plan", () => {
 	});
 
 	it("reports not_configured when files_semantic has no index (Dropbox Mode B not configured)", async () => {
-		vi.doMock("./_files_semantic", () => ({ filesSemanticIndex: async () => null }));
+		vi.doMock("./_files_semantic", () => ({ filesSemanticIndexCached: async () => null }));
 		vi.doMock("./_files_binary_dup", () => ({ collectBinaryCandidates: vi.fn(async () => ({ files: [], truncated: false })), findBinaryDuplicateFiles: vi.fn(() => []) }));
 		vi.resetModules();
 		const { files_consolidate_plan: freshFn } = await import("./files_consolidate_plan");
@@ -103,7 +103,7 @@ describe("files_consolidate_plan", () => {
 
 	it("surfaces a files_semantic failure as an upstream_error", async () => {
 		vi.doMock("./_files_semantic", () => ({
-			filesSemanticIndex: async () => {
+			filesSemanticIndexCached: async () => {
 				throw new Error("Dropbox down");
 			},
 		}));

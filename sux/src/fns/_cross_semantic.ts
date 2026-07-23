@@ -230,34 +230,38 @@ export async function runCrossSemanticSweep(env: RtEnv, opts: { week?: string; f
 	return { week, links, count: links.length, truncated, window_offset: windowOffset, next_offset: nextOffset };
 }
 
-/** The real deps: the vault/mail/files semantic indices (each already incrementally
- *  cached — see _vault_semantic.ts/_mail_semantic.ts/_files_semantic.ts), pooled into plain
- *  chunk arrays. Dynamically imported by the caller to keep the cron path from pulling in
- *  the semantic-index surface when the feature is dormant, mirroring _consolidate.ts's
- *  defaultDeps. Tests inject fakes instead. */
+/** The real deps: the vault/mail/files semantic indices (mail/files/contacts already
+ *  incrementally cached — see _mail_semantic.ts/_files_semantic.ts/_contact_semantic.ts; vault
+ *  has no incremental path), pooled into plain chunk arrays. CACHED-only reads (#1361): this
+ *  runs unattended off the `cross_semantic` cron with no human watching a stuck call, and a
+ *  full rebuild on this query path risks the identical guaranteed-timeout #1298 found on
+ *  recall's identical call shape — see this file's own #948 comment above on a mid-computation
+ *  CPU-time kill silently wedging the sweep forever. Dynamically imported by the caller to keep
+ *  the cron path from pulling in the semantic-index surface when the feature is dormant,
+ *  mirroring _consolidate.ts's defaultDeps. Tests inject fakes instead. */
 export async function defaultDeps(): Promise<CrossSemanticSweepDeps> {
 	const { vaultCfg } = await import("./obsidian");
-	const { vaultSemanticIndex } = await import("./_vault_semantic");
-	const { mailSemanticIndex } = await import("./_mail_semantic");
-	const { filesSemanticIndex } = await import("./_files_semantic");
-	const { contactSemanticIndex } = await import("./_contact_semantic");
+	const { vaultSemanticIndexCached } = await import("./_vault_semantic");
+	const { mailSemanticIndexCached } = await import("./_mail_semantic");
+	const { filesSemanticIndexCached } = await import("./_files_semantic");
+	const { contactSemanticIndexCached } = await import("./_contact_semantic");
 	return {
 		vaultChunks: async (env) => {
 			const cfg = vaultCfg(env);
 			if ("error" in cfg) return null;
-			const idx = await vaultSemanticIndex(env, cfg);
+			const idx = await vaultSemanticIndexCached(env, cfg);
 			return idx ? idx.chunks : null;
 		},
 		mailChunks: async (env) => {
-			const idx = await mailSemanticIndex(env);
+			const idx = await mailSemanticIndexCached(env);
 			return idx ? idx.chunks : [];
 		},
 		filesChunks: async (env) => {
-			const idx = await filesSemanticIndex(env);
+			const idx = await filesSemanticIndexCached(env);
 			return idx ? idx.chunks : [];
 		},
 		contactsChunks: async (env) => {
-			const idx = await contactSemanticIndex(env);
+			const idx = await contactSemanticIndexCached(env);
 			return idx ? idx.chunks : [];
 		},
 	};

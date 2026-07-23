@@ -5,7 +5,7 @@ import { hasDropboxFull, searchFull } from "./_dropbox-full";
 import { embedOne } from "./_embed";
 import { jmap } from "./jmap";
 import { vaultCfg } from "./obsidian";
-import { topKByCosine, vaultSemanticIndex } from "./_vault_semantic";
+import { topKByCosine, vaultSemanticIndexCached } from "./_vault_semantic";
 import { errMsg, oj } from "./_util";
 
 // contact `timeline` — v5 W8 (sux#1288): assemble a person's cross-source history AT QUERY
@@ -211,7 +211,9 @@ async function fromVault(env: RtEnv, p: ResolvedPerson): Promise<TimelineItem[]>
 	if (!hasAI(env)) return [];
 	const cfg = vaultCfg(env);
 	if ("error" in cfg) return [];
-	const idx = await vaultSemanticIndex(env, cfg);
+	// CACHED, never building (#1361) — same reasoning as recall.ts's fromVaultSemantic: a full
+	// rebuild on this query path exceeds a request's lifetime for the real vault corpus.
+	const idx = await vaultSemanticIndexCached(env, cfg);
 	if (!idx) return [];
 	const q = [p.name, ...p.emails].filter(Boolean).join(" ").trim();
 	if (!q) return [];

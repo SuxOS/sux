@@ -4,12 +4,19 @@ const runVerb = vi.fn();
 vi.mock("./run", () => ({ runVerb: (...args: unknown[]) => runVerb(...args) }));
 
 const obsidianRun = vi.fn();
+// A real (Map-backed) semantic-blob store, keyed like the production KV_KEY convention —
+// #1361's cached-only vault leg needs an actual seed/read round-trip to test against, not a
+// permanently-null stub (vaultSemanticIndexCached would never see anything otherwise).
+const vaultBlobStore = new Map<string, unknown>();
 vi.mock("./obsidian", () => ({
 	obsidian: { run: (...args: unknown[]) => obsidianRun(...args) },
 	vaultCfg: (env: any) => (env.VAULT_REPO ? { repo: env.VAULT_REPO, branch: "main", dir: "", inVault: (p: string) => p } : { error: "vault not configured" }),
 	vaultHead: async () => "sha1",
-	readVaultSemanticBlob: async () => null,
-	writeVaultSemanticBlob: async () => true,
+	readVaultSemanticBlob: async (_env: any, cfg: any) => vaultBlobStore.get(`${cfg.repo}@${cfg.branch}`) ?? null,
+	writeVaultSemanticBlob: async (_env: any, cfg: any, blob: unknown) => {
+		vaultBlobStore.set(`${cfg.repo}@${cfg.branch}`, blob);
+		return true;
+	},
 }));
 
 // A keyword-bucketed embed stand-in: text containing "alpha" embeds to [1,0] (the vault note's
@@ -49,9 +56,32 @@ vi.mock("./jmap", () => ({ jmap: { run: (...args: unknown[]) => jmapRun(...args)
 const hasDropboxFull = vi.fn((..._args: unknown[]) => false);
 vi.mock("./_dropbox-full", () => ({ hasDropboxFull: (...args: unknown[]) => hasDropboxFull(...args), listFullChanges: vi.fn(), readFull: vi.fn() }));
 
-// Mail/files semantic indices read/write env.OAUTH_KV directly (not through the mocked
-// obsidian.ts), so they need a working get/put, not just a truthy presence check.
-const fakeKV = { get: async () => null, put: async () => {} };
+// Mail/files/contacts semantic indices read/write env.OAUTH_KV directly (not through the mocked
+// obsidian.ts) — a real (Map-backed) store is needed so seeding via the real building function
+// (below) actually round-trips, not just a truthy presence check.
+function makeKv() {
+	const store = new Map<string, string>();
+	return { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v) };
+}
+
+/** vault_cross_link_plan's vault leg is cached-only now (#1361) — warm vaultBlobStore first via
+ *  the real (still-exported) building function, using whatever obsidianRun mock the test has
+ *  already set up, exactly as would have happened via some other caller in production before
+ *  this call. */
+async function seedVault(env: any) {
+	const { vaultSemanticIndex } = await import("./_vault_semantic");
+	const { vaultCfg } = await import("./obsidian");
+	const cfg = vaultCfg(env);
+	if (!("error" in cfg)) await vaultSemanticIndex(env, cfg);
+}
+async function seedMail(env: any) {
+	const { mailSemanticIndex } = await import("./_mail_semantic");
+	await mailSemanticIndex(env);
+}
+async function seedContacts(env: any) {
+	const { contactSemanticIndex } = await import("./_contact_semantic");
+	await contactSemanticIndex(env);
+}
 
 describe("vault_cross_link_plan", () => {
 	beforeEach(() => {
@@ -59,6 +89,7 @@ describe("vault_cross_link_plan", () => {
 		obsidianRun.mockReset();
 		jmapRun.mockReset();
 		hasDropboxFull.mockReset().mockReturnValue(false);
+		vaultBlobStore.clear();
 	});
 
 	it("is disabled unless CROSS_SEMANTIC_ENABLED is set", async () => {
@@ -83,8 +114,10 @@ describe("vault_cross_link_plan", () => {
 			if (a.action === "read") return { content: [{ type: "text", text: "alpha body" }] };
 			throw new Error(`unexpected action ${a.action}`);
 		});
+		const env = { CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, OAUTH_KV: makeKv() } as any;
+		await seedVault(env);
 		const { vault_cross_link_plan } = await import("./vault_cross_link_plan");
-		const res = await vault_cross_link_plan.run({ CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, OAUTH_KV: fakeKV } as any, {});
+		const res = await vault_cross_link_plan.run(env, {});
 		expect(res.isError).toBeUndefined();
 		const body = JSON.parse(res.content[0].text);
 		expect(body).toEqual({ candidates: 0, note: "no mail, files, or contacts semantic index is configured — nothing to cross-link against" });
@@ -112,8 +145,11 @@ describe("vault_cross_link_plan", () => {
 		});
 		runVerb.mockResolvedValueOnce({ instanceId: "xyz789" });
 
+		const env = { CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, FASTMAIL_TOKEN: "tok", OAUTH_KV: makeKv() } as any;
+		await seedVault(env);
+		await seedMail(env);
 		const { vault_cross_link_plan } = await import("./vault_cross_link_plan");
-		const res = await vault_cross_link_plan.run({ CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, FASTMAIL_TOKEN: "tok", OAUTH_KV: fakeKV } as any, {});
+		const res = await vault_cross_link_plan.run(env, {});
 
 		expect(runVerb).toHaveBeenCalledTimes(1);
 		const call = runVerb.mock.calls[0][0];
@@ -145,7 +181,9 @@ describe("vault_cross_link_plan", () => {
 			],
 		});
 		const { vault_cross_link_plan } = await import("./vault_cross_link_plan");
-		const env = { CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, FASTMAIL_TOKEN: "tok", OAUTH_KV: fakeKV } as any;
+		const env = { CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, FASTMAIL_TOKEN: "tok", OAUTH_KV: makeKv() } as any;
+		await seedVault(env);
+		await seedMail(env);
 
 		const belowThreshold = await vault_cross_link_plan.run(env, {});
 		expect(runVerb).not.toHaveBeenCalled();
@@ -177,8 +215,11 @@ describe("vault_cross_link_plan", () => {
 		});
 		runVerb.mockResolvedValueOnce({ instanceId: "contact1" });
 
+		const env = { CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, FASTMAIL_TOKEN: "tok", OAUTH_KV: makeKv() } as any;
+		await seedVault(env);
+		await seedContacts(env);
 		const { vault_cross_link_plan } = await import("./vault_cross_link_plan");
-		const res = await vault_cross_link_plan.run({ CROSS_SEMANTIC_ENABLED: "1", VAULT_REPO: "me/vault", AI: {}, FASTMAIL_TOKEN: "tok", OAUTH_KV: fakeKV } as any, {});
+		const res = await vault_cross_link_plan.run(env, {});
 
 		expect(runVerb).toHaveBeenCalledTimes(1);
 		const call = runVerb.mock.calls[0][0];

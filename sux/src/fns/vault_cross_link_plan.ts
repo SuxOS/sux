@@ -2,10 +2,10 @@ import { type Fn, failWith, ok } from "../registry";
 import { runVerb } from "./run";
 import { contactsToCrossItems, hasCrossSemantic, crossDomainLinks, filesToCrossItems, mailToCrossItems, type CrossDomainItem } from "./_cross_semantic";
 import { vaultCfg } from "./obsidian";
-import { vaultSemanticIndex } from "./_vault_semantic";
-import { mailSemanticIndex } from "./_mail_semantic";
-import { filesSemanticIndex } from "./_files_semantic";
-import { contactSemanticIndex } from "./_contact_semantic";
+import { vaultSemanticIndexCached } from "./_vault_semantic";
+import { mailSemanticIndexCached } from "./_mail_semantic";
+import { filesSemanticIndexCached } from "./_files_semantic";
+import { contactSemanticIndexCached } from "./_contact_semantic";
 import { errMsg, oj } from "./_util";
 
 // vault_cross_link_plan — the entrypoint for the DURABLE, human-approved action-half of #785:
@@ -43,9 +43,13 @@ export const vault_cross_link_plan: Fn = {
 		const cfg = vaultCfg(env);
 		if ("error" in cfg) return failWith("not_configured", `vault_cross_link_plan needs a configured vault: ${cfg.error}`);
 		try {
-			const vaultIndex = await vaultSemanticIndex(env, cfg);
-			if (!vaultIndex) return failWith("not_configured", "vault_cross_link_plan needs Workers-AI (env.AI) to rank the vault's semantic index.");
-			const [mailIndex, filesIndex, contactsIndex] = await Promise.all([mailSemanticIndex(env), filesSemanticIndex(env), contactSemanticIndex(env)]);
+			// CACHED, never building (#1361) — all four reads are query-path lookups, not
+			// maintenance; a full rebuild here risks the same guaranteed-timeout #1298 found on
+			// recall's identical call shape. mail_semantic/contact_semantic's own MCP verbs (and,
+			// pending #1361's follow-up, whatever ends up warming files) remain the builders.
+			const vaultIndex = await vaultSemanticIndexCached(env, cfg);
+			if (!vaultIndex) return failWith("not_configured", "vault_cross_link_plan needs a warm vault semantic index (none built yet, or Workers-AI unconfigured) — no query-path rebuild is attempted.");
+			const [mailIndex, filesIndex, contactsIndex] = await Promise.all([mailSemanticIndexCached(env), filesSemanticIndexCached(env), contactSemanticIndexCached(env)]);
 			const targets: CrossDomainItem[] = [
 				...(mailIndex ? mailToCrossItems(mailIndex.chunks) : []),
 				...(filesIndex ? filesToCrossItems(filesIndex.chunks) : []),

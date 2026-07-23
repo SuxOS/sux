@@ -220,6 +220,18 @@ export async function contactSemanticIndex(env: RtEnv): Promise<ContactSemanticI
 	return fresh;
 }
 
+/** Read-ONLY sibling of contactSemanticIndex: return the CACHED index if a valid warm blob is
+ *  present, else null — it NEVER runs applyChanges (JMAP round-trips) or a full rebuild. Same
+ *  reason as _mail_semantic.ts's mailSemanticIndexCached (#1361): a query-path caller (recall,
+ *  oracle ask) must do no network/embed work, or it blows its per-domain budget on every call —
+ *  a cold cache degrades that domain fast instead of falling through to buildFull. */
+export async function contactSemanticIndexCached(env: RtEnv): Promise<ContactSemanticIndex | null> {
+	if (!(env as { FASTMAIL_TOKEN?: string }).FASTMAIL_TOKEN) return null;
+	const storedCached = await readBlob(env);
+	if (isStoredContactSemanticIndex(storedCached) && storedCached.version === VERSION) return fromStored(storedCached);
+	return null;
+}
+
 export type ContactSemanticHit = { id: string; name: string; company: string; emails: string[]; phones: string[]; score: number };
 
 /** Brute-force kNN: cosine-rank the contact chunks against `queryVec`, take the top-k. Mirrors

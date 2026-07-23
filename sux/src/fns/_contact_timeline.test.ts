@@ -9,7 +9,7 @@ vi.mock("../ai", () => ({ hasAI: vi.fn(() => true) }));
 vi.mock("./jmap", () => ({ jmap: { run: vi.fn() } }));
 vi.mock("./_embed", () => ({ embedOne: vi.fn(async () => [1, 0, 0]) }));
 vi.mock("./obsidian", () => ({ vaultCfg: vi.fn(() => ({ repo: "me/vault", branch: "main", dir: "", inVault: (p: string) => p })) }));
-vi.mock("./_vault_semantic", () => ({ vaultSemanticIndex: vi.fn(), topKByCosine: vi.fn() }));
+vi.mock("./_vault_semantic", () => ({ vaultSemanticIndexCached: vi.fn(), topKByCosine: vi.fn() }));
 vi.mock("./_dropbox-full", () => ({ hasDropboxFull: vi.fn(() => false), searchFull: vi.fn() }));
 vi.mock("./_caldav", async () => {
 	const actual = await vi.importActual<any>("./_caldav");
@@ -20,7 +20,7 @@ import { assembleTimeline } from "./_contact_timeline";
 import { contact } from "./contact";
 import { hasAI } from "../ai";
 import { jmap } from "./jmap";
-import { vaultSemanticIndex, topKByCosine } from "./_vault_semantic";
+import { vaultSemanticIndexCached, topKByCosine } from "./_vault_semantic";
 import { hasDropboxFull, searchFull } from "./_dropbox-full";
 import { hasCalDav, listCalendars, reportObjects } from "./_caldav";
 
@@ -30,7 +30,7 @@ const parse = (r: any) => JSON.parse(r.content[0].text);
 
 const jmapRun = jmap.run as unknown as ReturnType<typeof vi.fn>;
 const aiHas = hasAI as unknown as ReturnType<typeof vi.fn>;
-const vIndex = vaultSemanticIndex as unknown as ReturnType<typeof vi.fn>;
+const vIndex = vaultSemanticIndexCached as unknown as ReturnType<typeof vi.fn>;
 const vTopK = topKByCosine as unknown as ReturnType<typeof vi.fn>;
 const dbxHas = hasDropboxFull as unknown as ReturnType<typeof vi.fn>;
 const dbxSearch = searchFull as unknown as ReturnType<typeof vi.fn>;

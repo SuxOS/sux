@@ -8,6 +8,8 @@ vi.mock("./proxy", () => ({
 }));
 
 import { VAULT_TOOLS } from "./vault-mcp";
+import { vaultSemanticIndex } from "./fns/_vault_semantic";
+import { vaultCfg } from "./fns/obsidian";
 
 function kvStub() {
 	const map = new Map<string, string>();
@@ -462,7 +464,7 @@ describe("vault MCP tools", () => {
 		expect(putPath).not.toBe("Home.md");
 	});
 
-	it("vault_semantic chunks+embeds every note (KV-cached, HEAD-keyed) and ranks by cosine similarity", async () => {
+	it("vault_semantic reads the warm cached index (KV-cached, HEAD-keyed) and ranks by cosine similarity (#1361: cached-only, never rebuilds on this call)", async () => {
 		const store = new Map<string, string>();
 		const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
 		// A keyword embedding — deterministic so kNN ranking is testable (mirrors advise.test.ts's embedVec).
@@ -485,51 +487,40 @@ describe("vault MCP tools", () => {
 			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
 			return new Response(JSON.stringify({ content: b64(notes[path]), sha: head }), { status: 200 });
 		};
+		// Warm the cache first via the real (still-exported, still used by _reindex.ts's admin
+		// one-shot) building function — vault_semantic itself no longer builds (#1361).
+		const cfg = vaultCfg(env);
+		if (!("error" in cfg)) await vaultSemanticIndex(env, cfg);
+		run.mockClear();
 
 		const r = parse(await tool("vault_semantic").run(env, { q: "how much sodium can I have" }));
 		expect(r.hits[0].path).toBe("Diet/plan.md");
 		expect(r.scanned).toBe(2);
 
-		// A second call at the same HEAD serves the cached embedded index — only the new
-		// query gets embedded, the corpus is NOT re-embedded (would be an unbounded AI cost).
+		// A second call serves the SAME cached embedded index — only the new query gets
+		// embedded, the corpus is NOT re-embedded (would be an unbounded AI cost, and this
+		// call never rebuilds at all now).
 		const callsAfterFirst = run.mock.calls.length;
 		await tool("vault_semantic").run(env, { q: "exercise" });
 		expect(run.mock.calls.length).toBe(callsAfterFirst + 1);
 	});
 
-	it("vault_semantic rebuilds instead of crashing on a stale cached blob whose chunks aren't the current shape (#722)", async () => {
+	it("vault_semantic degrades to upstream_error (not a crash) on a stale cached blob whose chunks aren't the current shape (#722), since it never rebuilds to recover (#1361)", async () => {
 		const store = new Map<string, string>();
 		const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => void store.set(k, v), delete: async (k: string) => void store.delete(k) };
-		const embedVec = (t: string): number[] => {
-			const s = t.toLowerCase();
-			return [s.includes("sodium") ? 1 : 0, s.includes("exercise") ? 1 : 0, 0.1];
-		};
-		const run = vi.fn(async (_model: string, inputs: any) => ({ data: inputs.text.map(embedVec) }));
-		const env = { OBSIDIAN_VAULT_REPO: "me/vault", OAUTH_KV: kv, AI: { run } } as any;
-		const notes: Record<string, string> = {
-			"Diet/plan.md": "Avoid sodium above 1500mg daily.",
-			"Fitness/walk.md": "Walk for exercise thirty minutes.",
-		};
-		const head = "head-1";
-		routes.handler = (url) => {
-			if (url.includes("/git/ref/heads/")) return new Response(JSON.stringify({ object: { sha: head } }), { status: 200 });
-			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: Object.keys(notes).map((p) => ({ type: "blob", path: p })) }), { status: 200 });
-			const m = /\/contents\/(.+?)(\?|$)/.exec(url);
-			const path = m ? decodeURIComponent(m[1]) : "";
-			if (notes[path] === undefined) return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
-			return new Response(JSON.stringify({ content: b64(notes[path]), sha: head }), { status: 200 });
-		};
+		const env = { OBSIDIAN_VAULT_REPO: "me/vault", OAUTH_KV: kv, AI: { run: vi.fn() } } as any;
 		// Seed the cache with a blob at the CURRENT VERSION whose chunk embeddings are a
 		// raw number[] rather than the base64 string _embed.ts's encodeEmbedding produces
 		// (the exact pre-#717 shape #722 describes — reproduced here at the post-bump
 		// VERSION to prove the shape guard, not just the version bump, catches it).
-		store.set("cache:vault:git:me/vault@main:semantic", JSON.stringify({ sha: head, version: 2, at: Date.now(), total: 1, truncated: false, chunks: [{ path: "Diet/plan.md", title: "plan", text: "stale", embedding: [0.1, 0.2, 0.3] }] }));
+		store.set("cache:vault:git:me/vault@main:semantic", JSON.stringify({ sha: "head-1", version: 2, at: Date.now(), total: 1, truncated: false, chunks: [{ path: "Diet/plan.md", title: "plan", text: "stale", embedding: [0.1, 0.2, 0.3] }] }));
 
-		const r = parse(await tool("vault_semantic").run(env, { q: "how much sodium can I have" }));
-		expect(r.hits[0].path).toBe("Diet/plan.md");
-		// scanned:2 (not the stale cache's 1 chunk) proves it rebuilt rather than trusting
-		// (and crashing on) the malformed cached blob.
-		expect(r.scanned).toBe(2);
+		const r = await tool("vault_semantic").run(env, { q: "how much sodium can I have" });
+		// The shape guard rejects the malformed blob (isStoredSemanticIndex) rather than
+		// crashing on it — but with no query-path rebuild to recover, the leg now reports
+		// not-warm instead of self-healing.
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/isn't warm/);
 	});
 
 	it("vault_semantic requires a `q` and the Workers-AI binding", async () => {
