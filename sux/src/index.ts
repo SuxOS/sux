@@ -1447,11 +1447,16 @@ export default {
 			const u = new URL(request.url);
 			const m = request.method === "POST" && u.pathname.match(/^\/push\/jmap\/([^/]+)$/);
 			if (m) {
-				const body = await request.text();
-				if (body.length > 16_000) return new Response("payload too large", { status: 413 });
+				const raw = await request.arrayBuffer();
+				if (raw.byteLength > 16_000) return new Response("payload too large", { status: 413 });
 				const mod = await import("./mail-mcp");
-				const matched = await mod.handleMailPushWebhook(env, m[1], body, () => mailTriageTick(env));
-				return matched ? new Response(null, { status: 200 }) : new Response("not found", { status: 404 });
+				// Fastmail's push delivery is RFC 8291-encrypted (aes128gcm) since #1408 —
+				// resolvePushWebhookBody decrypts it (using the keys generated at subscribe
+				// time) before handleMailPushWebhook ever sees plaintext JSON.
+				const { matched, body } = await mod.resolvePushWebhookBody(env, m[1], raw, request.headers.get("content-encoding"));
+				if (!matched) return new Response("not found", { status: 404 });
+				const triggered = await mod.handleMailPushWebhook(env, m[1], body, () => mailTriageTick(env));
+				return triggered ? new Response(null, { status: 200 }) : new Response("not found", { status: 404 });
 			}
 		}
 		try {

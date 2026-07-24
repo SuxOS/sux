@@ -207,6 +207,67 @@ export async function encryptPayload(plaintext: Uint8Array, p256dhB64: string, a
 	return concatBytes(salt, recordSize, new Uint8Array([asPublicRaw.length]), asPublicRaw, ciphertext);
 }
 
+// ── Inbound Web Push decryption (RFC 8291/8188) — the receiver side of the same
+// scheme this file implements as sender above. Used by mail-mcp.ts's JMAP
+// PushSubscription webhook (#1408): Fastmail's push delivery is itself RFC
+// 8291-encrypted Web Push, so sux (the subscriber) must generate its own P-256
+// keypair + auth secret for the PushSubscription's `keys` field, and decrypt
+// what Fastmail (the sender) delivers to the webhook URL.
+
+export type SubscriberKeys = { publicKeyB64: string; privateKeyJwk: JsonWebKey; authB64: string };
+
+/** Generates a fresh P-256 ECDH keypair + 16-byte auth secret for registering as
+ *  the `keys` field of an inbound JMAP PushSubscription. The private key is
+ *  exported as a JWK (JSON-serializable) so it round-trips through KV. */
+export async function generateSubscriberKeys(): Promise<SubscriberKeys> {
+	const keyPair = await generateEcKeyPair("P-256", ["deriveBits"]);
+	const publicKeyB64 = bytesToB64url(await exportRawKey(keyPair.publicKey));
+	const privateKeyJwk = (await crypto.subtle.exportKey("jwk", keyPair.privateKey)) as JsonWebKey;
+	const authB64 = bytesToB64url(crypto.getRandomValues(new Uint8Array(16)));
+	return { publicKeyB64, privateKeyJwk, authB64 };
+}
+
+/** Decrypts one aes128gcm Web Push body (RFC 8188 §2 framing: salt(16) || rs(4,BE) ||
+ *  idlen(1) || keyid(idlen) || ciphertext) delivered to this subscriber's own keys.
+ *  Mirrors encryptPayload's derivation from the receiver's side — the sender's
+ *  ephemeral ECDH public key travels as `keyid` instead of a separate header.
+ *  Single-record bodies only (what a real push service always sends for a message
+ *  this size — matches what encryptPayload above produces). */
+export async function decryptPayload(encrypted: Uint8Array, keys: SubscriberKeys): Promise<Uint8Array> {
+	if (encrypted.length < 22) throw new Error("aes128gcm body too short");
+	const salt = encrypted.slice(0, 16);
+	const idlen = encrypted[20];
+	if (encrypted.length < 21 + idlen) throw new Error("aes128gcm body too short for declared keyid length");
+	const asPublicRaw = encrypted.slice(21, 21 + idlen);
+	const ciphertext = encrypted.slice(21 + idlen);
+
+	const uaPublicRaw = b64urlToBytes(keys.publicKeyB64);
+	const authSecret = b64urlToBytes(keys.authB64);
+	const privateKey = await crypto.subtle.importKey("jwk", keys.privateKeyJwk, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
+	const asPublicKey = await crypto.subtle.importKey("raw", asPublicRaw, { name: "ECDH", namedCurve: "P-256" }, false, []);
+	const ecdhSecret = await ecdhDeriveBits(asPublicKey, privateKey);
+
+	const prkKey = await hmacSha256(authSecret, ecdhSecret);
+	const keyInfo = concatBytes(textEncoder.encode("WebPush: info"), new Uint8Array([0]), uaPublicRaw, asPublicRaw, new Uint8Array([1]));
+	const ikm = await hmacSha256(prkKey, keyInfo);
+
+	const prk = await hmacSha256(salt, ikm);
+	const cek = (await hmacSha256(prk, concatBytes(textEncoder.encode("Content-Encoding: aes128gcm"), new Uint8Array([0, 1])))).slice(0, 16);
+	const nonce = (await hmacSha256(prk, concatBytes(textEncoder.encode("Content-Encoding: nonce"), new Uint8Array([0, 1])))).slice(0, 12);
+
+	const cekKey = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["decrypt"]);
+	const decrypted = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, cekKey, ciphertext));
+
+	// RFC 8188 §2 padding: strip trailing zero bytes, then the delimiter just before
+	// them must be 0x02 (last, only record) — 0x01 would mean more records follow,
+	// which this (and every real single-push-message body) never sends.
+	let end = decrypted.length;
+	while (end > 0 && decrypted[end - 1] === 0) end--;
+	if (end === 0) throw new Error("aes128gcm: no padding delimiter found");
+	if (decrypted[end - 1] !== 2) throw new Error("aes128gcm: expected a final-record delimiter (multi-record bodies unsupported)");
+	return decrypted.slice(0, end - 1);
+}
+
 /** POST one push to one subscription. Returns false (and prunes the subscription on a
  *  404/410 "gone") rather than throwing, so a dead endpoint can't sink a fan-out send. */
 export async function sendToSubscription(env: RtEnv, sub: PushSubscriptionInfo, message: PushMessage, ttlSeconds = 60): Promise<boolean> {

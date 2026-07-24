@@ -699,6 +699,18 @@ fix is asking to reverse that documented safety invariant, not to close a gap �
 a policy question for a human (what confidence bar, whether it belongs on the allow-list at
 all), not a wiring task, and don't build it silently (#1418, dropped for this reason).
 
+## A "the fix belongs in suxlib" drop isn't always final (#1399)
+
+Before dropping an issue as blocked because the actual bug lives in `@suxos/lib`
+(read-only from this sandbox — see the `../suxlib` gotchas above), check whether the
+*symptom* can be corrected in sux's own call site with a post-processing wrapper around
+the library call, without touching suxlib itself. #1399 (YAML flow-style sequences
+parsed as literal strings) was dropped twice as suxlib-only before this build added
+`fns/_yaml_flow.ts`, a pure post-processor applied to `parseYaml`'s already-returned
+value in `json.ts` — zero suxlib changes needed. Not every suxlib bug has a sux-side
+workaround (a wrong *upstream* computation a caller can't observe from the outside
+doesn't), but check for one before declaring the issue needs-human.
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s

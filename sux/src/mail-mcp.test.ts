@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { handleMailPushWebhook, MAIL_TOOLS } from "./mail-mcp";
+import { handleMailPushWebhook, MAIL_TOOLS, resolvePushWebhookBody } from "./mail-mcp";
+import { encryptPayload } from "./fns/_webpush";
 
 // Reuse the jmap.test mocking approach: a Map-backed KV + a URL-routed fetch that
 // answers Session discovery and the JMAP api endpoint. The mail_* tools compile to
@@ -775,6 +776,41 @@ describe("mail_* ergonomic tools", () => {
 		const matched = await handleMailPushWebhook(e, subState.token, "not json{{{", trigger);
 		expect(matched).toBe(true);
 		expect(trigger).not.toHaveBeenCalled();
+	});
+
+	it("resolvePushWebhookBody: decrypts an RFC 8291 aes128gcm push using the keys generated at subscribe time (#1408)", async () => {
+		installFetch();
+		const e = env();
+		await tool("mail_push").run(e, { action: "subscribe" });
+		const subState = JSON.parse(e.OAUTH_KV.map.get("sux:mailpush:sub"));
+		expect(subState.keys?.publicKeyB64).toBeTruthy();
+		expect(subState.keys?.authB64).toBeTruthy();
+
+		const plaintext = JSON.stringify({ "@type": "StateChange", changed: {} });
+		const encrypted = await encryptPayload(new TextEncoder().encode(plaintext), subState.keys.publicKeyB64, subState.keys.authB64);
+
+		const { matched, body } = await resolvePushWebhookBody(e, subState.token, encrypted.buffer, "aes128gcm");
+		expect(matched).toBe(true);
+		expect(JSON.parse(body)).toEqual({ "@type": "StateChange", changed: {} });
+	});
+
+	it("resolvePushWebhookBody: an undecryptable body still acks (matches) with an empty body rather than throwing", async () => {
+		installFetch();
+		const e = env();
+		await tool("mail_push").run(e, { action: "subscribe" });
+		const subState = JSON.parse(e.OAUTH_KV.map.get("sux:mailpush:sub"));
+		const garbage = new Uint8Array(64).fill(1);
+		const { matched, body } = await resolvePushWebhookBody(e, subState.token, garbage.buffer, "aes128gcm");
+		expect(matched).toBe(true);
+		expect(body).toBe("");
+	});
+
+	it("resolvePushWebhookBody: wrong token doesn't match, same as handleMailPushWebhook", async () => {
+		installFetch();
+		const e = env();
+		await tool("mail_push").run(e, { action: "subscribe" });
+		const { matched } = await resolvePushWebhookBody(e, "wrong-token", new ArrayBuffer(0), null);
+		expect(matched).toBe(false);
 	});
 
 	it("mail_upload streams bytes to a reusable blobId (§1e)", async () => {

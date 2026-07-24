@@ -13,6 +13,7 @@ import { dropboxPut, hasDropbox } from "./fns/dropbox";
 import { ledger } from "./ledger";
 import { runSubJob } from "./cron-heartbeat";
 import { timingSafeEqual } from "./crypto-util";
+import { decryptPayload, generateSubscriberKeys, type SubscriberKeys } from "./fns/_webpush";
 
 // The mail MCP server — the ergonomic Fastmail surface, reached through the `mail_`
 // (and `cal_`/`contact_`) front verbs on the one /mcp connector, behind the same
@@ -87,7 +88,13 @@ async function chunkedEmailSetUpdate(env: RtEnv, ids: string[], patchFor: (id: s
 // trigger an extra mail_triage cycle early — triage's own MAIL_TRIAGE_ENABLED gate still
 // applies, so this can't do anything the existing bearer-gated /admin/tick couldn't already.
 const PUSH_KV_KEY = "sux:mailpush:sub";
-type PushState = { id: string; token: string; verified: boolean; createdAt: number; expires: string | null };
+// `keys` is the subscriber (sux)'s own P-256 ECDH keypair + auth secret, generated at
+// subscribe time and sent to Fastmail as the PushSubscription's `keys` field — Fastmail
+// now enforces RFC 8291 (all Web Push delivery encrypted; #1408) and rejects a
+// PushSubscription create without it. Optional only for back-compat with a KV record
+// written before this field existed; a subscription missing it can't decrypt future
+// pushes and should be re-subscribed.
+type PushState = { id: string; token: string; verified: boolean; createdAt: number; expires: string | null; keys?: SubscriberKeys };
 
 async function pushState(env: RtEnv): Promise<PushState | null> {
 	const raw = await env.OAUTH_KV?.get(PUSH_KV_KEY);
@@ -111,6 +118,31 @@ function randomPushToken(): string {
  * Returns true iff the token matched a live subscription (index.ts uses this to 404 otherwise,
  * so a wrong/expired token is indistinguishable from the route not existing).
  */
+/**
+ * Resolves the webhook's raw request body to plaintext JSON text, decrypting it first
+ * if Fastmail encrypted it (RFC 8291 aes128gcm — the case since #1408; `contentEncoding`
+ * is the request's `Content-Encoding` header). Returns `matched:false` iff `token`
+ * doesn't match the live subscription (index.ts 404s on that, same as before); a
+ * decrypt failure while the token DOES match still reports `matched:true` with an
+ * empty body, mirroring handleMailPushWebhook's existing malformed-body handling (ack,
+ * do nothing) rather than surfacing a 500 to Fastmail.
+ */
+export async function resolvePushWebhookBody(env: RtEnv, token: string, raw: ArrayBufferLike, contentEncoding: string | null): Promise<{ matched: boolean; body: string }> {
+	const existing = await pushState(env);
+	if (!existing || !timingSafeEqual(existing.token, token)) return { matched: false, body: "" };
+	const bytes = new Uint8Array(raw);
+	if (contentEncoding && /aes128gcm/i.test(contentEncoding) && existing.keys) {
+		try {
+			const plaintext = await decryptPayload(bytes, existing.keys);
+			return { matched: true, body: new TextDecoder().decode(plaintext) };
+		} catch (e) {
+			console.warn(`mail push decrypt failed: ${errMsg(e)}`);
+			return { matched: true, body: "" };
+		}
+	}
+	return { matched: true, body: new TextDecoder().decode(bytes) };
+}
+
 export async function handleMailPushWebhook(env: RtEnv, token: string, rawBody: string, trigger: () => Promise<unknown>): Promise<boolean> {
 	const existing = await pushState(env);
 	if (!existing || !timingSafeEqual(existing.token, token)) return false;
@@ -1033,11 +1065,17 @@ const TOOLS: MailTool[] = [
 				if (existing) return ok({ already: true, verified: existing.verified, id: existing.id, note: existing.verified ? undefined : "still awaiting Fastmail's confirmation push — check action:'status'." });
 				const token = randomPushToken();
 				const url = `${storeBase(env)}/push/jmap/${token}`;
-				const resp = await jmapCall(env, { calls: [["PushSubscription/set", { create: { p: { deviceClientId: "sux-worker", url, types: ["Email"] } } }, "s"]] });
+				// RFC 8291: Fastmail's Web Push delivery is always encrypted — a PushSubscription
+				// created without `keys` is rejected outright (#1408). sux is the subscriber here,
+				// so it generates its own keypair and hands Fastmail the public half + auth secret.
+				const subscriberKeys = await generateSubscriberKeys();
+				const resp = await jmapCall(env, {
+					calls: [["PushSubscription/set", { create: { p: { deviceClientId: "sux-worker", url, types: ["Email"], keys: { p256dh: subscriberKeys.publicKeyB64, auth: subscriberKeys.authB64 } } } }, "s"]],
+				});
 				const setR = resultFor(resp, "PushSubscription/set");
 				const created = setR?.created?.p;
 				if (!created) return fail(`PushSubscription create failed: ${JSON.stringify(setR?.notCreated ?? {})}`);
-				await savePushState(env, { id: created.id, token, verified: false, createdAt: Date.now(), expires: created.expires ?? null });
+				await savePushState(env, { id: created.id, token, verified: false, createdAt: Date.now(), expires: created.expires ?? null, keys: subscriberKeys });
 				return ok({ subscribed: true, id: created.id, verified: false, note: "Awaiting Fastmail's verification push — check action:'status' shortly." });
 			} catch (e) {
 				return fail(errMsg(e));
