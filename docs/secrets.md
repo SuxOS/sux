@@ -104,6 +104,60 @@ it can reach, so keep it off personal/human vaults (`Private`, `Mom`, …). It
   op reads, not the whole chain.
 - GitHub/Worker stores stay **write-only**; op remains the only readable copy.
 
+## Structured multi-field op items (2026-07-24)
+
+A service with more than one related credential (an OAuth pair, a token + its
+username, app-scope + full-scope variants, …) lives in **one op item with a
+`credentials` section**, not N flat items — same pattern Epic FHIR already used
+(`fhir_base_sandbox`, `client_secret_production`, per-org fields, …), now applied
+everywhere. `secret-sync.sh`'s `--op` override reads any field path directly:
+
+```bash
+scripts/secret-sync.sh GITHUB_TOKEN --worker --op "op://Secrets/GITHUB/credentials/pat"
+```
+
+**Creating a new structured item** (the template — copy this shape for any new
+multi-credential service):
+
+```bash
+op item create --vault Secrets --category "API Credential" --title SERVICE_NAME \
+  "credentials.token[password]=…" \
+  "credentials.oauth_client_id[text]=…" \
+  "credentials.oauth_client_secret[password]=…"
+```
+
+Use `[password]` (CONCEALED) for anything secret, `[text]` for non-sensitive
+config (a URL, an account id) — matches 1Password's own display convention.
+Read any field back with `op://Secrets/SERVICE_NAME/credentials/<field>` (note:
+`/`, not `.` — the dot syntax is only for the `op item create`/`edit` assignment
+args, not for `op read` references).
+
+**Current structured items → Worker secret name mapping:**
+
+| op item | field | Worker secret name |
+|---|---|---|
+| `GITHUB` | `credentials/pat` | `GITHUB_TOKEN` |
+| `GITHUB` | `credentials/oauth_client_id` | `GITHUB_CLIENT_ID` |
+| `GITHUB` | `credentials/oauth_client_secret` | `GITHUB_CLIENT_SECRET` |
+| `TAILSCALE` | `credentials/oauth_client_id` | `TAILSCALE_OAUTH_CLIENT_ID` |
+| `TAILSCALE` | `credentials/oauth_client_secret` | `TAILSCALE_OAUTH_CLIENT_SECRET` |
+| `TAILSCALE` | `credentials/proxy_secret` | `TAILSCALE_PROXY_SECRET` |
+| `TAILSCALE` | `credentials/proxy_url` | `TAILSCALE_PROXY_URL` |
+| `GRAFANA` | `credentials/loki_token` \| `loki_url` \| `loki_user` \| `prom_url` \| `prom_user` | `GRAFANA_LOKI_TOKEN` \| `GRAFANA_LOKI_URL` \| `GRAFANA_LOKI_USER` \| `GRAFANA_PROM_URL` \| `GRAFANA_PROM_USER` |
+| `DROPBOX` | `credentials/app_key` \| `app_secret` \| `app_token` \| `refresh_token` \| `full_app_key` \| `full_app_secret` \| `full_token` \| `full_refresh_token` | `DROPBOX_APP_KEY` \| `DROPBOX_APP_SECRET` \| `DROPBOX_APP_TOKEN` \| `DROPBOX_REFRESH_TOKEN` \| `DROPBOX_FULL_APP_KEY` \| `DROPBOX_FULL_APP_SECRET` \| `DROPBOX_FULL_TOKEN` \| `DROPBOX_FULL_REFRESH_TOKEN` |
+| `FASTMAIL` | `credentials/token` \| `app_password` \| `app_password_user` | `FASTMAIL_TOKEN` \| `FASTMAIL_APP_PASSWORD` \| (username, not a Worker secret) |
+| `SUX_BOT` | `credentials/app_id` \| `private_key` \| `service_account_token` \| `cron_token` | `SUX_BOT_APP_ID` \| `SUX_BOT_PRIVATE_KEY` \| — \| `SUX_CRON_TOKEN` |
+| `SUX_MCP` | `credentials/token` \| `url` | `SUX_MCP_TOKEN` \| `SUX_MCP_URL` |
+| `OBSIDIAN` | `credentials/remote_key` \| `remote_url` \| `sync_password` | `OBSIDIAN_REMOTE_KEY` \| `OBSIDIAN_REMOTE_URL` \| `OBSIDIAN_SYNC_PASSWORD` |
+| `CLOUDFLARE` | `credentials/api_token` \| `account_id` \| `access_aud` \| `access_team_domain` | `CLOUDFLARE_API_TOKEN` \| `CLOUDFLARE_ACCOUNT_ID` \| `CF_ACCESS_AUD` \| `CF_ACCESS_TEAM_DOMAIN` |
+| `R2` | `credentials/access_key_id` \| `secret_access_key` | `R2_ACCESS_KEY_ID` \| `R2_SECRET_ACCESS_KEY` |
+| `CLAUDE` | `credentials/oauth_token` \| `oauth_token_m` \| `api_key` \| `api_key_m` | `CLAUDE_CODE_OAUTH_TOKEN` \| `CLAUDE_CODE_OAUTH_TOKEN_M` \| `ANTHROPIC_API_KEY` \| `ANTHROPIC_API_KEY_M` |
+| `IMESSAGE` | `credentials/url` \| `secret` | `IMESSAGE_URL` \| `IMESSAGE_SECRET` |
+| `Epic FHIR sux - PROD` | `client_id_sandbox` \| `client_id_prod` \| `client_secret_sandbox` \| `client_secret_production` \| `credentials/bozeman-health-secret` \| `credentials/evergreen-health` \| `credentials/swedish` | `EPIC_CLIENT_ID` (shared, also its own flat item) \| per-org secrets |
+
+Single-credential services stay flat (title == secret name, value in `credential`)
+— no benefit to sectioning a service with only one field.
+
 ## Sync a secret (op → store)
 
 ```bash
