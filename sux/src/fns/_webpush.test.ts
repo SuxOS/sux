@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { encryptPayload, hasWebPush, listSubscriptions, notify, sendToSubscription, subscribe, truncateMessageToFit, unsubscribe, WEBPUSH_MAX_PLAINTEXT_BYTES } from "./_webpush";
+import { decryptPayload, encryptPayload, generateSubscriberKeys, hasWebPush, listSubscriptions, notify, sendToSubscription, subscribe, truncateMessageToFit, unsubscribe, WEBPUSH_MAX_PLAINTEXT_BYTES } from "./_webpush";
 
 const fakeKV = (init: Record<string, string> = {}) => {
 	const store = new Map(Object.entries(init));
@@ -174,6 +174,28 @@ describe("encryptPayload round trip (RFC 8291/8188)", () => {
 		const b1 = await encryptPayload(new TextEncoder().encode("hi"), p, a);
 		const b2 = await encryptPayload(new TextEncoder().encode("hi"), p, a);
 		expect(bytesToB64url(b1)).not.toBe(bytesToB64url(b2));
+	});
+});
+
+describe("decryptPayload (inbound RFC 8291 — the JMAP PushSubscription receiver side, #1408)", () => {
+	it("decrypts a body a sender (e.g. Fastmail) encrypted to sux's own generated subscriber keys", async () => {
+		const keys = await generateSubscriberKeys();
+		const plaintext = JSON.stringify({ "@type": "StateChange", changed: {} });
+		const encrypted = await encryptPayload(new TextEncoder().encode(plaintext), keys.publicKeyB64, keys.authB64);
+		const decrypted = await decryptPayload(encrypted, keys);
+		expect(new TextDecoder().decode(decrypted)).toBe(plaintext);
+	});
+
+	it("rejects a body encrypted to a different subscriber's keys", async () => {
+		const keys = await generateSubscriberKeys();
+		const otherKeys = await generateSubscriberKeys();
+		const encrypted = await encryptPayload(new TextEncoder().encode("hi"), otherKeys.publicKeyB64, otherKeys.authB64);
+		await expect(decryptPayload(encrypted, keys)).rejects.toThrow();
+	});
+
+	it("rejects a too-short/garbage body instead of throwing an unrelated array-bounds error", async () => {
+		const keys = await generateSubscriberKeys();
+		await expect(decryptPayload(new Uint8Array(4), keys)).rejects.toThrow(/too short/);
 	});
 });
 

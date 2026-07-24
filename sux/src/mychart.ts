@@ -326,8 +326,13 @@ export interface PlanItem {
 // The Epic USCDI R4 read set (§1). Observation is split per USCDI category (a bare
 // Observation search is rejected/over-broad). Appointment is deliberately absent —
 // it is not USCDI and selecting it forfeits auto client-ID distribution (§1).
+// CarePlan is split the same way: Epic (and US Core's own CarePlan search params)
+// require a `category` — a bare `CarePlan?patient=...` 4xxs on all three connected
+// orgs (uwmedicine/swedish/evergreen, confirmed #1402). US Core's CarePlan profile
+// only mandates the "assess-plan" category value.
 const OBSERVATION_CATEGORIES = ["laboratory", "vital-signs", "social-history"];
-const SIMPLE_TYPES = ["Condition", "MedicationRequest", "AllergyIntolerance", "Immunization", "Procedure", "DiagnosticReport", "DocumentReference", "Encounter", "CarePlan", "CareTeam", "Goal", "Device", "Provenance"];
+const CAREPLAN_CATEGORIES = ["assess-plan"];
+const SIMPLE_TYPES = ["Condition", "MedicationRequest", "AllergyIntolerance", "Immunization", "Procedure", "DiagnosticReport", "DocumentReference", "Encounter", "CareTeam", "Goal", "Device", "Provenance"];
 
 /** Build the per-type search plan for a patient. `types` narrows to the given
  * resource types (matched case-insensitively); `since` adds `_lastUpdated=ge…` where
@@ -341,6 +346,9 @@ export function resourcePlan(patientId: string, types?: string[], since?: string
 	if (wants("Patient")) plan.push({ type: "Patient", label: "Patient", query: `_id=${pid}` });
 	if (wants("Observation")) {
 		for (const cat of OBSERVATION_CATEGORIES) plan.push({ type: "Observation", label: `Observation.${cat}`, query: `patient=${pid}&category=${cat}&_count=100${dateParam}` });
+	}
+	if (wants("CarePlan")) {
+		for (const cat of CAREPLAN_CATEGORIES) plan.push({ type: "CarePlan", label: `CarePlan.${cat}`, query: `patient=${pid}&category=${cat}&_count=100${dateParam}` });
 	}
 	for (const t of SIMPLE_TYPES) {
 		if (wants(t)) plan.push({ type: t, label: t, query: `patient=${pid}&_count=100${dateParam}` });

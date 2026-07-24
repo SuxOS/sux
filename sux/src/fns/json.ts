@@ -1,5 +1,6 @@
 import { type Fn, fail, ok } from "../registry";
 import { detectFormat, type Format, parseSource } from "./_convert";
+import { fixYamlFlowStrings } from "./_yaml_flow";
 
 // json(x): convert a source document TO JSON, dispatching on the source format
 // (auto-detected, or forced with `from`). The inverse converters are yaml()/csv()
@@ -44,7 +45,7 @@ export const json: Fn = {
 		const src: Format = from === "auto" ? detectFormat(data) : from;
 		if (!SUPPORTED.includes(src)) return fail(`Unsupported source '${src}' — supported: ${SUPPORTED.join(", ")}.`);
 		try {
-			const value = parseSource(data, src, { delimiter: args?.delimiter });
+			const value = src === "yaml" ? fixYamlFlowStrings(parseSource(data, src, { delimiter: args?.delimiter })) : parseSource(data, src, { delimiter: args?.delimiter });
 			// A bare unstructured line (no ':'/'- ' marker) auto-detects as YAML but
 			// parses as a plain scalar, not an empty map, so it's handled fine below.
 			// The empty-map case still happens when every top-level key is stripped by

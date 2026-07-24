@@ -52,6 +52,19 @@ describe("json (to JSON, dispatched on source)", () => {
 		expect(await jrun({ data: { a: 1 }, from: "json", indent: 0 })).toBe('{"a":1}');
 		expect((await json.run({} as any, { data: { a: 1 }, from: "yaml" })).isError).toBe(true);
 	});
+
+	it("parses a flow-style sequence instead of leaving it as a literal string (#1399)", async () => {
+		expect(JSON.parse(await jrun({ data: "b: [x, y]", from: "yaml" }))).toEqual({ b: ["x", "y"] });
+		expect(JSON.parse(await jrun({ data: "a: 1\nb: [x, y, 2, true]\n", from: "yaml" }))).toEqual({ a: 1, b: ["x", "y", 2, true] });
+	});
+
+	it("parses a flow-style mapping instead of leaving it as a literal string (#1399)", async () => {
+		expect(JSON.parse(await jrun({ data: "b: {x: 1, y: z}", from: "yaml" }))).toEqual({ b: { x: 1, y: "z" } });
+	});
+
+	it("parses a flow sequence still made only of already-valid-JSON elements (unaffected by the fix)", async () => {
+		expect(JSON.parse(await jrun({ data: "b: [1, 2, 3]", from: "yaml" }))).toEqual({ b: [1, 2, 3] });
+	});
 });
 
 describe("json/yaml compose (bidirectionality)", () => {
