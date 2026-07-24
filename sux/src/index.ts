@@ -80,18 +80,29 @@ const TASK_CAPABLE_TOOLS = new Set(["pipe", "batch", "render", "crawl", "batch_f
 
 // MCP protocol version negotiation (spec: "If the server supports the requested
 // protocol version, it MUST respond with the same version. Otherwise, the server
-// MUST respond with another protocol version it supports."). Newest first — this
-// is also the default handed back when the client omits protocolVersion entirely.
+// MUST respond with another protocol version it supports."). Newest first.
 // Every capability sux advertises here (tasks, extensions) is additive: a client
-// negotiated onto an older revision just never invokes them. Some MCP clients
-// (confirmed: Raycast as of 1.104, which maps known revisions to internal
-// codenames like "jun2025" for 2025-06-18) don't yet recognize the newest
-// revision and reject a hardcoded response instead of falling back — echoing
-// back whatever the client asked for (when we support it) fixes that class of
-// client entirely instead of chasing it client-by-client.
+// negotiated onto an older revision just never invokes them, so responding with
+// an older revision costs nothing functionally.
+//
+// #1413 made this echo the client's requested version instead of hardcoding one,
+// which fixed clients that ask for a revision they understand. It left the
+// FALLBACK pointed at the newest revision, and that is the case Raycast actually
+// hits: Raycast 1.104 maps wire versions to internal codenames, does not
+// recognize 2025-06-18 (its codename "jun2025"), and hard-errors
+// `Unsupported protocol version: jun2025` rather than negotiating down. Any
+// client that omits protocolVersion or sends a string we don't recognise was
+// therefore handed the one revision most likely to be rejected — the exact
+// failure #1413's own comment describes, reached by the other branch.
+//
+// So the fallback is the most broadly-supported revision, not the newest. This
+// deliberately does NOT try to alias codenames like "jun2025" back to a date: a
+// client that calls 2025-06-18 by that name is precisely the client that cannot
+// speak it, so resolving the alias would hand it the version it just rejected.
 const SUPPORTED_MCP_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+const FALLBACK_MCP_PROTOCOL_VERSION = "2025-03-26";
 function negotiateProtocolVersion(requested: unknown): string {
-	return typeof requested === "string" && (SUPPORTED_MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : SUPPORTED_MCP_PROTOCOL_VERSIONS[0];
+	return typeof requested === "string" && (SUPPORTED_MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : FALLBACK_MCP_PROTOCOL_VERSION;
 }
 
 // Race a fn.run against a hard deadline so no fn can hang the isolate. On timeout
@@ -531,6 +542,24 @@ export const rtServer = {
 			console.warn(`gate: rejected login=${JSON.stringify(login ?? null)}`);
 			return new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { "content-type": "application/json" } });
 		}
+		const isBodyless = request.method === "GET" || request.method === "HEAD";
+		const pathname = new URL(request.url).pathname;
+
+		// MCP Streamable HTTP requires POST; a server that does not offer the optional
+		// server-initiated GET stream MUST answer 405. sux only ever returns SSE as a
+		// reply to POST (see sseResponse in handleRpc), so a bodyless /mcp is never a
+		// valid request. This sits BEFORE the rate limiter deliberately: a polling
+		// client must not drain the budget, and a suppressed request must not burn an
+		// MCP_RATE_LIMITER.limit() op. It sits AFTER the login gate so an unauthenticated
+		// caller cannot probe which routes exist. The connector-discovery routes below
+		// are exempt — they are bodyless GETs by design.
+		if (isBodyless && pathname === "/mcp") {
+			return new Response(JSON.stringify({ error: "method_not_allowed", detail: "MCP Streamable HTTP requires POST" }), {
+				status: 405,
+				headers: { "content-type": "application/json", allow: "POST" },
+			});
+		}
+
 		if (env.MCP_RATE_LIMITER) {
 			// Fail OPEN if the limiter itself throws — an unavailable limiter must never
 			// become an outage (matches the intent of the presence check above).
@@ -543,10 +572,8 @@ export const rtServer = {
 			if (!allowed) return new Response(JSON.stringify({ error: "rate_limited" }), { status: 429, headers: { "content-type": "application/json", "retry-after": "10" } });
 		}
 
-		const isBodyless = request.method === "GET" || request.method === "HEAD";
 		const bodyText = isBodyless ? undefined : await request.text();
 		const rpc = parseJsonRpc(bodyText);
-		const pathname = new URL(request.url).pathname;
 		// Runtime connector discovery: GET /mcp/connectors self-describes the connector
 		// + tool count from the one CONNECTORS source. Authenticated (post-gate) — exposes
 		// the namespace name + count, never secrets or tool args.
@@ -975,11 +1002,68 @@ async function inferNudgeTick(env: RtEnv): Promise<unknown> {
 	return { drift, anomaly, ...(error ? { error } : {}) };
 }
 
+// Start one durable USCDI pull per CONNECTED MyChart org (#1178's `mychart-pull` op).
+// Until this existed the daily cron only kept the OAuth grant warm (`mychart_token`) and
+// nothing ever captured clinical data — every org stayed permanently "never pulled", which
+// also meant summarizeMyChart (the agenda's MyChart cue) could never fire.
+//
+// Each org gets its OWN workflow instance rather than one fanning instance: a pull is
+// dozens of serial paginated FHIR fetches, so per-org instances keep one slow/failing org
+// off another's subrequest budget, and an org that 401s can't sink the rest of the batch.
+//
+// `since` is a bounded re-pull, not a true cursor: there is no pull-to-pull timestamp
+// anywhere (hasEverPulled is an R2 existence check, not a clock), so rather than invent a
+// ledger this asks for a generous overlap window once an org has data and a full history
+// on first contact. The overlap absorbs a stretch of failed ticks, and re-fetching a
+// resource is harmless — the R2 write is keyed by resource id, so a repeat overwrites in
+// place. Orgs that ignore `_lastUpdated` simply return everything, which is also fine.
+//
+// Returns a per-org report; `error` is set only when EVERY connected org failed to start,
+// so one bad org degrades to a note instead of flipping the heartbeat red.
+const MYCHART_PULL_OVERLAP_DAYS = 90;
+
+async function mychartPullTick(env: RtEnv): Promise<unknown> {
+	const { mychartConfigured, connectedOrgs, hasEverPulledOrg } = await import("./mychart");
+	if (!mychartConfigured(env)) return { note: "mychart not configured" };
+	// A pull is durable-only and writes raw FHIR to R2 — without either binding the op
+	// would fail per-org anyway; skip cleanly instead of starting doomed instances.
+	if (!env.R2 || !env.OP_WORKFLOW) return { note: "mychart pull needs R2 + OP_WORKFLOW bound" };
+	const orgs = await connectedOrgs(env);
+	if (!orgs.length) return { note: "no connected mychart orgs" };
+
+	const since = new Date(Date.now() - MYCHART_PULL_OVERLAP_DAYS * 86_400_000).toISOString().slice(0, 10);
+	const { mychart } = await import("./fns/mychart");
+	const started: Array<{ org: string; instanceId?: string; error?: string }> = [];
+	for (const org of orgs) {
+		try {
+			const incremental = await hasEverPulledOrg(env, org);
+			const res = await mychart.run(env, { op: "pull", org, ...(incremental ? { since } : {}) });
+			const body = typeof res?.content?.[0]?.text === "string" ? res.content[0].text : "";
+			let instanceId: string | undefined;
+			try {
+				instanceId = JSON.parse(body)?.instanceId;
+			} catch {
+				// non-JSON body means the fn failed; surfaced via res.isError below
+			}
+			if (res?.isError) started.push({ org, error: body.slice(0, 200) });
+			else started.push({ org, instanceId });
+		} catch (e) {
+			started.push({ org, error: String((e as Error)?.message ?? e).slice(0, 200) });
+		}
+	}
+	const failed = started.filter((s) => s.error);
+	return { started, ...(failed.length === started.length ? { error: `all ${failed.length} org pull(s) failed to start` } : {}) };
+}
+
 async function maintenanceTick(env: RtEnv, ctx: ExecutionContext): Promise<void> {
 	await runSubJob(env, "kroger_token", () => refreshKrogerToken(env));
 	// Keep the Epic refresh grant alive (some orgs expire it on inactivity) — a pure
 	// no-op unless MyChart is configured AND a grant exists (§2b). Never throws.
 	await runSubJob(env, "mychart_token", () => refreshMychartToken(env));
+	// Capture, not just credential upkeep — the token refresh above only keeps the grant
+	// alive; this is what actually pulls clinical data into R2. Runs after it so a
+	// just-refreshed grant is used.
+	await runSubJob(env, "mychart_pull", () => mychartPullTick(env));
 	await runSubJob(env, "weekly_recall", () => weeklyRecallTick(env));
 	await runSubJob(env, "consolidate", () => consolidateTick(env));
 	await runSubJob(env, "watch_sweep", () => watchSweepTick(env));
