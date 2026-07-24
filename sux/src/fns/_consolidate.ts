@@ -261,28 +261,40 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 	}
 
 	// once() (#1424): commit-after-success — mark AFTER a successful write so a failed append
-	// retries next tick. `force: opts.force` lets an explicit re-run override an already-marked
-	// week (the plain `led.seen` early-return above already handled the non-force skip).
-	const { marked, error } = await led.once(
-		key,
-		async () => {
-			await deps.digestAppend(env, `_meta/consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
-			await led.mark(CURSOR_KEY, String(nextOffset));
-			await led.mark(
-				LAST_REPORT_KEY,
-				JSON.stringify({
-					week,
-					stale: stale.slice(0, MAX_CACHED_FINDINGS),
-					duplicate_candidates: duplicate_candidates.slice(0, MAX_CACHED_FINDINGS),
-					stale_count: stale.length,
-					duplicate_count: duplicate_candidates.length,
-				}),
-			);
-		},
-		{ force: opts.force === true },
-	);
+	// retries next tick. once() itself has no force-bypass, so an explicit re-run (opts.force,
+	// reaching here despite an already-marked week since the plain `led.seen` early-return above
+	// only skips the non-force case) commits + marks directly instead of going through once().
+	const commitDigest = async () => {
+		await deps.digestAppend(env, `_meta/consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
+		await led.mark(CURSOR_KEY, String(nextOffset));
+		await led.mark(
+			LAST_REPORT_KEY,
+			JSON.stringify({
+				week,
+				stale: stale.slice(0, MAX_CACHED_FINDINGS),
+				duplicate_candidates: duplicate_candidates.slice(0, MAX_CACHED_FINDINGS),
+				stale_count: stale.length,
+				duplicate_count: duplicate_candidates.length,
+			}),
+		);
+	};
+	let marked = false;
+	let error: string | undefined;
+	if (opts.force) {
+		try {
+			await commitDigest();
+			await led.mark(key);
+			marked = true;
+		} catch (e) {
+			error = errMsg(e);
+		}
+	} else {
+		const r = await led.once(key, commitDigest);
+		marked = r.marked;
+		error = r.error;
+	}
 	if (error) {
-		const msg = `vault append failed: ${errMsg(error)}`;
+		const msg = `vault append failed: ${error}`;
 		return { week, scanned, truncated, window_offset: windowOffset, stale, duplicate_candidates, digest_written: false, error: msg, note: msg };
 	}
 	return { week, scanned, truncated, window_offset: windowOffset, next_offset: nextOffset, stale, duplicate_candidates, digest_written: marked };

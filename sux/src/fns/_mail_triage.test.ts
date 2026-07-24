@@ -222,6 +222,44 @@ describe("auto-act allow-list — attention-increasing ops + high-confidence arc
 	});
 });
 
+describe("MAIL_TRIAGE_ACT_OPS — per-op narrowing of the allow-list (#1482)", () => {
+	it("unset preserves today's behavior exactly — every AUTO_ACT_OPS op is allowed (regression)", () => {
+		const env = envWith();
+		for (const token of AUTO_ACT_OPS) {
+			const op: TriageOp = token === "label:add" ? { kind: "label", label: "x", add: true } : ({ kind: token } as TriageOp);
+			expect(isAutoActAllowed(op, env)).toBe(true);
+		}
+	});
+	it("MAIL_TRIAGE_ACT_OPS='label:add' allows only label:add — archive/draft-reply/unarchive/undelete all rejected", () => {
+		const env = envWith({ MAIL_TRIAGE_ACT_OPS: "label:add" });
+		expect(isAutoActAllowed({ kind: "label", label: "x", add: true }, env)).toBe(true);
+		expect(isAutoActAllowed({ kind: "archive" }, env)).toBe(false);
+		expect(isAutoActAllowed({ kind: "unarchive" }, env)).toBe(false);
+		expect(isAutoActAllowed({ kind: "undelete" }, env)).toBe(false);
+		expect(isAutoActAllowed({ kind: "draft-reply" }, env)).toBe(false);
+	});
+	it("a comma-separated list intersects — 'label:add,archive' allows exactly those two", () => {
+		const env = envWith({ MAIL_TRIAGE_ACT_OPS: "label:add,archive" });
+		expect(isAutoActAllowed({ kind: "label", label: "x", add: true }, env)).toBe(true);
+		expect(isAutoActAllowed({ kind: "archive" }, env)).toBe(true);
+		expect(isAutoActAllowed({ kind: "draft-reply" }, env)).toBe(false);
+	});
+	it("an op NOT in AUTO_ACT_OPS (e.g. label:remove, delete) is silently dropped by the intersection — can never act", () => {
+		const env = envWith({ MAIL_TRIAGE_ACT_OPS: "label:remove,delete,label:add" });
+		expect(isAutoActAllowed({ kind: "label", label: "x", add: false }, env)).toBe(false); // label:remove
+		expect(isAutoActAllowed({ kind: "label", label: "x", add: true }, env)).toBe(true); // label:add still passes through the intersection
+	});
+	it("an explicitly empty/whitespace/unparseable value fails CLOSED — no ops act (unlike a genuinely UNSET var, which default-allows)", () => {
+		for (const v of ["", "   ", ",,,"]) {
+			const env = envWith({ MAIL_TRIAGE_ACT_OPS: v });
+			for (const token of AUTO_ACT_OPS) {
+				const op: TriageOp = token === "label:add" ? { kind: "label", label: "x", add: true } : ({ kind: token } as TriageOp);
+				expect(isAutoActAllowed(op, env)).toBe(false);
+			}
+		}
+	});
+});
+
 describe("runTriage — gating + idempotency", () => {
 	it("is a DORMANT no-op when MAIL_TRIAGE_ENABLED is unset", async () => {
 		const deps = mkDeps(SAMPLE);

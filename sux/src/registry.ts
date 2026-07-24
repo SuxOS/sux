@@ -379,6 +379,11 @@ export type RtEnv = Env &
 		// first cycle is suggest-only by construction. It never deletes.
 		MAIL_TRIAGE_ENABLED?: string;
 		MAIL_TRIAGE_ACT?: string;
+		// Optional per-op narrowing of MAIL_TRIAGE_ACT's allow-list (#1482): a comma-separated
+		// subset of AUTO_ACT_OPS (e.g. "label:add" or "label:add,archive"), INTERSECTED with it so
+		// this can only shrink what may act, never widen it. Unset ⇒ every AUTO_ACT_OPS op is
+		// allowed (today's behavior). See fns/_mail_triage.ts's armedActOps.
+		MAIL_TRIAGE_ACT_OPS?: string;
 
 		// Auto-start the DURABLE, human-approved sibling of mail-triage (fns/mail_triage_plan.ts
 		// + op-engine's mail-triage-plan op) on the frequent cron, so the ask-gate + reminder

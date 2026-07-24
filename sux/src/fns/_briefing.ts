@@ -372,13 +372,12 @@ async function stageDrafts(env: RtEnv, cycle: string, flagged: Flagged[], deps: 
 		}
 		// once() (#1424): commit-after-success — a draft-save failure leaves the message
 		// unmarked so a later run retries; nudge for now.
-		const { marked, result } = await led.once(key, () => deps.mailDraft(env, { reply_to: f.id, text: body }));
-		if (marked && result) {
-			drafts.push({ id: result.id, to: f.from, subject: f.subject });
+		const { marked } = await led.once(key, async () => {
+			const d = await deps.mailDraft(env, { reply_to: f.id, text: body });
+			drafts.push({ id: d.id, to: f.from, subject: f.subject });
 			staged++;
-		} else {
-			nudged.push(f.id);
-		}
+		});
+		if (!marked) nudged.push(f.id);
 	}
 	return { drafts, nudged };
 }
