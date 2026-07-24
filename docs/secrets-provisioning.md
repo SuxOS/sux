@@ -140,8 +140,9 @@ the Worker runtime.
 - **Store**: Tier-1, **write-once** — a GitHub App private key **cannot be
   re-downloaded**, so op is the only durable copy. `op item create … --title
   "SUX_BOT_PRIVATE_KEY" credential="$(cat <downloaded>.pem)"` → verify
-  byte-identical (`op read op://Secrets/SUX_BOT_PRIVATE_KEY/credential | diff -
-  <.pem>`) → `scripts/secret-sync.sh SUX_BOT_PRIVATE_KEY --github` → then
+  byte-identical (`op read op://Secrets/SUX_BOT/credentials/private_key | diff -
+  <.pem>`) → `scripts/secret-sync.sh SUX_BOT_PRIVATE_KEY --github --op
+  "op://Secrets/SUX_BOT/credentials/private_key"` → then
   `rm -P` the `.pem` (never leave it in `~/Downloads`). (Audit findings 2, 9.)
 - **Unset**: `automerge.yml` can't mint the token → auto-merge stops.
 - **Rotate (new-before-old)**: generate a fresh key, seed op, `--github`, confirm a
