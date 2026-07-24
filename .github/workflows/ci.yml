@@ -24,7 +24,10 @@ concurrency:
 jobs:
   check:
     name: Type-check & build
-    runs-on: ubuntu-latest
+    # Heavy job (type-check + test + dry-run build) → route to the CI_RUNNER lever.
+    # CI_RUNNER=nix lands it on the AWS nix-builder fleet (Determinate Nix + attic R2
+    # cache); flip CI_RUNNER=ubuntu-latest to revert the whole org to hosted in one edit.
+    runs-on: ${{ vars.CI_RUNNER }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
