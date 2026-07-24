@@ -301,7 +301,11 @@ export async function fetchTextOkEscalating(
  * callers wrap with their own fail() message.
  */
 export async function loadBytes(env: RtEnv, src: { url?: string; base64?: string }, maxBytes = FETCH_BYTES_MAX_BYTES): Promise<{ bytes: Uint8Array; contentType?: string }> {
-	if (typeof src.base64 === "string" && src.base64) return { bytes: fromB64(src.base64) };
+	if (typeof src.base64 === "string" && src.base64) {
+		const bytes = fromB64(src.base64);
+		if (bytes.byteLength > maxBytes) throw new Error(`base64 payload too large: ${bytes.byteLength} bytes exceeds ${maxBytes} byte cap`);
+		return { bytes };
+	}
 	if (!isHttpUrl(src.url)) throw new Error("provide `base64` bytes or an absolute http(s) `url`");
 	const url = String(src.url);
 	const uuid = storeRefUuid(url);
