@@ -3,14 +3,14 @@
 **Date:** 2026-07-15
 **Scope:** Slices 1–2 of the SuxOS v2 redesign — the "walking skeleton."
 **Status:** Draft for review. Terminal state of a `/brainstorming` pass; next step is `writing-plans`.
-**Relates to:** `2026-07-15-get-file-fn-design.md`, the fetch-family redesign (`feat/fetch-family-redesign`), and the `SuxOS/suxlib` HOLD note in `docs/knowledge/master-plan.md` (this spec lifts that HOLD).
+**Relates to:** `2026-07-15-get-file-fn-design.md`, the fetch-family redesign (`feat/fetch-family-redesign`), and the `SuxOS/suxlib` HOLD note in [Sux-Master-Plan (vault)](https://github.com/SuxOS/vault/blob/main/07-archive/Sux-Master-Plan.md) (this spec lifts that HOLD).
 
 > **Status: execution architecture** — third in the canonical vision-corpus
 > reading order (2026-07-16, Ledger R8):
-> `north-star.md` (principles) →
+> [Sux-North-Star (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-North-Star.md) (principles) →
 > [`SUX.md`](../../proposals/SUX.md) (product thesis, amended by
-> `pivot-validation-2026-07.md`) →
-> this doc → `PLAN.md` / `ROADMAP.md`
+> [Sux-Pivot-Validation (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-Pivot-Validation.md)) →
+> this doc → `PLAN.md` / [Sux-Build-Program-Roadmap (vault)](https://github.com/SuxOS/vault/blob/main/07-archive/Sux-Build-Program-Roadmap.md)
 > (historical/parked).
 
 ---

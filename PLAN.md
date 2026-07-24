@@ -7,11 +7,11 @@
 > history.
 
 > **Canonical reading order** (2026-07-16, Ledger R8):
-> `docs/design/north-star.md` (principles) →
+> [Sux-North-Star (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-North-Star.md) (principles) →
 > [`docs/proposals/SUX.md`](docs/proposals/SUX.md) (current thesis, amended by
-> `pivot-validation-2026-07.md`) →
+> [Sux-Pivot-Validation (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-Pivot-Validation.md)) →
 > [`op-engine-design.md`](docs/superpowers/specs/2026-07-15-suxos-v2-op-engine-design.md)
-> (execution architecture) → this file / `ROADMAP.md`
+> (execution architecture) → this file / [Sux-Build-Program-Roadmap (vault)](https://github.com/SuxOS/vault/blob/main/07-archive/Sux-Build-Program-Roadmap.md)
 > (both historical/parked).
 
 > An edge-hosted, residentially-proxied engine of composable functions (Julia-style

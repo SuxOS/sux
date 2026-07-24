@@ -13,7 +13,7 @@ inventory of what actually ships where and what's redundant, (3) the clean end-s
 (4) a punch-list marked SAFE vs NEEDS-COLIN.
 
 Companion docs: `docs/knowledge/patterns-and-conventions.md` (fn anatomy, front verbs),
-`docs/design/north-star.md` (vision), `CLAUDE.md` (how we work).
+[Sux-North-Star (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-North-Star.md) (vision), `CLAUDE.md` (how we work).
 
 ---
 

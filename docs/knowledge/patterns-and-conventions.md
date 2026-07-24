@@ -14,7 +14,7 @@ file distills the recurring code patterns so a fresh session writes in the grain
 codebase. Everything below is grounded in the live source (paths + line numbers as of this
 writing).
 
-Companion docs: the product vision is `docs/design/north-star.md`; the working rules (git/CI/
+Companion docs: the product vision is [Sux-North-Star (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-North-Star.md); the working rules (git/CI/
 review, sessions, model selection) are `CLAUDE.md`. Deep architecture lives in Claude memory
 (`sux-mcp-namespaces`, `knowledge-core-decisions`).
 
@@ -353,7 +353,7 @@ CI gates (`.github/workflows/ci.yml`, all must pass): `type-check` (`tsc --noEmi
 
 ## 9. Goals & taste — why it's shaped this way
 
-**North star** (`docs/design/north-star.md`): sux is "a personal AI Swiss-army-knife you weave
+**North star** ([Sux-North-Star (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-North-Star.md)): sux is "a personal AI Swiss-army-knife you weave
 your life through" — do the right thing *and nudge toward it*, zero-trust (every side-effect
 gated, every ingested byte fenced until proven safe, least-privilege creds), genuine novel
 utility, never noise, bounded self-improvement. The `<<<DATA>>>` fence (§4), the SSRF guards
