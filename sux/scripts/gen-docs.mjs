@@ -23,7 +23,7 @@ const CATEGORIES = [
 	["Storage", ["kv_get", "kv_put", "kv_list", "kv_delete", "store", "put", "dropbox"]],
 	["Web search / query", ["search", "web_search", "tavily", "find_similar", "wayback", "get"]],
 	["Retail / shopping", ["shop", "product_search", "amazon", "walmart", "homedepot", "lowes", "bestbuy", "ebay", "costco", "kroger", "ace", "weekly_ad"]],
-	["Research / reference", ["consensus", "arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "coingecko", "youtube", "zotero"]],
+	["Research / reference", ["consensus", "arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "coingecko", "youtube", "zotero", "npi", "cms_coverage", "icd10"]],
 	["People / places / social", ["people", "people_finder", "places", "linkedin", "facebook", "uw"]],
 	["Notes / knowledge / vault", ["obsidian", "ingest", "citation", "consolidate", "vault_consolidate_plan", "vault_cross_link_plan"]],
 	["Knowledge / learning", ["recall", "oracle", "study", "advise", "learn", "preferences", "life_wiki", "agenda", "onboard", "expert_draft"]],
