@@ -73,6 +73,11 @@ const LOG_QUESTION_CAP = 300;
 const LOG_NOTE_CAP = 500;
 
 export type AskDomainStatus = "ok" | "degraded" | "skipped";
+/** Which store actually answered a leg — the soak signal #1364 needs to tell whether the
+ *  Vectorize cutover (#1290) is carrying real traffic in prod before its cosine fallback is
+ *  ever stripped. "vectorize+cosine" is the #1406 mid-backfill union (both contributed
+ *  passages); undefined for a leg withVectorize never wraps (oracle's KV two-tier read). */
+export type AskServedBy = "vectorize" | "cosine" | "vectorize+cosine";
 export type AskDomainReport = {
 	status: AskDomainStatus;
 	/** retrieved candidates (top-k, pre-floor). */
@@ -82,6 +87,7 @@ export type AskDomainReport = {
 	top_score: number | null;
 	/** when this domain's index was last (re)built — the freshness bound on its answers. */
 	indexed_at: number | null;
+	served_by?: AskServedBy;
 	detail?: string;
 };
 
@@ -89,7 +95,7 @@ type AskPassage = { pointer: string; text: string; score: number; whitelisted?: 
 // `degraded` (#1406): set when a domain answered from a Vectorize namespace not yet PROVEN
 // complete for this domain (mid-backfill) — the passages are still returned (unioned with the
 // cosine fallback), but the caller must know this leg is not the clean Vectorize-only read.
-type DomainGather = { passages: AskPassage[]; indexed_at: number | null; skipped?: string; degraded?: string };
+type DomainGather = { passages: AskPassage[]; indexed_at: number | null; skipped?: string; degraded?: string; served_by?: AskServedBy };
 
 export type AskOutcome = {
 	answer_id: string;
@@ -349,20 +355,22 @@ function withVectorize(domain: VecDomain, cosineLeg: (env: RtEnv, vec: number[])
 				if (domain === "files") hits = hits.filter((h) => !isExcludedFilesPath(h.pointer.replace(/^files:/, "")));
 				if (hits.length) {
 					const mapped = hits.map((h) => ({ pointer: h.pointer, text: h.text, score: h.score }));
-					if (await isVectorizeCompleteFor(env, domain)) return { passages: mapped, indexed_at: null };
+					if (await isVectorizeCompleteFor(env, domain)) return { passages: mapped, indexed_at: null, served_by: "vectorize" };
 					const cosineResult = await cosineLeg(env, vec);
 					const seen = new Set(mapped.map((p) => p.pointer));
 					return {
 						passages: [...mapped, ...cosineResult.passages.filter((p) => !seen.has(p.pointer))],
 						indexed_at: cosineResult.indexed_at,
 						degraded: `${domain}: vectorize backfill in progress for this domain — unioned with the cosine fallback`,
+						served_by: "vectorize+cosine",
 					};
 				}
 			} catch (e) {
 				console.log(`oracle ask: vectorize ${domain} leg failed → cosine fallback: ${errMsg(e)}`);
 			}
 		}
-		return cosineLeg(env, vec);
+		const cosineResult = await cosineLeg(env, vec);
+		return cosineResult.skipped ? cosineResult : { ...cosineResult, served_by: "cosine" };
 	};
 }
 
@@ -422,10 +430,14 @@ export async function runAsk(env: RtEnv, question: string): Promise<AskOutcome> 
 			kept: keptHere.length,
 			top_score: g.passages.length ? round3(Math.max(...g.passages.map((p) => p.score))) : null,
 			indexed_at: g.indexed_at,
+			...(g.served_by ? { served_by: g.served_by } : {}),
 			...(g.degraded ? { detail: g.degraded } : {}),
 		};
 		kept.push(...keptHere);
 	});
+	// #1364 soak signal: one line per leg naming which store actually answered it — the
+	// evidence the Vectorize cutover's cosine fallback needs before it's ever stripped.
+	for (const n of names) console.log(`oracle ask: domain=${n} status=${domains[n].status} served_by=${domains[n].served_by ?? "n/a"} hits=${domains[n].hits} kept=${domains[n].kept}`);
 
 	// Best passages across all domains, then whitelisted-first for the synthesis input —
 	// the retrieval-side half of the whitelisted-outranks precedence (gatherRecall's lead/

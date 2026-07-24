@@ -113,6 +113,9 @@ describe("oracle ask — Vectorize read-path cutover (#1290)", () => {
 		expect(new Set(viaVectorize.citations)).toEqual(new Set(["vault:a.md", "vault:b.md"]));
 		expect(new Set(viaCosine.citations)).toEqual(new Set(viaVectorize.citations));
 		expect(viaVectorize.domains.vault.status).toBe("ok");
+		// served_by (#1364 soak signal) names which store actually answered each leg.
+		expect(viaVectorize.domains.vault.served_by).toBe("vectorize");
+		expect(viaCosine.domains.vault.served_by).toBe("cosine");
 	});
 
 	it("floor honored: a corpus with only below-floor vectors is an honest no_match", async () => {
@@ -135,6 +138,7 @@ describe("oracle ask — Vectorize read-path cutover (#1290)", () => {
 		expect(new Set(r.citations)).toEqual(new Set(["vault:a.md", "vault:b.md"]));
 		// The cosine fallback served it — so the leg carries the cosine core's indexed_at.
 		expect(r.domains.vault.indexed_at).toBe(123);
+		expect(r.domains.vault.served_by).toBe("cosine");
 	});
 
 	it("empty Vectorize namespace (pre-backfill) falls back to the cosine core", async () => {
@@ -145,5 +149,6 @@ describe("oracle ask — Vectorize read-path cutover (#1290)", () => {
 		expect(r.status).toBe("answered");
 		expect(new Set(r.citations)).toEqual(new Set(["vault:a.md", "vault:b.md"]));
 		expect(r.domains.vault.indexed_at).toBe(123); // served by cosine
+		expect(r.domains.vault.served_by).toBe("cosine");
 	});
 });
