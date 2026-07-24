@@ -1,7 +1,10 @@
 import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
+import { hasAI } from "./ai";
 import { dropbox } from "./fns/dropbox";
 import { TEXT_EXT } from "./fns/_dropbox-core";
 import { deleteFull, hasDropboxFull, hasDropboxFullWrite, listFull, moveFull, operateFull, readFull, searchFull, transformFull, writeBytes, writeFull } from "./fns/_dropbox-full";
+import { embedOne } from "./fns/_embed";
+import { filesSemanticIndex, topKFilesByCosine } from "./fns/_files_semantic";
 import { fingerprint, ledger } from "./ledger";
 import { staged } from "./stage";
 import { errMsg, getBlob, pool, storeRefUuid, toB64 } from "./fns/_util";
@@ -152,6 +155,34 @@ const TOOLS: FileTool[] = [
 					return ok({ scope: "full-dropbox", ...(await readFull(env, String(a.path))) });
 				}
 				return ok(await dbx(env, { op: "get", path: String(a.path) }));
+			} catch (e) {
+				return fail(errMsg(e));
+			}
+		},
+	},
+	{
+		name: "files_semantic",
+		description: "Semantic search over Dropbox files via Workers-AI embeddings — finds files by MEANING, not exact text. Brute-force cosine kNN over text-extractable files' content, chunked+embedded and KV-cached, INCREMENTALLY maintained. Returns the top-k matching chunks with their file path. Needs the Workers-AI binding and DROPBOX_FULL_* (Mode B whole-Dropbox read).",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["q"],
+			properties: {
+				q: { type: "string", description: "Natural-language query." },
+				k: { type: "integer", minimum: 1, maximum: 50, description: "How many chunk matches to return (default 8)." },
+			},
+		},
+		run: async (env, a) => {
+			const q = typeof a?.q === "string" ? a.q.trim() : "";
+			if (!q) return failWith("bad_input", "files_semantic requires a non-empty `q`.");
+			if (!hasAI(env)) return failWith("not_configured", 'Workers AI binding not configured (add "ai" to wrangler) — needed to embed the files and the query.');
+			try {
+				const idx = await filesSemanticIndex(env);
+				if (!idx) return failWith("not_configured", "Dropbox Mode-B (whole-account) not configured — needed to build/read the files semantic index. Set DROPBOX_FULL_*.");
+				const vec = await embedOne(env, q);
+				const k = Math.min(50, Math.max(1, Number(a?.k) || 8));
+				const hits = topKFilesByCosine(vec, idx.chunks, k);
+				return ok({ q, count: hits.length, hits, scanned: idx.chunks.length, total: idx.total, truncated: idx.truncated });
 			} catch (e) {
 				return fail(errMsg(e));
 			}
