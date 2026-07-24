@@ -152,6 +152,11 @@ describe("loadBytes (shared binary loader)", () => {
 		expect(bytes.byteLength).toBe(500_000);
 	});
 
+	it("caps the base64 body — a decoded payload over maxBytes is rejected, not returned whole", async () => {
+		const big = new Uint8Array(500_000);
+		await expect(loadBytes({} as any, { base64: toB64(big) }, 1_000)).rejects.toThrow(/too large/i);
+	});
+
 	it("rejects when neither base64 nor a valid url is given", async () => {
 		await expect(loadBytes({} as any, {})).rejects.toThrow(/base64/);
 		await expect(loadBytes({} as any, { url: "ftp://x" })).rejects.toThrow(/http/);
