@@ -126,6 +126,7 @@ import { audit_log } from "./audit_log";
 import { contact_consolidate_plan } from "./contact_consolidate_plan";
 import { evidence_packet } from "./evidence_packet";
 import { expert_draft } from "./expert_draft";
+import { feedback_resolve } from "./feedback_resolve";
 import { files_consolidate_plan } from "./files_consolidate_plan";
 import { get } from "./get";
 import { imessage } from "./imessage";
@@ -265,6 +266,7 @@ export const FUNCTIONS: Fn[] = [
 	contact_consolidate_plan,
 	evidence_packet,
 	expert_draft,
+	feedback_resolve,
 	files_consolidate_plan,
 	get,
 	imessage,

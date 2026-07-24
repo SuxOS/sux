@@ -89,6 +89,23 @@ describe("ingest (capture → vault)", () => {
 		expect(gh.puts[out.note]).toContain(`![[_attachments/${date}-report.pdf]]`);
 	});
 
+	it("fails loudly on a 0-byte fetch instead of committing a phantom empty attachment (#1397)", async () => {
+		// Mirrors a real-world proxy hiccup that survives smartFetch's own empty/
+		// redirect fallback ladder: the response comes back 200 with a binary
+		// content-type but a genuinely empty body. Silently writing that as a
+		// blob + note (what ingest used to do) is exactly the "PDF ingest writes
+		// the note but the blob is always 0 bytes" bug — assert it fails instead.
+		const gh = ghMock();
+		routes.handler = (url, init) => {
+			if (url.includes("api.github.com")) return gh.handler(url, init);
+			return new Response(new Uint8Array(0), { status: 200, headers: { "content-type": "application/pdf" } });
+		};
+		const r = await ingest.run(ENV, { url: "https://files.example/empty.pdf" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/0 bytes/);
+		expect(Object.keys(gh.puts)).toHaveLength(0); // no phantom note or attachment committed
+	});
+
 	it("disambiguates a same-day attachment name instead of overwriting the first file", async () => {
 		const taken = `_attachments/${date}-report.pdf`;
 		const gh = ghMock([taken]); // a report.pdf already captured today
