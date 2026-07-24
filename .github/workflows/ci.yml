@@ -24,7 +24,7 @@ concurrency:
 jobs:
   check:
     name: Type-check & build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -129,7 +129,7 @@ jobs:
     # `hold` label automerge.yml/security-review.yml already treat as a merge-blocking gate,
     # rather than inventing a second label+hold mechanism.
     # pull_request-only: push/merge_group don't carry a stable base ref to diff against.
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER }}
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
