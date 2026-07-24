@@ -300,7 +300,9 @@ describe("oracle ask — served_by telemetry (#1364)", () => {
 		const r = await oracle.run(env, { action: "ask", problem: "creatinine?" });
 		const j = JSON.parse(r.content[0].text);
 		expect(j.domains.vault.served_by).toBe("cosine");
-		expect(j.domains.oracle.served_by).toBe("cosine"); // oracle stays deliberately cosine-only
+		// oracle's leg never goes through withVectorize (its own KV two-tier read, #1310) —
+		// no read path claim to make, so served_by stays absent rather than a misleading default.
+		expect(j.domains.oracle.served_by).toBeUndefined();
 	});
 });
 
