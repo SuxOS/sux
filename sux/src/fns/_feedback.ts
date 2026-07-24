@@ -8,7 +8,17 @@ import { redactPII } from "./redact";
 import type { RtEnv } from "../registry";
 
 export type FeedbackKind = "issue" | "suggest";
-export type FeedbackEntry = { kind: FeedbackKind; text: string; at: number; tool?: string };
+export type FeedbackEntry = {
+	kind: FeedbackKind;
+	text: string;
+	at: number;
+	tool?: string;
+	/** Set once this entry has been reconciled elsewhere (a filed GitHub issue, a manual
+	 *  sweep, …) — GET /feedback excludes resolved entries by default (?all=true to see
+	 *  them), so the log stays a useful "what's still outstanding" view instead of growing
+	 *  forever with entries already tracked somewhere else. */
+	resolved?: { at: number; tracked_by?: string };
+};
 
 const KEY = "sux:feedback";
 const CAP = 500;
@@ -34,10 +44,32 @@ export async function appendFeedback(env: RtEnv, kind: FeedbackKind, text: strin
 	});
 }
 
-/** Read entries (optionally filtered by kind and/or tool), newest first. */
-export async function readFeedback(env: RtEnv, kind?: FeedbackKind, limit = 50, tool?: string): Promise<FeedbackEntry[]> {
+/** Read entries (optionally filtered by kind and/or tool), newest first. Resolved entries
+ *  are excluded unless `includeResolved` — the default is "what's still outstanding". */
+export async function readFeedback(env: RtEnv, kind?: FeedbackKind, limit = 50, tool?: string, includeResolved = false): Promise<FeedbackEntry[]> {
 	let items = await log(env).load();
+	if (!includeResolved) items = items.filter((i) => !i.resolved);
 	if (kind) items = items.filter((i) => i.kind === kind);
 	if (tool) items = items.filter((i) => i.tool === tool);
 	return items.slice(0, Math.max(0, limit));
+}
+
+/** Mark every entry at timestamp `at` (optionally narrowed to `kind`, since `at` alone is
+ *  the only stable handle GET /feedback exposes) as resolved/superseded — e.g. once it's
+ *  been manually reconciled into a tracked GitHub issue. Idempotent: an already-resolved
+ *  entry is left alone. Returns how many entries were newly resolved (0 = no match, so the
+ *  caller can report "nothing found" instead of silently no-oping). Uses the log's `update`
+ *  (not `push`) so this chains onto the same per-key write lock as a concurrent append/
+ *  resolve rather than racing it with a stale snapshot. */
+export async function resolveFeedback(env: RtEnv, at: number, opts: { kind?: FeedbackKind; tracked_by?: string } = {}): Promise<number> {
+	let matched = 0;
+	await log(env).update((items) => {
+		const next = items.map((it) => {
+			if (it.resolved || it.at !== at || (opts.kind && it.kind !== opts.kind)) return it;
+			matched++;
+			return { ...it, resolved: { at: Date.now(), ...(opts.tracked_by ? { tracked_by: opts.tracked_by } : {}) } };
+		});
+		return matched ? next : items;
+	});
+	return matched;
 }

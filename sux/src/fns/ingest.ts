@@ -225,6 +225,12 @@ export const ingest: Fn = {
 				if (pr.tags?.length) tags.push(...pr.tags);
 			} else {
 				const { bytes, contentType } = await loadBytes(env, { url });
+				// A 0-byte fetch (an empty origin response, or a proxy hiccup the
+				// direct-fallback ladder in smartFetch didn't fully recover from) must
+				// fail loudly here, exactly like get.ts's acquireFromUrl/loadBytesFromUrl
+				// callers already do (#505) — otherwise this silently commits a phantom
+				// empty attachment/note and reports success (#1397).
+				if (!bytes.length) return fail(`Fetched 0 bytes from ${url} — the source is empty or the fetch was blocked; nothing to capture.`);
 				const ct = String(contentType ?? "")
 					.split(";")[0]
 					.trim()

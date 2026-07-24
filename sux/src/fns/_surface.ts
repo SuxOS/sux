@@ -62,7 +62,7 @@ export const DOMAINS: DomainSpec[] = [
 	{ key: "money", blurb: "Personal finance — Lunch Money accounts + net worth, balances, transactions, budgets, recurring (read-only).", leaves: ["lunchmoney"] },
 	{ key: "mail", blurb: "Fastmail over the raw JMAP conduit (byte-exact methodCalls + auth + gates), plus the `mail` + `contact` namespace verbs on the one /mcp connector.", leaves: ["jmap", "mail", "contact"] },
 	{ key: "compose", blurb: "Server-side combinators — map+reduce (batch), parallel fetch (batch_fetch), and {{prev}}-piping (pipe).", leaves: ["batch", "batch_fetch", "pipe"] },
-	{ key: "meta", blurb: "This map (sux), the `fn` escape hatch (call any leaf by name), preferences, feedback issues, self-diagnostics, and the autonomy-gate mirror.", leaves: ["sux", "fn", "preferences", "issue", "selftest", "autonomy_status"] },
+	{ key: "meta", blurb: "This map (sux), the `fn` escape hatch (call any leaf by name), preferences, feedback issues (+ resolving them), self-diagnostics, and the autonomy-gate mirror.", leaves: ["sux", "fn", "preferences", "issue", "suggest", "feedback_resolve", "selftest", "autonomy_status"] },
 ];
 
 // The personal-data namespaces are reached by FRONT VERBS on the single `/mcp` connector,

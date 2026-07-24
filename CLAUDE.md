@@ -699,6 +699,16 @@ fix is asking to reverse that documented safety invariant, not to close a gap â€
 a policy question for a human (what confidence bar, whether it belongs on the allow-list at
 all), not a wiring task, and don't build it silently (#1418, dropped for this reason).
 
+## Skill-tree mirror direction (#1400)
+
+`.claude/skills/sux/` is the SOURCE for the sux skill; `plugins/sux/skills/sux/` is a
+byte-for-byte MIRROR of it (`scripts/check-skill-sync.mjs`'s own header comment says so
+explicitly). When hand-editing `SKILL.md`/`references/capability-tables.md` for a new fn or a
+doc fix, edit the `.claude/skills/` copy and copy it INTO `plugins/sux/skills/`, not the other
+way round â€” `node scripts/check-skill-sync.mjs` (no flag) diffs source vs. FUNCTIONS.md and
+flags any fn named in the registry but never mentioned in either doc; run it after adding a fn
+that touches these docs, before assuming the two trees agree.
+
 ## Version coherence (#1238)
 
 Bump `package.json`'s `version` and `plugins/sux/.claude-plugin/plugin.json`'s

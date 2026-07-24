@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendFeedback } from "./fns/_feedback";
+import { appendFeedback, resolveFeedback } from "./fns/_feedback";
 import { applyEvent, emptyMetrics } from "./metrics";
 import { handleObservability } from "./observability";
 
@@ -151,5 +151,24 @@ describe("observability", () => {
 		const allowed = ["kind", "text", "at", "tool"];
 		expect(Object.keys(body.items[0]).every((k) => allowed.includes(k))).toBe(true);
 		expect(JSON.stringify(body)).not.toContain("should-never-leak");
+	});
+
+	it("/feedback hides resolved entries by default; ?all=true surfaces them with their resolution (#1400)", async () => {
+		const env = fakeEnv();
+		// Different kinds so `resolveFeedback`'s kind filter deterministically resolves only
+		// the first entry even if both land on the same Date.now() millisecond (no fake
+		// timers here) — a shared `at` would otherwise make the match ambiguous.
+		const { at } = await appendFeedback(env, "issue", "stale complaint");
+		await appendFeedback(env, "suggest", "still outstanding");
+		await resolveFeedback(env, at, { kind: "issue", tracked_by: "https://github.com/x/y/issues/1" });
+		const def = await getJson(env, "/feedback");
+		expect(def.count).toBe(1);
+		expect(def.items[0].text).toBe("still outstanding");
+		expect(def.items.every((i: any) => !("resolved" in i))).toBe(true);
+		const all = await getJson(env, "/feedback?all=true");
+		expect(all.count).toBe(2);
+		const resolvedEntry = all.items.find((i: any) => i.text === "stale complaint");
+		expect(resolvedEntry.resolved).toMatchObject({ tracked_by: "https://github.com/x/y/issues/1" });
+		expect(typeof resolvedEntry.resolved.at).toBe("string"); // ISO, like the entry's own `at`
 	});
 });
