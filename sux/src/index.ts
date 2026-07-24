@@ -17,7 +17,7 @@ const SUMMARIZE_MIN_CHARS = 400;
 import { FUNCTIONS } from "./fns";
 import { LIFE_SKILL_DESCRIPTION, LIFE_SKILL_PROMPT, SUX_SKILL_DESCRIPTION, SUX_SKILL_PROMPT } from "./skill-prompt";
 import { selfImproveTick } from "./fns/_self_improve";
-import { CRON_JOBS, readHeartbeats, runSubJob } from "./cron-heartbeat";
+import { CRON_JOBS, readHeartbeats, recordWatchHeartbeat, runSubJob } from "./cron-heartbeat";
 import { recordAnalyticsEvent } from "./analytics";
 import { recordCall } from "./metrics";
 import { shipGithubBillingSnapshot, shipMetricsSnapshot, shipToLoki } from "./grafana";
@@ -1433,6 +1433,41 @@ export default {
 				} catch (e) {
 					return new Response(JSON.stringify({ error: String((e as Error)?.message ?? e) }), { status: 500, headers: { "content-type": "application/json" } });
 				}
+			}
+		}
+
+		// Ingest door for LOCAL "watch" scheduled tasks (deterministic check.sh probes
+		// running on the user's own machine, e.g. the retired mychart-doors pattern) —
+		// POST /watch/heartbeat, bearer-gated by SUX_CRON_TOKEN (unset ⇒ 404), same auth
+		// as /admin/tick and /mychart/connect. A local watch has no cron tick of ours to
+		// hang a heartbeat off, so it posts its own {name,ok,error?,staleAfterMs?} here;
+		// gatherHealth surfaces it (per-watch staleness, since each declares its own
+		// cadence) so "watch died" is distinguishable from "condition not tripped yet".
+		// See cron-heartbeat.ts's recordWatchHeartbeat for the storage contract — it is
+		// itself best-effort (a KV write failure never throws), so this route always
+		// answers 200 once the body parses, regardless of whatever the KV write did.
+		{
+			const u = new URL(request.url);
+			if (request.method === "POST" && u.pathname === "/watch/heartbeat") {
+				const token = env.SUX_CRON_TOKEN;
+				if (!token) return new Response("not found", { status: 404 });
+				const auth = request.headers.get("authorization") ?? "";
+				const presented = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+				if (!presented || !timingSafeEqual(token, presented)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
+				let body: unknown;
+				try {
+					body = await request.json();
+				} catch {
+					return new Response(JSON.stringify({ error: "malformed JSON body" }), { status: 400, headers: { "content-type": "application/json" } });
+				}
+				if (!body || typeof body !== "object") return new Response(JSON.stringify({ error: "body must be a JSON object" }), { status: 400, headers: { "content-type": "application/json" } });
+				const { name, ok: reportedOk, error, staleAfterMs } = body as Record<string, unknown>;
+				if (typeof name !== "string" || !name.trim()) return new Response(JSON.stringify({ error: "name must be a non-empty string" }), { status: 400, headers: { "content-type": "application/json" } });
+				if (typeof reportedOk !== "boolean") return new Response(JSON.stringify({ error: "ok must be a boolean" }), { status: 400, headers: { "content-type": "application/json" } });
+				if (error !== undefined && typeof error !== "string") return new Response(JSON.stringify({ error: "error must be a string when present" }), { status: 400, headers: { "content-type": "application/json" } });
+				if (staleAfterMs !== undefined && typeof staleAfterMs !== "number") return new Response(JSON.stringify({ error: "staleAfterMs must be a number when present" }), { status: 400, headers: { "content-type": "application/json" } });
+				await recordWatchHeartbeat(env, name, reportedOk, error, staleAfterMs);
+				return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
 			}
 		}
 

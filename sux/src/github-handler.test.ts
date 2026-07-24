@@ -44,6 +44,21 @@ describe("redactPublicHealth", () => {
 		expect(JSON.stringify(redacted)).not.toContain("leaked");
 	});
 
+	it("strips watch heartbeat error text but keeps the ok/stale/age_ms signal", () => {
+		const h = {
+			status: "ok",
+			watch: {
+				"mychart-doors": { seen: true, ok: false, stale: false, age_ms: 1000, error: "probe output: http://10.0.0.1/secret leaked" },
+				"front-door-cam": { seen: true, ok: true, stale: false, age_ms: 2000 },
+			},
+		};
+		const redacted = redactPublicHealth(h) as any;
+		expect(redacted.watch["mychart-doors"]).toMatchObject({ seen: true, ok: false, stale: false, age_ms: 1000 });
+		expect(redacted.watch["mychart-doors"].error).toBeUndefined();
+		expect(redacted.watch["front-door-cam"]).toMatchObject({ seen: true, ok: true, stale: false, age_ms: 2000 });
+		expect(JSON.stringify(redacted)).not.toContain("leaked");
+	});
+
 	it("drops the residential exit and node hostname/IPs, keeping the datacenter exit", () => {
 		const h = {
 			tailscale: {

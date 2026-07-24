@@ -148,3 +148,106 @@ export async function readHeartbeats(kv: KVLike | undefined, now = Date.now()): 
 	);
 	return Object.fromEntries(entries);
 }
+
+// --- watch heartbeats (#1414) ------------------------------------------------
+//
+// Local "watch" scheduled tasks (deterministic check.sh probes running on the
+// user's own machine, e.g. the retired mychart-doors pattern) have no cron tick
+// of ours to hang a CRON_JOBS entry off of — they're external processes with
+// caller-declared names and cadences, not a fixed list we control. This is a
+// PARALLEL keyspace to the CRON_JOBS machinery above (separate prefix, separate
+// storage shape), deliberately NOT added to CRON_JOBS: a watch name is arbitrary
+// caller-supplied text, not a member of our fixed sub-job enum, and mixing the
+// two would let a POST body grow that const's cardinality without a code change.
+
+const WATCH_PREFIX = "sux:watch:heartbeat:";
+
+// Every watch declares its own cadence (a daily probe and an hourly probe don't
+// share one staleness window), so — unlike CRON_STALE_MS — the threshold rides
+// along in the stored record itself and defaults to the same 26h grace window
+// when the poster doesn't supply one.
+export type WatchHeartbeat = { ok: boolean; at: number; error?: string; staleAfterMs?: number };
+
+/** A watch `name` is arbitrary text lifted straight from a POST body into a KV key
+ * segment — trim it, cap its length, and replace anything that isn't a safe key
+ * character so a malformed body can't write to an unbounded/weird keyspace. Not
+ * meant to be bulletproof, just enough that "" or a pathological name can't land. */
+function sanitizeWatchName(name: unknown): string | null {
+	if (typeof name !== "string") return null;
+	const trimmed = name.trim();
+	if (!trimmed) return null;
+	const cleaned = trimmed.slice(0, 100).replace(/[^a-zA-Z0-9_.:-]/g, "_");
+	return cleaned || null;
+}
+
+/** Stamp a watch's outcome. Mirrors recordHeartbeat's best-effort contract exactly:
+ * swallows KV errors so it can never fail the poster's request, truncates error to
+ * 300 chars, and defaults a non-ok beat's error to a non-empty fallback string. An
+ * unusable `name` (see sanitizeWatchName) is a silent no-op, same "never throws"
+ * guarantee as everything else here. */
+export async function recordWatchHeartbeat(env: RtEnv, name: string, ok: boolean, error?: string, staleAfterMs?: number): Promise<void> {
+	try {
+		const safeName = sanitizeWatchName(name);
+		if (!safeName) return;
+		const beat: WatchHeartbeat = { ok, at: Date.now() };
+		if (error) beat.error = error.slice(0, 300);
+		else if (!ok) beat.error = "failed with no error text recorded";
+		if (typeof staleAfterMs === "number" && Number.isFinite(staleAfterMs) && staleAfterMs > 0) beat.staleAfterMs = staleAfterMs;
+		await env.OAUTH_KV?.put(WATCH_PREFIX + safeName, JSON.stringify(beat));
+	} catch {
+		// heartbeat is observability-only; never let it fail the poster's request.
+	}
+}
+
+type WatchKVLike = KVLike & {
+	list(opts: { prefix: string; cursor?: string }): Promise<{ keys: { name: string }[]; list_complete: boolean; cursor?: string }>;
+};
+
+// Pagination safety valve: a watch keyspace is expected to stay small (a handful
+// of local check.sh probes), but cap the scan rather than loop unbounded if it
+// somehow doesn't.
+const WATCH_LIST_MAX_PAGES = 20;
+
+/** Read every watch heartbeat under WATCH_PREFIX and derive its staleness at `now`.
+ * UNLIKE readHeartbeats (which iterates the fixed CRON_JOBS list), watch names are
+ * caller-supplied and unbounded, so this enumerates the KV keyspace via list()
+ * instead. Never throws: a malformed/unparseable entry is skipped rather than
+ * aborting the read, and any list()/get() failure (or a KV binding that doesn't
+ * support list at all) degrades to {}. */
+export async function readWatchHeartbeats(kv: WatchKVLike | undefined, now = Date.now()): Promise<Record<string, unknown>> {
+	if (!kv || typeof kv.list !== "function") return {};
+	try {
+		const out: Record<string, unknown> = {};
+		let cursor: string | undefined;
+		let pages = 0;
+		do {
+			const page = await kv.list({ prefix: WATCH_PREFIX, cursor });
+			for (const k of page.keys) {
+				const name = k.name.slice(WATCH_PREFIX.length);
+				let beat: Partial<WatchHeartbeat> | null = null;
+				try {
+					const raw = await kv.get(k.name);
+					if (raw) beat = JSON.parse(raw) as Partial<WatchHeartbeat>;
+				} catch {
+					beat = null;
+				}
+				if (!beat || typeof beat.at !== "number") continue;
+				const age_ms = now - beat.at;
+				const staleAfterMs = typeof beat.staleAfterMs === "number" && Number.isFinite(beat.staleAfterMs) && beat.staleAfterMs > 0 ? beat.staleAfterMs : CRON_STALE_MS;
+				out[name] = {
+					seen: true,
+					ok: Boolean(beat.ok),
+					at: beat.at,
+					age_ms,
+					stale: age_ms > staleAfterMs,
+					...(beat.error ? { error: beat.error } : {}),
+				};
+			}
+			cursor = page.list_complete ? undefined : page.cursor;
+			pages++;
+		} while (cursor && pages < WATCH_LIST_MAX_PAGES);
+		return out;
+	} catch {
+		return {};
+	}
+}

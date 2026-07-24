@@ -9,8 +9,17 @@ vi.mock("./fns/dropbox", () => ({
 	},
 }));
 
+// files_semantic's building block has its own suite (_files_semantic.test.ts); here we
+// only test the tool's wiring — gates, arg validation, and the cosine-hit reshape — so
+// mock it directly rather than re-deriving Dropbox Mode-B fetch fixtures.
+vi.mock("./fns/_files_semantic", () => ({
+	filesSemanticIndex: vi.fn(),
+	topKFilesByCosine: vi.fn(),
+}));
+
 import { FILES_TOOLS } from "./files-mcp";
 import { dropbox } from "./fns/dropbox";
+import { filesSemanticIndex, topKFilesByCosine } from "./fns/_files_semantic";
 import { toB64 } from "./fns/_util";
 
 const env = () => ({}) as any;
@@ -172,6 +181,64 @@ describe("files_* tools", () => {
 		const flag = await tool("files_write").run(env(), { path: "a.txt", text: "x", overwrite: true }); // Mode-B-only flag on an app-folder write
 		expect(flag.isError).toBe(true);
 		expect(flag.errorCode).toBe("bad_input");
+	});
+});
+
+describe("files_semantic (Workers-AI embeddings over the Mode-B files index)", () => {
+	const aiEnv = (extra: Record<string, unknown> = {}) => ({ AI: { run: vi.fn(async (_m: string, inputs: any) => ({ data: inputs.text.map(() => [1, 0, 0]) })) }, ...extra }) as any;
+	const indexMock = filesSemanticIndex as unknown as ReturnType<typeof vi.fn>;
+	const topKMock = topKFilesByCosine as unknown as ReturnType<typeof vi.fn>;
+
+	it("requires a non-empty `q`", async () => {
+		const r = await tool("files_semantic").run(aiEnv(), {});
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("bad_input");
+		expect(indexMock).not.toHaveBeenCalled();
+	});
+
+	it("requires the Workers-AI binding before touching the index", async () => {
+		const r = await tool("files_semantic").run(env(), { q: "invoice" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("not_configured");
+		expect(r.content[0].text).toMatch(/Workers AI/);
+		expect(indexMock).not.toHaveBeenCalled();
+	});
+
+	it("Mode-B not configured (filesSemanticIndex → null) reports not_configured", async () => {
+		indexMock.mockResolvedValueOnce(null);
+		const r = await tool("files_semantic").run(aiEnv(), { q: "invoice" });
+		expect(r.isError).toBe(true);
+		expect(r.errorCode).toBe("not_configured");
+		expect(r.content[0].text).toMatch(/DROPBOX_FULL_/);
+	});
+
+	it("embeds the query and ranks the cached index's chunks by cosine similarity", async () => {
+		const chunks = [{ path: "/Docs/a.md", text: "invoice for July", embedding: [1, 0, 0] }];
+		indexMock.mockResolvedValueOnce({ cursor: "c1", version: 1, at: Date.now(), total: 1, truncated: false, chunks });
+		topKMock.mockReturnValueOnce([{ path: "/Docs/a.md", text: "invoice for July", score: 0.99 }]);
+		const r = parse(await tool("files_semantic").run(aiEnv(), { q: "invoice", k: 3 }));
+		expect(r).toMatchObject({ q: "invoice", count: 1, scanned: 1, total: 1, truncated: false });
+		expect(r.hits[0]).toMatchObject({ path: "/Docs/a.md", score: 0.99 });
+		expect(topKMock).toHaveBeenCalledWith([1, 0, 0], chunks, 3);
+	});
+
+	it("defaults k to 8 and clamps it to [1,50]", async () => {
+		const idx = { cursor: "c1", version: 1, at: Date.now(), total: 0, truncated: false, chunks: [] };
+		indexMock.mockResolvedValueOnce(idx);
+		topKMock.mockReturnValueOnce([]);
+		await tool("files_semantic").run(aiEnv(), { q: "x" });
+		expect(topKMock).toHaveBeenLastCalledWith(expect.anything(), [], 8);
+		indexMock.mockResolvedValueOnce(idx);
+		topKMock.mockReturnValueOnce([]);
+		await tool("files_semantic").run(aiEnv(), { q: "x", k: 500 });
+		expect(topKMock).toHaveBeenLastCalledWith(expect.anything(), [], 50);
+	});
+
+	it("surfaces a thrown index error as fail(...), not a crash", async () => {
+		indexMock.mockRejectedValueOnce(new Error("dropbox: rate limited"));
+		const r = await tool("files_semantic").run(aiEnv(), { q: "invoice" });
+		expect(r.isError).toBe(true);
+		expect(r.content[0].text).toMatch(/rate limited/);
 	});
 });
 

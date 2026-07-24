@@ -11,7 +11,7 @@ import {
 } from "./workers-oauth-utils";
 import { hmacHex, isTailscaleConfigured, proxyEnabled, smartFetch, type TailscaleEnv } from "./proxy";
 import { deriveMetrics, readMetrics } from "./metrics";
-import { readHeartbeats } from "./cron-heartbeat";
+import { readHeartbeats, readWatchHeartbeats } from "./cron-heartbeat";
 import { readNodeStatus } from "./recovery";
 import { githubAuthHeaders } from "./github-auth";
 import type { RtEnv } from "./registry";
@@ -228,6 +228,12 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	// miss degrades to { seen: false } and never fails the health page.
 	const cron = await readHeartbeats((env as unknown as RtEnv).OAUTH_KV).catch(() => ({}));
 
+	// Same idea for LOCAL "watch" scheduled tasks (deterministic check.sh probes on
+	// the user's own machine) that post their own heartbeats to POST /watch/heartbeat
+	// (#1414) — per-watch staleness since each declares its own cadence. Best-effort:
+	// degrades to {} on a cold/failed KV read and never fails the health page.
+	const watch = await readWatchHeartbeats((env as unknown as RtEnv).OAUTH_KV).catch(() => ({}));
+
 	const configured = isTailscaleConfigured(env);
 	let proxyUrlValid = false;
 	try {
@@ -265,7 +271,7 @@ async function gatherHealth(env: HandlerEnv): Promise<Record<string, unknown>> {
 	}
 
 	const ok = config.kagiKey && config.githubClient && upstream.reachable && bindingsOk(bindings);
-	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron, bindings, router, bots };
+	return { status: ok ? "ok" : "degraded", config, tailscale, upstream, metrics, cron, watch, bindings, router, bots };
 }
 
 function renderHealthHtml(h: any): string {
@@ -456,6 +462,15 @@ export function redactPublicHealth(h: Record<string, unknown>): Record<string, u
 	if (cron && typeof cron === "object") {
 		for (const job of Object.values(cron)) {
 			if (job && typeof job === "object" && "error" in (job as any)) delete (job as any).error;
+		}
+	}
+	// Same policy for watch heartbeats (#1414): their `error` is arbitrary text a
+	// caller POSTed to /watch/heartbeat — authenticated on write, but read here by
+	// anonymous /health visitors, so strip it the same way as a cron sub-job's.
+	const watch = clone.watch;
+	if (watch && typeof watch === "object") {
+		for (const w of Object.values(watch)) {
+			if (w && typeof w === "object" && "error" in (w as any)) delete (w as any).error;
 		}
 	}
 	// The router's self-reported checkin body is arbitrary box-local diagnostic text

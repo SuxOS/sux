@@ -720,3 +720,17 @@ fails the build if they drift. After bumping both, tag `vX.Y.Z` and push the tag
 deploy (`--var`, not committed to `wrangler.jsonc`), so `selftest`'s `version`
 field answers "what's live in production" — `SUX_VERSION` is unset outside
 deploy.yml (local `wrangler dev`, tests), so `selftest` reports `null` there.
+
+## Vault writes already retry on a conflict — don't assume otherwise (#1427)
+
+`fns/obsidian.ts`'s vault writes go through GitHub's Contents API (sha-based optimistic
+concurrency), not a literal `git push` — an issue framed around "git push rejected, needs
+fetch+rebase+retry" doesn't match the actual mechanism. `append`/`edit` ALREADY implement a
+bounded read-modify-write retry on a 409 conflict (`RETRY_ATTEMPTS`/`retryDelay`, obsidian.ts
+~lines 213-233: re-read, re-merge, re-PUT, up to 3 tries with jittered backoff) — a losing
+concurrent writer already self-heals for those two actions. `write` deliberately does NOT
+retry (no prior content to reconcile against; a 409 there means "you meant to overwrite
+something else"). The real remaining gap for a future cross-writer-serialization pass is
+narrower than it looks from the issue text alone: a lock/mutex across the 6 autonomous loops,
+retry parity for `write`, and handling a non-409 transient failure (network/5xx) — not
+inventing conflict retry from scratch.

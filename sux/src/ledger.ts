@@ -1,3 +1,4 @@
+import { errMsg } from "./prim";
 import { type RtEnv } from "./registry";
 
 // A tiny idempotency ledger over OAUTH_KV: "have I already done X?" so batch sweeps
@@ -10,6 +11,8 @@ import { type RtEnv } from "./registry";
 const PREFIX = "sux:ledger:";
 const keyOf = (ns: string, id: string) => `${PREFIX}${ns}:${id}`;
 
+export type OnceResult = { ran: boolean; marked: boolean; error?: string };
+
 export type Ledger = {
 	/** Has this id been recorded in this namespace? */
 	seen: (id: string) => Promise<boolean>;
@@ -19,6 +22,16 @@ export type Ledger = {
 	mark: (id: string, value?: string) => Promise<void>;
 	/** Record iff new — returns true the first time (and records), false if already seen. */
 	markIfNew: (id: string, value?: string) => Promise<boolean>;
+	/** The commit-after-success primitive (#1424): run `fn` only if `id` is unseen, and mark
+	 *  `id` IFF `fn` resolves — never before, so a failed side effect (a vault append, a sent
+	 *  email) leaves the id unmarked and the next tick retries it, instead of the hand-rolled
+	 *  seen→do→mark discipline every autonomous loop used to reimplement (and could get wrong
+	 *  in either direction: marking before the work lands, or marking even when it throws).
+	 *  These loops must never fail their whole cycle over one skipped side effect, so `once`
+	 *  reports the failure in the return value rather than propagating it — callers that used
+	 *  to swallow a thrown error around a hand-rolled block get the same swallow here, just
+	 *  with the ok/marked signal made explicit instead of implicit in whether mark() ran. */
+	once: (id: string, fn: () => Promise<unknown>, value?: string) => Promise<OnceResult>;
 };
 
 /** Open a namespaced idempotency ledger. ttlSeconds (default 30d) auto-expires entries; clamped to KV's 60s floor. */
@@ -39,6 +52,16 @@ export function ledger(env: RtEnv, ns: string, ttlSeconds = 30 * 24 * 3600): Led
 			if (await kv?.get(keyOf(ns, id))) return false;
 			await kv?.put(keyOf(ns, id), value, ttl);
 			return true;
+		},
+		async once(id, fn, value = "1") {
+			if (await kv?.get(keyOf(ns, id))) return { ran: false, marked: false };
+			try {
+				await fn();
+			} catch (e) {
+				return { ran: true, marked: false, error: errMsg(e) };
+			}
+			await kv?.put(keyOf(ns, id), value, ttl);
+			return { ran: true, marked: true };
 		},
 	};
 }

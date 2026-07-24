@@ -41,6 +41,41 @@ describe("ledger (idempotency over KV)", () => {
 		expect(await l.markIfNew("y")).toBe(true); // can't dedupe without a store
 	});
 
+	it("once runs fn and marks only on success", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const l = ledger(env, "digest");
+		const r = await l.once("2026-07-24", async () => "sent");
+		expect(r).toEqual({ ran: true, marked: true });
+		expect(await l.seen("2026-07-24")).toBe(true);
+	});
+
+	it("once skips fn entirely once the id is already marked", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const l = ledger(env, "digest");
+		await l.mark("2026-07-24");
+		let called = false;
+		const r = await l.once("2026-07-24", async () => {
+			called = true;
+		});
+		expect(r).toEqual({ ran: false, marked: false });
+		expect(called).toBe(false);
+	});
+
+	it("once does NOT mark when fn throws, so the next call retries", async () => {
+		const env = { OAUTH_KV: fakeKV() } as any;
+		const l = ledger(env, "digest");
+		const r = await l.once("2026-07-24", async () => {
+			throw new Error("vault append failed");
+		});
+		expect(r.ran).toBe(true);
+		expect(r.marked).toBe(false);
+		expect(r.error).toBe("vault append failed");
+		expect(await l.seen("2026-07-24")).toBe(false);
+		// a later call on the same id gets a fresh attempt, not a permanent skip
+		const r2 = await l.once("2026-07-24", async () => "ok");
+		expect(r2).toEqual({ ran: true, marked: true });
+	});
+
 	it("fingerprint is a stable 16-hex digest, differing on content", async () => {
 		const a = await fingerprint("hello");
 		expect(a).toMatch(/^[0-9a-f]{16}$/);

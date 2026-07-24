@@ -14,19 +14,23 @@ import { vaultCfg } from "./obsidian";
 // (`enumerateDomain`), REUSING each chunk's already-stored embedding (no re-embed on the
 // source-chunk domains).
 //
-// ONE enumeration, ONE driver (#1315, dead-code-swept #1363): `_backfill.ts`'s durable batched
-// job is the sole consumer — enumerate, upsert a bounded WINDOW per tick, persist a per-domain
+// ONE enumeration, ONE driver (#1315, #1363). `enumerateDomain` turns a domain's existing corpus
+// into a stably-ordered `IndexUnit[]` (namespace-tagged); `_backfill.ts` is its sole consumer —
+// the DURABLE batched job: enumerate, upsert a bounded WINDOW per tick, persist a per-domain
 // cursor, resume next tick until every domain is done. This is what drives sux-corpus to full
-// population without timing out a request. (A synchronous full-pass driver, `reindexCorpus`,
-// used to live here as the admin one-shot/small-domain path; it had zero production callers
-// once the durable backfill shipped and was removed — see `_backfill.ts`/`_backfill.test.ts`
-// for the surviving coverage of this enumeration.)
+// population without timing out. (A prior synchronous one-shot driver, `reindexCorpus`, embedded/
+// upserted a whole domain in one request and TIMED OUT on the real corpus — the #1315 root cause
+// — and was removed once `#1330` repointed `oracle {action:"reindex"}` onto `backfillTick`,
+// leaving it with zero production callers.)
 //
-// CHEAP vs BUILDING read. The batched backfill passes `{cached:true}` so vault reads the
-// READ-ONLY cached blob (`vaultSemanticIndexCached`) — a single decompress, never a re-embed —
-// so a tick's cost is the bounded upsert, not a corpus rebuild. mail/files/contacts have only
-// their incremental builder (cheap when the cache is warm, which production is — the cosine
-// fallback serves those domains today, #1310), so `cached` is a no-op for them.
+// CHEAP vs BUILDING read. `enumerateDomain`'s `{cached:true}` (the only mode `_backfill.ts` ever
+// passes) reads vault's READ-ONLY cached blob (`vaultSemanticIndexCached`) — a single decompress,
+// never a re-embed — so a tick's cost is the bounded upsert, not a corpus rebuild.
+// `{cached:false}` instead reads the BUILDING semantic index (rebuilds/warms the KV cosine cache
+// as a side effect); kept as an option on the shared enumerator, but nothing in production calls
+// it that way today. mail/files/contacts have only their incremental builder (cheap when the
+// cache is warm, which production is — the cosine fallback serves those domains today, #1310),
+// so `cached` is a no-op for them.
 //
 // IDEMPOTENT + RESUMABLE: stable vector ids (_vectorize.vectorId) mean re-running upserts in
 // place, never duplicates — so a run that dies partway is safe to re-run. Each domain runs
@@ -134,9 +138,10 @@ async function enumerateSource(env: RtEnv): Promise<EnumerateResult> {
 	return { items, ready: true, note: `${domains.length} source domain(s)` };
 }
 
-/** Turn one domain's existing corpus into a stably-ordered, namespace-tagged `IndexUnit[]`.
- *  Shared by the full reindex and the batched backfill. `cached:true` prefers the read-only
- *  cached read where one exists (vault) so a repeated per-tick enumeration never re-embeds. */
+/** Turn one domain's existing corpus into a stably-ordered, namespace-tagged `IndexUnit[]` — the
+ *  batched backfill's (`_backfill.ts`) sole enumeration source. `cached:true` prefers the
+ *  read-only cached read where one exists (vault) so a repeated per-tick enumeration never
+ *  re-embeds. */
 export async function enumerateDomain(env: RtEnv, domain: ReindexDomain, opts: { cached?: boolean } = {}): Promise<EnumerateResult> {
 	switch (domain) {
 		case "vault":

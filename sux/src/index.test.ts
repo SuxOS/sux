@@ -1232,3 +1232,70 @@ describe("POST /s/up — raw-bytes upload door", () => {
 		expect(body.expiry).toBeUndefined();
 	});
 });
+
+// The watch-heartbeat ingest door (POST /watch/heartbeat, #1414) — lets a local
+// "watch" scheduled task (a check.sh probe on the user's own machine) post its own
+// {name,ok,error?,staleAfterMs?} so gatherHealth can tell "watch died" apart from
+// "condition not tripped yet". Bearer-gated by SUX_CRON_TOKEN, same auth pattern as
+// /admin/tick.
+describe("POST /watch/heartbeat — watch heartbeat ingest door", () => {
+	const watchEnv = (kv: ReturnType<typeof makeKv>["kv"], token?: string) => ({ ...makeEnv(kv), SUX_CRON_TOKEN: token }) as unknown as RtEnv;
+	const watchReq = (body: unknown, headers: Record<string, string> = {}) =>
+		new Request("https://sux.example.dev/watch/heartbeat", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
+
+	it("404s when SUX_CRON_TOKEN is unset (feature off)", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const res = await worker.fetch(watchReq({ name: "mychart-doors", ok: true }, { authorization: "Bearer x" }), watchEnv(kv, undefined), ctx);
+		expect(res.status).toBe(404);
+	});
+
+	it("401s a wrong or missing bearer token", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const wrong = await worker.fetch(watchReq({ name: "mychart-doors", ok: true }, { authorization: "Bearer nope" }), watchEnv(kv, "sekret"), ctx);
+		expect(wrong.status).toBe(401);
+		const missing = await worker.fetch(watchReq({ name: "mychart-doors", ok: true }), watchEnv(kv, "sekret"), ctx);
+		expect(missing.status).toBe(401);
+	});
+
+	it("400s a malformed JSON body", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const req = new Request("https://sux.example.dev/watch/heartbeat", { method: "POST", headers: { authorization: "Bearer sekret", "content-type": "application/json" }, body: "{not json" });
+		const res = await worker.fetch(req, watchEnv(kv, "sekret"), ctx);
+		expect(res.status).toBe(400);
+	});
+
+	it("400s a body missing/mistyped `name` or `ok`", async () => {
+		const { kv } = makeKv();
+		const { ctx } = makeCtx();
+		const noName = await worker.fetch(watchReq({ ok: true }, { authorization: "Bearer sekret" }), watchEnv(kv, "sekret"), ctx);
+		expect(noName.status).toBe(400);
+		const badOk = await worker.fetch(watchReq({ name: "mychart-doors", ok: "yes" }, { authorization: "Bearer sekret" }), watchEnv(kv, "sekret"), ctx);
+		expect(badOk.status).toBe(400);
+	});
+
+	it("200s and writes the heartbeat to KV on a valid POST", async () => {
+		const { kv, store } = makeKv();
+		const { ctx } = makeCtx();
+		const res = await worker.fetch(watchReq({ name: "mychart-doors", ok: true }, { authorization: "Bearer sekret" }), watchEnv(kv, "sekret"), ctx);
+		expect(res.status).toBe(200);
+		const resBody = (await res.json()) as { ok: boolean };
+		expect(resBody.ok).toBe(true);
+		const beat = JSON.parse(store.get("sux:watch:heartbeat:mychart-doors")!);
+		expect(beat).toMatchObject({ ok: true });
+	});
+
+	it("200s even when the KV write is best-effort-failed (never fails the caller's pass)", async () => {
+		const { ctx } = makeCtx();
+		const throwingKv = {
+			get: async () => null,
+			put: async () => {
+				throw new Error("kv unavailable");
+			},
+		};
+		const res = await worker.fetch(watchReq({ name: "mychart-doors", ok: false, error: "door open" }, { authorization: "Bearer sekret" }), watchEnv(throwingKv as any, "sekret"), ctx);
+		expect(res.status).toBe(200);
+	});
+});
