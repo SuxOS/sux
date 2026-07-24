@@ -45,8 +45,8 @@ jobs:
       # within the lane*, so it never creates coincident-sibling PRs; N>1 is the knob that
       # manufactures DIRTY conflicts → held builds, so it stays at 1. effort-budget scales
       # with M (14→22, ~constant per-issue). REVERT to 8/14/1 once this backlog is < ~20.
-      max-issues: 12
-      effort-budget: 22
+      max-issues: 18
+      effort-budget: 32
       parallel-batches: 1
       needs-suxlib: true  # package.json depends on "@suxos/lib": "file:../suxlib" (see CLAUDE.md's Known gotcha) — the reusable clones it before npm ci when this is set
       gates-summary: |
@@ -55,3 +55,4 @@ jobs:
         npx wrangler deploy --dry-run --config sux/wrangler.jsonc
       # Batch size / turns are auto-tuned by the reusable from tier + count (three-loop rework).
     secrets: inherit
+
