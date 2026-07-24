@@ -1,7 +1,7 @@
 # Tooling and language doctrine — stop losing turns to shell glue
 
 **Date:** 2026-07-23
-**Status:** proposed
+**Status:** accepted (ratified 2026-07-24 by Colin — sux#1568)
 **Supersedes:** nothing. The twelve-agent research that was meant to answer this was lost with its
 workflow transcript (see `2026-07-23-placement-fabric-architecture.md` §12). This is written instead
 from **direct evidence collected in one working session** — which turns out to be the better source,
@@ -56,11 +56,17 @@ schema-checked*** is the property worth having.
 
 | Context | Use | Why |
 |---|---|---|
-| Anything inside sux/suxlib | **TypeScript** | Already the codebase; `tsc` + LSP + vitest catch field-name errors *at author time*. Highest leverage per keystroke of anything here. |
+| Platform / web / workers (sux, suxlib, suxos-net, suxdash) | **TypeScript** | Already the codebase; `tsc` + LSP + vitest catch field-name errors *at author time*. Highest leverage per keystroke of anything here. |
 | Interactive/ad-hoc data shaping | **Nushell** | Already Colin's shell. Pipelines carry **structured values**, so `where type == started \| length` cannot become a line count — failure #5 is unrepresentable. |
-| Standalone repo scripts | **Python 3, stdlib only** | Precedent exists (`vault-lint.py`); no build step, no deps, runs on any runner. Chosen for this session's vault fix for exactly that reason. |
-| Ships to router/box | **Go**, static musl | The one case where a single dependency-free binary on a constrained target justifies leaving the above. |
-| Rust | **only** where its guarantees are the point | Its verbosity and build overhead are a real cost; do not pay it for glue. |
+| Standalone repo scripts (linters, no build) | **Python 3, stdlib only** | Precedent exists (`vault-lint.py`); no build step, no deps, runs on any runner. |
+| New shipped CLIs / systems tooling / binaries (the sx line) | **Rust** (via sx crates) | Supersedes the former "Go static musl" row — Go is used in **zero** repos; sx (Rust) fills the shipped-binary role. Reserve for code where its guarantees/perf earn the build + verbosity cost. |
+| CI / pipeline glue that must run in bash | **POSIX sh / bash 5** | A constrained target, not primary. macOS system bash = 3.2 → invoke `/opt/homebrew/bin/bash`; keep portable. |
+| OpenWRT router (suxrouter) | **ucode** | The router's native scripting (verified: `.uc` in-repo, not Lua). Nix `pkgsStatic` for any shipped tools. |
+| Editor / desktop glue (neovim, Hammerspoon) | **Lua** | Host-mandated config DSL, confined here — **not** a primary dev language. |
+| Raycast | **TS** extensions / **nushell** script-commands | Not Lua. |
+| Dev toolchain provisioning + infra (metal, nix) | **Nix** flakes/devshells; **brew** for macOS GUI casks only | Reproducible per-project toolchains; brew retained only for casks + Nix-hostile system bits. |
+
+> Ratified 2026-07-24 (sux#1568). **Dropped:** Go — unused across all repos; Rust/sx takes the shipped-binary role. TypeScript owns platform/web; Python owns zero-build repo scripts; Nushell owns interactive.
 
 ### 2. Concrete replacements for the failures above
 
