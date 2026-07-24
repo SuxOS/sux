@@ -179,3 +179,35 @@ Convention: op item title == secret name, value in the `credential` field, in th
 2. Store it in op (title = the secret name).
 3. `scripts/secret-sync.sh NAME --worker` (or `--github`, per the table above).
 4. Runtime keys take effect on the next request; deploy-time keys on the next deploy.
+
+## 2026-07 reconciliation — nested op, no GitHub sync, actual-needed audit
+
+This section supersedes the flat assumptions above.
+
+### 1. op is NESTED now (flat → nested migration)
+A credential no longer lives at `op://Secrets/<NAME>/credential`. Related values are grouped
+into one item with named fields, e.g. `op://Secrets/GITHUB/pat`,
+`op://Secrets/DROPBOX/app_key`, `op://Secrets/R2/access_key_id`. Because the Worker-secret
+name no longer equals the op path, the mapping is explicit in **`scripts/secrets.map`** (the
+source of truth) and `secret-sync.sh` reads it. Some items are still flat
+(`op://Secrets/BRAVE_API_KEY/credential`) — the map records both forms.
+
+### 2. GitHub Actions secrets are no longer synced from here
+CI reads op **directly at runtime** via `1password/load-secrets-action` (op:// refs resolved
+per-run), so there is no CI secret to keep in lockstep. `secret-sync.sh` therefore dropped its
+`--github` path. `op-backfill.yml` (CI→op salvage) becomes obsolete once the action is adopted.
+**Follow-up:** add `load-secrets-action` to the workflows that need creds and delete the
+corresponding `gh secret set` values.
+
+### 3. Which secrets are actually needed (audit of the 75 Worker bindings)
+`scripts/secrets.map` classifies every binding:
+- **credential** (54) — real secrets, op-synced via the map.
+- **@switch** (8) — arming flags (`*_ENABLED`, `MAIL_TRIAGE_ACT`, `SELF_IMPROVE_*`); set by
+  hand, never synced (tier-3 "big red buttons").
+- **@setting** — non-sensitive (`GRAFANA_*_URL/USER`, `GEMINI_PROJECT`, `OPERATOR_EMAIL`,
+  `*_REPO`); should move to `wrangler.jsonc [vars]`, out of the secret store entirely.
+- **@confirm** — op field names don't line up 1:1 (`FASTMAIL_APP_PASSWORD`, the `EPIC_*` per-org
+  secrets, `IMESSAGE_URL`); verify the ref before enabling sync.
+- **@missing** — `SUX_BOT_INSTALLATION_ID` has no op field; re-source or drop.
+
+Run `scripts/secret-sync.sh --all --dry-run` to preview, `--all` to push every credential.
