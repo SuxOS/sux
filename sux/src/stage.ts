@@ -182,6 +182,15 @@ export function conscience(_kind: string, payload: unknown): string[] {
 
 export type StageResult = { staged: true; kind: string; preview: unknown; commit_token: string; expires_in: number; note: string; advisory?: string[] };
 
+/** One field's before→after value for a rich stage preview — the general shape a caller's
+ *  `preview` should carry per changed field instead of just the field NAME. A name-only
+ *  preview (`changes:["DTSTART"]`) can't reveal a wrong RESOLVED value on any write path
+ *  (e.g. a TZID-bearing calendar property silently re-anchored by the zone's offset) — the
+ *  human reviewing a stage() preview needs to see what actually resolved, not just which
+ *  field was touched. `from`/`to` are whatever human-readable form the caller already
+ *  computes (a resolved ISO string, plain text, …), not a raw wire encoding. */
+export type FieldDiff = { field: string; from: unknown; to: unknown };
+
 /** Mint a commit token bound to `payload` and return the preview. Performs NO mutation.
  *  Attaches conscience-lint notes to StageResult.advisory so they surface in every stage preview. */
 export async function stage(env: RtEnv, kind: string, payload: unknown, preview: unknown): Promise<StageResult> {

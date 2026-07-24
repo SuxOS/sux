@@ -123,11 +123,13 @@ import { voice } from "./voice";
 import { fontcase } from "./fontcase";
 import { recall } from "./recall";
 import { audit_log } from "./audit_log";
+import { cms_coverage } from "./cms_coverage";
 import { contact_consolidate_plan } from "./contact_consolidate_plan";
 import { evidence_packet } from "./evidence_packet";
 import { expert_draft } from "./expert_draft";
 import { files_consolidate_plan } from "./files_consolidate_plan";
 import { get } from "./get";
+import { icd10 } from "./icd10";
 import { imessage } from "./imessage";
 import { mail_domain_backfill } from "./mail_domain_backfill";
 import { mail_sieve_hc } from "./mail_sieve_hc";
@@ -135,6 +137,7 @@ import { mail_triage_plan } from "./mail_triage_plan";
 import { medical_timeline_plan } from "./medical_timeline_plan";
 import { mychart_reconcile_plan } from "./mychart_reconcile_plan";
 import { uw } from "./uw";
+import { npi } from "./npi";
 import { onboard } from "./onboard";
 import { run } from "./run";
 import { vault_consolidate_plan } from "./vault_consolidate_plan";
@@ -262,11 +265,13 @@ export const FUNCTIONS: Fn[] = [
 	fontcase,
 	recall,
 	audit_log,
+	cms_coverage,
 	contact_consolidate_plan,
 	evidence_packet,
 	expert_draft,
 	files_consolidate_plan,
 	get,
+	icd10,
 	imessage,
 	mail_domain_backfill,
 	mail_sieve_hc,
@@ -274,6 +279,7 @@ export const FUNCTIONS: Fn[] = [
 	medical_timeline_plan,
 	mychart_reconcile_plan,
 	uw,
+	npi,
 	onboard,
 	run,
 	vault_consolidate_plan,

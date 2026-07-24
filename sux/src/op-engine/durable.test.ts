@@ -454,3 +454,17 @@ test("interpretDurable's race with need:2 replays the same quorum composition an
 	const second = await interpretDurable(tree, undefined, step, caps, "op27");
 	expect(second).toEqual(["A", "C"]);
 });
+
+test("interpretDurable's map throws a clear error on a non-array input instead of crashing on '.length'", async () => {
+	const rec = { events: [] as string[] };
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tree = map(op("noop", async (x: unknown) => x, { kind: "pure" }), { concurrency: fixed(2) });
+	await expect(interpretDurable(tree, undefined, fakeStep(rec), caps, "root")).rejects.toThrow(/expected an array input/);
+});
+
+test("interpretDurable's mapField throws a clear error when the named field isn't an array", async () => {
+	const rec = { events: [] as string[] };
+	const caps = { store: new MemoryStore(), llm: {}, clock: { now: () => 0 }, sinks: {} } as unknown as Caps;
+	const tree = mapField("items", "v", op("noop", async (x: unknown) => x, { kind: "pure" }), { concurrency: fixed(2) });
+	await expect(interpretDurable(tree, { items: undefined }, fakeStep(rec), caps, "root")).rejects.toThrow(/expected an array at field 'items'/);
+});

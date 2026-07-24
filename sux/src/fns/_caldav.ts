@@ -286,7 +286,7 @@ export function icalDateToIso(value: string, params: Record<string, string> = {}
 	return z ? { iso: `${wall}Z`, all_day: false, tz: null } : { iso: wall, all_day: false, tz };
 }
 
-function splitPropName(namePart: string): { name: string; params: Record<string, string> } {
+export function splitPropName(namePart: string): { name: string; params: Record<string, string> } {
 	const segs = namePart.split(";");
 	const params: Record<string, string> = {};
 	for (const seg of segs.slice(1)) {
