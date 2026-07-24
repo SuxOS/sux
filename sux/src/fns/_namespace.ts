@@ -42,13 +42,14 @@ const knownArgs = (inputSchema: unknown): Set<string> => new Set(Object.keys((in
  * `undefined` into the closure forever. Reading it through the thunk at call time always
  * sees the fully-evaluated live binding. The `.find` per call is cheap (arrays ≤~32).
  */
-export function namespaceFn(o: { name: string; description: string; tools: () => NsTool[]; actions: Record<string, Dispatch>; properties?: Record<string, unknown> }): Fn {
+export function namespaceFn(o: { name: string; description: string; descShort?: string; tools: () => NsTool[]; actions: Record<string, Dispatch>; properties?: Record<string, unknown> }): Fn {
 	const keys = Object.keys(o.actions);
 	return {
 		name: o.name,
 		surface: "front",
 		raw: true,
 		description: o.description,
+		descShort: o.descShort,
 		inputSchema: {
 			type: "object",
 			additionalProperties: true, // the per-action fields ARE the target tool's own schema

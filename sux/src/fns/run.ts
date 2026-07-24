@@ -227,6 +227,8 @@ export const run: Fn = {
 	cacheable: false,
 	description:
 		"Run a composable op (a named suxlib Op tree) by id. {op}: the registered op id (call with a bad id to see the list; MVP ships `echo`). {input}: the op's input value (any JSON). {mode}: auto (default — inline for a simple pure/effect pipe, durable when the op fans out (map) or pauses for a human (ask)) | inline (force in-request; returns the op's output) | durable (force a Workflow; returns {instanceId} to poll). The durable runtime persists every step, so a run survives isolate eviction, retries, and multi-day approval pauses. Durable mode needs the OP_WORKFLOW binding. {action}: \"list\" enumerates durable run instances started from this connector (instanceId, opId, startedAt, live status where available) instead of starting/running an op — use it to discover paused `ask` gates without already holding an instanceId. \"status\" returns a durable {instanceId}'s live status (plus error/output once terminal). \"describe\" returns {op}'s `ask` gates (exact prompt text + timeout/onTimeout) up front, so a caller can construct a correct `answer` call before ever running the op — needs {op}, no {instanceId}. \"answer\" delivers a payload to an `ask` gate the instance is paused on — needs {instanceId} and {prompt} (the op tree's exact `ask(prompt, ...)` text, as returned by `describe`); {payload} defaults to {approved:true}, pass {approved:false} to reject the gate and stop the run. \"cancel\" terminates a durable instance.",
+	descShort:
+		"Run a named suxlib op tree by id. mode: auto/inline/durable (durable = Workflow-backed, survives eviction); action manages durable runs/ask gates: list/status/describe/answer/cancel.",
 	inputSchema: {
 		type: "object",
 		additionalProperties: false,

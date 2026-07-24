@@ -291,6 +291,47 @@ describe("mychart token lifecycle (mint / rotate / 401 self-heal), per org", () 
 		expect(JSON.parse(env.OAUTH_KV.map.get(`sux:mychart:grant:${ORG}`)!).refresh_token).toBe("NEW_RT");
 	});
 
+	it("mirrors a rotated grant to R2 under a phi/-fenced, issued_at-versioned key (#1460 recovery backup)", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG}`, JSON.stringify({ refresh_token: "OLD_RT", patient: "P", issued_at: 1 }));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: any) => {
+				const url = String(u);
+				if (url.includes(".well-known/smart-configuration")) return smartCfgResponse();
+				if (url === TOKEN) return new Response(JSON.stringify({ access_token: "AT2", refresh_token: "NEW_RT", expires_in: 3600 }), { status: 200 });
+				throw new Error(`unexpected ${url}`);
+			}),
+		);
+		await mintAccessToken(env, ORG);
+		const backupKeys = [...env.R2.map.keys()].filter((k: string) => k.startsWith(`phi/mychart/grants-backup/${ORG}/`));
+		expect(backupKeys).toHaveLength(1);
+		const backed = JSON.parse(env.R2.map.get(backupKeys[0]).body);
+		expect(backed.refresh_token).toBe("NEW_RT");
+	});
+
+	it("never puts the grant key with an expirationTtl — the durability invariant #1460 exists to protect", async () => {
+		const env = baseEnv();
+		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG}`, JSON.stringify({ refresh_token: "OLD_RT", patient: "P", issued_at: 1 }));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (u: any) => {
+				const url = String(u);
+				if (url.includes(".well-known/smart-configuration")) return smartCfgResponse();
+				if (url === TOKEN) return new Response(JSON.stringify({ access_token: "AT2", refresh_token: "NEW_RT", expires_in: 3600 }), { status: 200 });
+				throw new Error(`unexpected ${url}`);
+			}),
+		);
+		await mintAccessToken(env, ORG);
+		const grantPuts = env.OAUTH_KV.put.mock.calls.filter((c: any[]) => String(c[0]).startsWith("sux:mychart:grant:"));
+		expect(grantPuts.length).toBeGreaterThan(0);
+		for (const call of grantPuts) expect(call[2]).toBeUndefined(); // no {expirationTtl} options arg
+		// Contrast: the disposable access-token cache in the SAME namespace IS ttl'd.
+		const tokenPuts = env.OAUTH_KV.put.mock.calls.filter((c: any[]) => String(c[0]).startsWith("sux:mychart:token:"));
+		expect(tokenPuts.length).toBeGreaterThan(0);
+		for (const call of tokenPuts) expect(call[2]?.expirationTtl).toBeGreaterThan(0);
+	});
+
 	it("uses a per-org EPIC_CLIENT_SECRET_<ORG> for the token endpoint's Basic auth header when one is set", async () => {
 		const env = baseEnv({ EPIC_CLIENT_SECRET_UWMEDICINE: "org-secret" });
 		await env.OAUTH_KV.put(`sux:mychart:grant:${ORG}`, JSON.stringify({ refresh_token: "RT", patient: "P", issued_at: 1 }));

@@ -15,8 +15,9 @@ export const DOMAINS: DomainSpec[] = [
 	{ key: "search", blurb: "Web search across engines (Kagi, Google, Brave, DDG, Tavily, Exa).", leaves: ["search", "web_search", "tavily"] },
 	{
 		key: "fetch",
-		blurb: "Retrieve & render pages through a residential proxy, with the scrape → render escalation ladder for bot-walled sites; snapshots, redirects, robots, crawl.",
-		leaves: ["scrape", "render", "proxy", "crawl", "wayback", "redirects", "robots"],
+		blurb:
+			"Retrieve & render pages through a residential proxy, with the scrape → render escalation ladder for bot-walled sites; snapshots, redirects, robots, crawl, plus the universal 'get me a file' fetch-search-normalize-store combinator (get).",
+		leaves: ["scrape", "render", "proxy", "crawl", "wayback", "redirects", "robots", "get"],
 	},
 	{
 		key: "extract",
@@ -25,8 +26,8 @@ export const DOMAINS: DomainSpec[] = [
 	},
 	{
 		key: "research",
-		blurb: "Academic & forum databases with citation shaping and similarity. `consensus` first for evidence-grade findings; use it often to focus a question.",
-		leaves: ["consensus", "arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar"],
+		blurb: "Academic & forum databases plus your personal Zotero library, with citation shaping and similarity. `consensus` first for evidence-grade findings; use it often to focus a question.",
+		leaves: ["consensus", "arxiv", "pubmed", "openalex", "crossref", "semantic_scholar", "clinical_trials", "stackexchange", "reddit", "citation", "find_similar", "zotero"],
 	},
 	{
 		key: "shop",
@@ -40,29 +41,66 @@ export const DOMAINS: DomainSpec[] = [
 	},
 	{
 		key: "compute",
-		blurb: "Encode / hash / compress / archive, Workers-AI text (summarize, translate, classify, redact), token-pack + declutter, voice restyle.",
-		leaves: ["encode", "hash", "compress", "archive", "summarize", "translate", "classify", "redact", "pack", "declutter", "voice"],
+		blurb: "Encode / hash / compress / archive, Workers-AI text (summarize, translate, classify, redact, expert_draft's adversarially-reviewed role drafting), token-pack + declutter, voice restyle.",
+		leaves: ["encode", "hash", "compress", "archive", "summarize", "translate", "classify", "redact", "pack", "declutter", "voice", "expert_draft"],
 	},
 	{
 		key: "data",
-		blurb: "Places, people, crypto, media, and network/DNS control-plane intel.",
-		leaves: ["places", "people", "people_finder", "coingecko", "youtube", "watch", "linkedin", "facebook", "controld", "tailscale"],
+		blurb: "Places, people (incl. UW directory lookup), crypto, media, page-change watching, and network/DNS/CI-pipeline-activity intel.",
+		leaves: ["places", "people", "people_finder", "coingecko", "youtube", "watch", "linkedin", "facebook", "controld", "tailscale", "uw", "watch_pipeline"],
 	},
 	{
 		key: "storage",
-		blurb: "R2 content-addressed blob store, KV, the Dropbox app-folder, and the `files` namespace verb (whole-Dropbox on the one /mcp connector).",
-		leaves: ["store", "kv_get", "kv_put", "kv_list", "kv_delete", "dropbox", "files"],
+		blurb: "R2 content-addressed blob store, KV, the Dropbox app-folder, the `files` namespace verb (whole-Dropbox on the one /mcp connector), bulk download-and-shelve (put), and human-approved duplicate-file archival (files_consolidate_plan).",
+		leaves: ["store", "kv_get", "kv_put", "kv_list", "kv_delete", "dropbox", "files", "put", "files_consolidate_plan"],
 	},
 	{
 		key: "recall",
-		blurb: "Memory: capture into the vault (ingest / the `vault` namespace verb), study whitelisted material you own (study), then recall/oracle synthesize a cited answer across your stores — weighting studied material above the model + web.",
-		leaves: ["obsidian", "vault", "ingest", "study", "recall", "oracle"],
+		blurb:
+			"Memory: capture into the vault (ingest / the `vault` namespace verb), study whitelisted material you own (study), then recall/oracle synthesize a cited answer across your stores — weighting studied material above the model + web. Also: stale/duplicate-note detection + human-approved merge (consolidate, vault_consolidate_plan), human-approved cross-domain note linking (vault_cross_link_plan), grounded source-cited advice (advise, expert_draft), teach-by-example kNN (learn), a synthesized life wiki (life_wiki), and a cited PDF bundle assembled from vault notes (evidence_packet).",
+		leaves: ["obsidian", "vault", "ingest", "study", "recall", "oracle", "consolidate", "vault_consolidate_plan", "vault_cross_link_plan", "advise", "expert_draft", "learn", "life_wiki", "evidence_packet"],
 	},
 	{ key: "tasks", blurb: "Todoist tasks & projects, plus calendar + tasks via the `calendar` namespace verb (Fastmail CalDAV).", leaves: ["todoist", "calendar"] },
 	{ key: "money", blurb: "Personal finance — Lunch Money accounts + net worth, balances, transactions, budgets, recurring (read-only).", leaves: ["lunchmoney"] },
-	{ key: "mail", blurb: "Fastmail over the raw JMAP conduit (byte-exact methodCalls + auth + gates), plus the `mail` + `contact` namespace verbs on the one /mcp connector.", leaves: ["jmap", "mail", "contact"] },
+	{
+		key: "health",
+		blurb: "Personal health records — Epic/MyChart clinical data over SMART-on-FHIR, read-only (mychart), human-approved cross-org medication/allergy reconciliation drafts (mychart_reconcile_plan), and a cited chronological medical timeline written to the vault (medical_timeline_plan).",
+		leaves: ["mychart", "mychart_reconcile_plan", "medical_timeline_plan"],
+	},
+	{
+		key: "mail",
+		blurb:
+			"Fastmail over the raw JMAP conduit (byte-exact methodCalls + auth + gates), plus the `mail` + `contact` namespace verbs on the one /mcp connector. Also: autonomous inbox triage (mail_triage) and its human-approved sibling (mail_triage_plan), generated delivery-time Sieve pre-filters (mail_sieve, mail_sieve_hc — text only, paste-and-install by hand), the same rules applied retroactively to mail already in the mailbox (mail_domain_backfill, mail_sieve_backfill), and human-approved duplicate-contact merging (contact_consolidate_plan).",
+		leaves: ["jmap", "mail", "contact", "mail_triage", "mail_triage_plan", "mail_sieve", "mail_sieve_hc", "mail_domain_backfill", "mail_sieve_backfill", "contact_consolidate_plan"],
+	},
 	{ key: "compose", blurb: "Server-side combinators — map+reduce (batch), parallel fetch (batch_fetch), and {{prev}}-piping (pipe).", leaves: ["batch", "batch_fetch", "pipe"] },
-	{ key: "meta", blurb: "This map (sux), the `fn` escape hatch (call any leaf by name), preferences, feedback issues (+ resolving them), self-diagnostics, and the autonomy-gate mirror.", leaves: ["sux", "fn", "preferences", "issue", "suggest", "feedback_resolve", "selftest", "autonomy_status"] },
+	{
+		key: "automation",
+		blurb:
+			"The proactive agent loop: detect life 'drops' and compose digests (agenda, briefing), the human-approval proposal inbox (proposals), the durable-run controller behind every `*_plan` fn (run), the self-model (onboard), outbound push + iMessage conduits (webpush, imessage), and the forensic audit log of what actually executed (audit_log). The `*_plan` family (contact_consolidate_plan, files_consolidate_plan, vault_consolidate_plan, vault_cross_link_plan, mail_triage_plan, medical_timeline_plan, mychart_reconcile_plan) share one shape — propose reversible changes, then PAUSE for one human approval before applying anything.",
+		leaves: [
+			"agenda",
+			"briefing",
+			"proposals",
+			"run",
+			"onboard",
+			"webpush",
+			"imessage",
+			"audit_log",
+			"contact_consolidate_plan",
+			"files_consolidate_plan",
+			"vault_consolidate_plan",
+			"vault_cross_link_plan",
+			"mail_triage_plan",
+			"medical_timeline_plan",
+			"mychart_reconcile_plan",
+		],
+	},
+	{
+		key: "meta",
+		blurb: "This map (sux), the `fn` escape hatch (call any leaf by name), preferences, feedback issues + feature requests (issue, suggest, feedback_resolve), self-diagnostics, and the autonomy-gate mirror.",
+		leaves: ["sux", "fn", "preferences", "issue", "suggest", "feedback_resolve", "selftest", "autonomy_status"],
+	},
 ];
 
 // The personal-data namespaces are reached by FRONT VERBS on the single `/mcp` connector,

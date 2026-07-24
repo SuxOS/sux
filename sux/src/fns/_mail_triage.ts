@@ -715,19 +715,16 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 	if (!dryRun && (acted.length || suggested.length)) {
 		const dled = ledger(env, "mail_triage_digest");
 		const digKey = `digest::${cycle}`;
-		if (!(await dled.seen(digKey))) {
-			try {
-				await deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, buildDigest({ cycle, mailbox, actEnabled: actAllowed, acted, suggested }));
-				await dled.mark(digKey);
-				digestWritten = true;
-			} catch (e) {
-				// A vault-append failure must never fail the cycle — the moves are already done + logged.
-				// But the human-visible record of what triage did must not vanish silently: log it and
-				// surface it in the report (digest_error for observability, error so runSubJob flips the
-				// heartbeat) so a persistent failure is observable rather than a buried false.
-				digestError = errMsg(e);
-				console.warn(`mail_triage: vault digest-append failed for cycle ${cycle} — ${digestError}`);
-			}
+		// once() (#1424): commit-after-success — a vault-append failure must never fail the
+		// cycle (the moves are already done + logged), but the human-visible record of what
+		// triage did must not vanish silently: log it and surface it in the report (digest_error
+		// for observability, error so runSubJob flips the heartbeat) so a persistent failure is
+		// observable rather than a buried false, and stays unmarked so the next cycle retries.
+		const { marked, error } = await dled.once(digKey, () => deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, buildDigest({ cycle, mailbox, actEnabled: actAllowed, acted, suggested })));
+		digestWritten = marked;
+		if (error) {
+			digestError = errMsg(error);
+			console.warn(`mail_triage: vault digest-append failed for cycle ${cycle} — ${digestError}`);
 		}
 	}
 

@@ -260,25 +260,32 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 		return { week, scanned, truncated, window_offset: windowOffset, error: true, note: `all ${scanPaths.length} note read(s) failed — nothing scanned, skipping digest and ledger mark` };
 	}
 
-	try {
-		await deps.digestAppend(env, `_meta/consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
-		await led.mark(key);
-		await led.mark(CURSOR_KEY, String(nextOffset));
-		await led.mark(
-			LAST_REPORT_KEY,
-			JSON.stringify({
-				week,
-				stale: stale.slice(0, MAX_CACHED_FINDINGS),
-				duplicate_candidates: duplicate_candidates.slice(0, MAX_CACHED_FINDINGS),
-				stale_count: stale.length,
-				duplicate_count: duplicate_candidates.length,
-			}),
-		);
-		return { week, scanned, truncated, window_offset: windowOffset, next_offset: nextOffset, stale, duplicate_candidates, digest_written: true };
-	} catch (e) {
-		const msg = `vault append failed: ${errMsg(e)}`;
+	// once() (#1424): commit-after-success — mark AFTER a successful write so a failed append
+	// retries next tick. `force: opts.force` lets an explicit re-run override an already-marked
+	// week (the plain `led.seen` early-return above already handled the non-force skip).
+	const { marked, error } = await led.once(
+		key,
+		async () => {
+			await deps.digestAppend(env, `_meta/consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
+			await led.mark(CURSOR_KEY, String(nextOffset));
+			await led.mark(
+				LAST_REPORT_KEY,
+				JSON.stringify({
+					week,
+					stale: stale.slice(0, MAX_CACHED_FINDINGS),
+					duplicate_candidates: duplicate_candidates.slice(0, MAX_CACHED_FINDINGS),
+					stale_count: stale.length,
+					duplicate_count: duplicate_candidates.length,
+				}),
+			);
+		},
+		{ force: opts.force === true },
+	);
+	if (error) {
+		const msg = `vault append failed: ${errMsg(error)}`;
 		return { week, scanned, truncated, window_offset: windowOffset, stale, duplicate_candidates, digest_written: false, error: msg, note: msg };
 	}
+	return { week, scanned, truncated, window_offset: windowOffset, next_offset: nextOffset, stale, duplicate_candidates, digest_written: marked };
 }
 
 /** The real deps: vault list/read/append via the obsidian fn (git-backed). Dynamically
