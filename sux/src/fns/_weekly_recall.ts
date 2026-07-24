@@ -203,15 +203,32 @@ export async function runWeeklyRecall(env: RtEnv, opts: WeeklyRecallOpts, deps: 
 		}
 	}
 
-	try {
+	// once() (#1424): commit-after-success — mark AFTER a successful write so a failed append
+	// retries next tick. once() itself has no force-bypass, so an explicit re-run (opts.force,
+	// reaching here despite an already-marked week since the plain `led.seen` early-return above
+	// only skips the non-force case) commits + marks directly instead of going through once().
+	const commitDigest = async () => {
 		await deps.digestAppend(env, `Weekly/${week}.md`, buildDigest(week, sections, reviewDue));
-		await led.mark(key); // mark AFTER a successful write so a failed append retries next tick
 		const content_hash = fingerprint(sections.map((s) => `${s.question}|${s.answer}`));
 		await led.mark(LAST_REPORT_KEY, JSON.stringify({ week, questions: questions.length, content_hash }));
-		return { week, questions: questions.length, digest_written: true };
-	} catch (e) {
-		return { week, questions: questions.length, digest_written: false, error: `vault append failed: ${errMsg(e)}` };
+	};
+	let marked = false;
+	let error: string | undefined;
+	if (opts.force) {
+		try {
+			await commitDigest();
+			await led.mark(key);
+			marked = true;
+		} catch (e) {
+			error = errMsg(e);
+		}
+	} else {
+		const r = await led.once(key, commitDigest);
+		marked = r.marked;
+		error = r.error;
 	}
+	if (error) return { week, questions: questions.length, digest_written: false, error: `vault append failed: ${error}` };
+	return { week, questions: questions.length, digest_written: marked };
 }
 
 /** The real deps: recall (cross-store fan-out+synthesis) and the git-backed vault append

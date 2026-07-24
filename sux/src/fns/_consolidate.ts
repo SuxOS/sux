@@ -260,9 +260,12 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 		return { week, scanned, truncated, window_offset: windowOffset, error: true, note: `all ${scanPaths.length} note read(s) failed — nothing scanned, skipping digest and ledger mark` };
 	}
 
-	try {
+	// once() (#1424): commit-after-success — mark AFTER a successful write so a failed append
+	// retries next tick. once() itself has no force-bypass, so an explicit re-run (opts.force,
+	// reaching here despite an already-marked week since the plain `led.seen` early-return above
+	// only skips the non-force case) commits + marks directly instead of going through once().
+	const commitDigest = async () => {
 		await deps.digestAppend(env, `_meta/consolidation/${week}.md`, buildDigest(week, days, stale, duplicate_candidates, scanned, truncated, windowOffset, paths.length));
-		await led.mark(key);
 		await led.mark(CURSOR_KEY, String(nextOffset));
 		await led.mark(
 			LAST_REPORT_KEY,
@@ -274,11 +277,27 @@ export async function runConsolidate(env: RtEnv, opts: { week?: string; force?: 
 				duplicate_count: duplicate_candidates.length,
 			}),
 		);
-		return { week, scanned, truncated, window_offset: windowOffset, next_offset: nextOffset, stale, duplicate_candidates, digest_written: true };
-	} catch (e) {
-		const msg = `vault append failed: ${errMsg(e)}`;
+	};
+	let marked = false;
+	let error: string | undefined;
+	if (opts.force) {
+		try {
+			await commitDigest();
+			await led.mark(key);
+			marked = true;
+		} catch (e) {
+			error = errMsg(e);
+		}
+	} else {
+		const r = await led.once(key, commitDigest);
+		marked = r.marked;
+		error = r.error;
+	}
+	if (error) {
+		const msg = `vault append failed: ${error}`;
 		return { week, scanned, truncated, window_offset: windowOffset, stale, duplicate_candidates, digest_written: false, error: msg, note: msg };
 	}
+	return { week, scanned, truncated, window_offset: windowOffset, next_offset: nextOffset, stale, duplicate_candidates, digest_written: marked };
 }
 
 /** The real deps: vault list/read/append via the obsidian fn (git-backed). Dynamically

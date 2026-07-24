@@ -1482,14 +1482,12 @@ export async function runAgenda(env: RtEnv, opts: AgendaOpts, deps: AgendaDeps):
 	const proposed: ProposedDrop[] = [];
 	if (!dryRun) {
 		for (const drop of drops) {
-			if (await led.seen(drop.dedupe)) continue;
-			try {
+			// once() (#1424): commit-after-success — propose() failing (e.g. transient KV) leaves
+			// the drop un-marked so a later tick retries it.
+			await led.once(drop.dedupe, async () => {
 				const p = await propose(env, { source: "agenda", kind: drop.kind, intent: drop.title, payload: drop.action, reversible: true, stakes: "low", evidence: drop.evidence });
 				proposed.push({ proposalId: p.id, drop });
-				await led.mark(drop.dedupe);
-			} catch {
-				// A propose() failure (e.g. transient KV) leaves the drop un-marked → retried next tick.
-			}
+			});
 		}
 	} else {
 		// Dry run: show what WOULD be proposed, with placeholder ids.

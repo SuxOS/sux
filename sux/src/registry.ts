@@ -379,6 +379,11 @@ export type RtEnv = Env &
 		// first cycle is suggest-only by construction. It never deletes.
 		MAIL_TRIAGE_ENABLED?: string;
 		MAIL_TRIAGE_ACT?: string;
+		// Optional per-op narrowing of MAIL_TRIAGE_ACT's allow-list (#1482): a comma-separated
+		// subset of AUTO_ACT_OPS (e.g. "label:add" or "label:add,archive"), INTERSECTED with it so
+		// this can only shrink what may act, never widen it. Unset ⇒ every AUTO_ACT_OPS op is
+		// allowed (today's behavior). See fns/_mail_triage.ts's armedActOps.
+		MAIL_TRIAGE_ACT_OPS?: string;
 
 		// Auto-start the DURABLE, human-approved sibling of mail-triage (fns/mail_triage_plan.ts
 		// + op-engine's mail-triage-plan op) on the frequent cron, so the ask-gate + reminder
@@ -774,6 +779,16 @@ export type ToolAnnotations = {
 export type Fn = {
 	name: string;
 	description: string;
+
+	// Optional short (~1-line) summary served on tools/list IN PLACE OF the full
+	// `description` (see toolList's fallback below) — for a fn whose full
+	// description is long, tools/list is served on every client connection and
+	// gets cached client-side as part of the system prompt, so a short, STABLE
+	// (no dynamic content) summary keeps that cache lean. `description` itself is
+	// untouched and still served in full via `sux({domain})`/`/llms.txt`
+	// (_surface.ts's renderDomain/renderOverview). Unset falls back to `description`.
+	descShort?: string;
+
 	inputSchema: unknown;
 
 	cacheable?: boolean;
@@ -885,7 +900,7 @@ export function toolList(
 		const annotations = f.annotations ?? TOOL_ANNOTATIONS[f.name];
 		const base: { name: string; description: string; inputSchema: unknown; annotations?: ToolAnnotations; _meta?: Record<string, unknown> } = {
 			name: f.name,
-			description: f.description,
+			description: f.descShort ?? f.description,
 			inputSchema: f.inputSchema,
 		};
 		if (annotations) base.annotations = annotations;

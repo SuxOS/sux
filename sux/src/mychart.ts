@@ -48,12 +48,36 @@ export const MYCHART_ORGS: Record<string, { name: string; fhirBase: string; link
 	evergreen: { name: "EvergreenHealth (WA)", fhirBase: "https://epicproxy.et1270.epichosted.com/apiproxyprd/api/FHIR/R4" },
 };
 
+// The grant (below) is the ONE irreplaceable row OAUTH_KV holds for this org — every
+// other key here (token/smartcfg/pkce) is disposable cache, TTL'd and cheaply
+// re-derived. Losing the grant means re-running the interactive OAuth dance by hand
+// (#1460). writeGrant mirrors it to R2 (see grantBackupKey) so a namespace-level
+// OAUTH_KV wipe (bulk delete, incident recreate — the realistic loss vector, not
+// application code) doesn't strand the org.
 const grantKey = (org: string): string => `sux:mychart:grant:${org}`;
 const accessTokenKey = (org: string): string => `sux:mychart:token:${org}`;
 const smartCfgKey = (org: string): string => `sux:mychart:smartcfg:${org}`;
 // PKCE state is already unique per login attempt, so it keeps one shared key
 // namespace; the org rides inside the stored blob (§2.2) instead of a suffix.
 const pkceKey = (state: string): string => `sux:mychart:pkce:${state}`;
+// Versioned by issued_at (changes on every mint/rotation) so a rotation never
+// clobbers the prior backup — a recovery reads can list the prefix and take the
+// newest. Under PHI_PREFIX so it inherits the existing R2 fence (observability.ts's
+// /s/<uuid> handler and store.ts both refuse to serve/list anything under phi/).
+const grantBackupKey = (org: string, issuedAt: number): string => `${PHI_PREFIX}mychart/grants-backup/${org}/${issuedAt}.json`;
+
+/** Persist a grant to OAUTH_KV (the source of truth used by every reader) and best-effort
+ *  mirror it to R2 as a recovery backup (#1460). The R2 mirror is disposable-safe-to-lose in
+ *  the other direction — if it fails, the grant still works normally; only the disaster-
+ *  recovery path is degraded, so failures are swallowed rather than surfaced to the caller. */
+async function writeGrant(env: RtEnv, org: string, grant: MychartGrant): Promise<void> {
+	await env.OAUTH_KV?.put(grantKey(org), JSON.stringify(grant));
+	try {
+		await env.R2?.put(grantBackupKey(org, grant.issued_at), JSON.stringify(grant), { httpMetadata: { contentType: "application/json" } });
+	} catch {
+		// Best-effort — see doc comment above.
+	}
+}
 
 // USCDI-only patient read scopes preserve Epic's Automatic Client ID Distribution
 // (§1 / D4). offline_access is what mints the durable refresh token.
@@ -233,7 +257,7 @@ export async function mintAccessToken(env: RtEnv, org: string): Promise<string> 
 	// replays a spent token and the grant dies.
 	if (typeof json.refresh_token === "string" && json.refresh_token && json.refresh_token !== grant.refresh_token) {
 		const updated: MychartGrant = { ...grant, refresh_token: json.refresh_token, issued_at: Date.now(), patient: json.patient ?? grant.patient, scope: json.scope ?? grant.scope };
-		await env.OAUTH_KV?.put(grantKey(org), JSON.stringify(updated));
+		await writeGrant(env, org, updated);
 	}
 	await cacheAccessToken(env, org, String(json.access_token), json.expires_in);
 	return String(json.access_token);
@@ -1493,7 +1517,7 @@ export async function handleMychartRoutes(url: URL, request: Request, env: RtEnv
 			}
 			if (typeof json.refresh_token === "string" && json.refresh_token) {
 				const grant: MychartGrant = { refresh_token: json.refresh_token, patient: json.patient, scope: json.scope, issued_at: Date.now() };
-				await env.OAUTH_KV?.put(grantKey(org), JSON.stringify(grant));
+				await writeGrant(env, org, grant);
 			}
 			await cacheAccessToken(env, org, String(json.access_token), json.expires_in);
 			const hasRefresh = Boolean(json.refresh_token);

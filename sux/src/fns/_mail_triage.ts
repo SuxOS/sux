@@ -112,11 +112,35 @@ export type TriageOp = { kind: "archive" } | { kind: "unarchive" } | { kind: "un
 // projects to its off-list token and is rejected by the guard rather than failing to type-check.
 const opToken = (op: TriageOp): string => (op.kind === "label" ? (op.add ? "label:add" : "label:remove") : op.kind);
 
-/** Guard: is this op on the auto-act allow-list? The ACTION_FOR ops (label:add, archive,
- *  unarchive/undelete, draft-reply) pass; a label-REMOVE fails here — defense-in-depth so a
- *  future classifier can never smuggle an attention-reducing label-remove (or any other
- *  non-allow-listed action) past the confidence gate. */
-export const isAutoActAllowed = (op: TriageOp): boolean => (AUTO_ACT_OPS as readonly string[]).includes(opToken(op));
+/** Optional per-op narrowing of the allow-list (#1482): MAIL_TRIAGE_ACT_OPS, a comma-separated
+ *  list INTERSECTED with AUTO_ACT_OPS — never unioned, so a typo/stale value/injected string can
+ *  only NARROW what may act, never widen it or introduce an op (label:remove, delete) that isn't
+ *  already vetted in the code constant. Unset → the full AUTO_ACT_OPS set (today's behavior,
+ *  unchanged). Empty/whitespace/unparseable (no requested token matches a real op) → the EMPTY
+ *  set, i.e. fails CLOSED — same convention as `flagOn`. Lets the auto-act rollout be ramped
+ *  op-by-op (e.g. `label:add` first, then `archive`, then `draft-reply`) instead of all-or-nothing. */
+function armedActOps(env?: RtEnv): ReadonlySet<string> {
+	// Distinguish UNSET (env var absent → today's behavior, every op allowed) from explicitly
+	// set-but-empty/whitespace (→ fails closed, below) — unlike flagOn, "" here is NOT the same
+	// state as "unset", since the empty set is the fail-closed state for an allow-list, not the
+	// default.
+	if (!env || env.MAIL_TRIAGE_ACT_OPS === undefined) return new Set<string>(AUTO_ACT_OPS);
+	const requested = new Set(
+		env.MAIL_TRIAGE_ACT_OPS
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean),
+	);
+	return new Set((AUTO_ACT_OPS as readonly string[]).filter((op) => requested.has(op)));
+}
+
+/** Guard: is this op on the (optionally narrowed, see armedActOps) auto-act allow-list? The
+ *  ACTION_FOR ops (label:add, archive, unarchive/undelete, draft-reply) pass by default; a
+ *  label-REMOVE fails here regardless of `env` — defense-in-depth so a future classifier can
+ *  never smuggle an attention-reducing label-remove (or any other non-allow-listed action) past
+ *  the confidence gate. `env` is optional so existing callers (and tests) that don't need the
+ *  per-op narrowing keep exercising the full, unrestricted allow-list. */
+export const isAutoActAllowed = (op: TriageOp, env?: RtEnv): boolean => armedActOps(env).has(opToken(op));
 
 /** Classifier label → the reversible op to take, or null = never auto-act. Every "obvious"
  *  category TAGS (a non-hiding `label:add`) rather than archiving — a mislabel is a one-call
@@ -633,7 +657,7 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 			// safe direction, and you always want to SEE important bank/health mail, so it may still auto-add.
 			const sensitive = isSensitiveSender(String(m.from ?? "")) && c.label !== "important";
 			// Allow-list guard sits BEFORE the confidence gate: an op not on AUTO_ACT_OPS can never act.
-			const wouldAct = !sensitive && !!op && isAutoActAllowed(op) && c.confidence >= bar;
+			const wouldAct = !sensitive && !!op && isAutoActAllowed(op, env) && c.confidence >= bar;
 			const rec = op ? opRecord(op, mailbox, m.mailboxes) : null;
 			let markSeen = false;
 			// This message's log entry, persisted BEFORE led.mark below (see the ordering note).
@@ -715,19 +739,16 @@ export async function runTriage(env: RtEnv, opts: TriageOpts, deps: TriageDeps):
 	if (!dryRun && (acted.length || suggested.length)) {
 		const dled = ledger(env, "mail_triage_digest");
 		const digKey = `digest::${cycle}`;
-		if (!(await dled.seen(digKey))) {
-			try {
-				await deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, buildDigest({ cycle, mailbox, actEnabled: actAllowed, acted, suggested }));
-				await dled.mark(digKey);
-				digestWritten = true;
-			} catch (e) {
-				// A vault-append failure must never fail the cycle — the moves are already done + logged.
-				// But the human-visible record of what triage did must not vanish silently: log it and
-				// surface it in the report (digest_error for observability, error so runSubJob flips the
-				// heartbeat) so a persistent failure is observable rather than a buried false.
-				digestError = errMsg(e);
-				console.warn(`mail_triage: vault digest-append failed for cycle ${cycle} — ${digestError}`);
-			}
+		// once() (#1424): commit-after-success — a vault-append failure must never fail the
+		// cycle (the moves are already done + logged), but the human-visible record of what
+		// triage did must not vanish silently: log it and surface it in the report (digest_error
+		// for observability, error so runSubJob flips the heartbeat) so a persistent failure is
+		// observable rather than a buried false, and stays unmarked so the next cycle retries.
+		const { marked, error } = await dled.once(digKey, () => deps.digestAppend(env, `${vaultDailyDir(env)}/${vaultToday(env.VAULT_TZ)}.md`, buildDigest({ cycle, mailbox, actEnabled: actAllowed, acted, suggested })));
+		digestWritten = marked;
+		if (error) {
+			digestError = error;
+			console.warn(`mail_triage: vault digest-append failed for cycle ${cycle} — ${digestError}`);
 		}
 	}
 
