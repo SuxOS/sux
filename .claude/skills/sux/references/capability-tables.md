@@ -136,6 +136,10 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 
 ## Infrastructure & meta
 
+`issue`/`suggest` are front verbs (callable directly, per the front-door list in SKILL.md).
+Every other row here is a **leaf** — not on `tools/list`, reach it with `fn({name, args})`,
+e.g. `fn({name:"selftest"})`.
+
 | Intent | Function |
 |---|---|
 | Probe the fetch ladder — which rungs are up | `selftest` |
@@ -143,4 +147,5 @@ call `json` with CSV or YAML in, `csv` with JSON in.
 | Read your Tailscale tailnet control plane | `tailscale` |
 | Report a bug / wrong output from a sux tool | `issue { tool, text }` (lands in the server-side feedback log) |
 | Request a new sux capability / feature | `suggest { text }` (logs a feature request to the same server-side feedback log) |
+| Mark a feedback-log entry resolved/superseded (e.g. once filed to GitHub) | `feedback_resolve { at, kind?, tracked_by? }` (GET /feedback excludes resolved entries by default; `?all=true` to see them) |
 | Which act-on-your-behalf surfaces are ARMED right now | `autonomy_status` (read-only booleans — mail-triage / Mode-B Dropbox writes / self-improve loop / cron trigger, each with its consequence + reversibility; never secret VALUES, never cached) |

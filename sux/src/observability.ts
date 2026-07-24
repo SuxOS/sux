@@ -2,7 +2,8 @@
 // engine:
 //   GET /metrics  — usage metrics as JSON (?format=prometheus for scraping)
 //   GET /logs     — rolling call log with metric fields (JSON; ?tool= / ?limit= )
-//   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?tool= / ?limit= )
+//   GET /feedback — server-side issue/suggest backlog (JSON; ?type= / ?tool= / ?limit= /
+//                   ?all=true to include entries already resolved via `feedback_resolve`)
 //   GET /llms.txt — the capability map as markdown (CDN-cacheable, no secrets)
 // `/health` is intentionally NOT handled here: it falls through to the richer
 // browsable page in github-handler.ts (residential-egress stats). Returns null
@@ -160,12 +161,19 @@ export async function handleObservability(url: URL, request: Request, env: RtEnv
 		const t = url.searchParams.get("type");
 		const kind: FeedbackKind | undefined = t === "issue" || t === "suggest" ? t : undefined;
 		const limit = Math.min(Number(url.searchParams.get("limit")) || 50, 500);
-		const items = await readFeedback(env, kind, limit, url.searchParams.get("tool") ?? undefined);
+		const all = url.searchParams.get("all") === "true";
+		const items = await readFeedback(env, kind, limit, url.searchParams.get("tool") ?? undefined, all);
 		// Explicit allowlist, NOT a spread — same policy as /logs above, so any future
 		// FeedbackEntry field can't silently leak to this unauthenticated view.
 		return json({
 			count: items.length,
-			items: items.map((e) => ({ kind: e.kind, text: e.text, at: new Date(e.at).toISOString(), ...(e.tool ? { tool: e.tool } : {}) })),
+			items: items.map((e) => ({
+				kind: e.kind,
+				text: e.text,
+				at: new Date(e.at).toISOString(),
+				...(e.tool ? { tool: e.tool } : {}),
+				...(e.resolved ? { resolved: { at: new Date(e.resolved.at).toISOString(), ...(e.resolved.tracked_by ? { tracked_by: e.resolved.tracked_by } : {}) } } : {}),
+			})),
 		});
 	}
 
