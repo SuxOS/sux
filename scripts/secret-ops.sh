@@ -239,13 +239,19 @@ cmd_sync_all() {
   op_preflight || exit 1
   local titles; titles="$(op_titles)"
   $APPLY || echo "DRY RUN — re-run with --apply to actually push"
-  for t in $titles; do
+  # `while read` not `for t in $titles`: op titles contain spaces ("GitHub PAT
+  # (colinxs)", "Epic FHIR sux - PROD") and word-splitting would treat each
+  # fragment as its own secret name (same fix as cmd_audit above).
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
     case "$t" in
       [A-Z]*) ;;
       *) continue ;;
     esac
     if $APPLY; then push "$t" "$TO_WORKER" "$TO_GITHUB" || true; else echo "  would push  $t"; fi
-  done
+  done <<EOF
+$titles
+EOF
 }
 
 # Walk everything live on a store but missing from op, in one pass. There is no bulk
