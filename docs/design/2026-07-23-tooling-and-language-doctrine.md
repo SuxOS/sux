@@ -105,3 +105,12 @@ The distilled rules (quote globs, per-call `cd`, never `jq | wc -l`, inspect key
 belong folded into the existing shell-gotchas section of the operator `CLAUDE.md` rather than kept
 here — that file is what actually gets read at session start. This doc is the derivation; that is the
 enforcement.
+
+
+## Boundary discipline (ratified refinements — 2026-07-24)
+
+Two clauses that sharpen the core "schema at the boundary" rule, ratified during the sx spitball stream:
+
+1. **Script → tool graduation (spitball #28).** The "standalone repo scripts → Python 3, stdlib" row holds *only while the thing is a one-off script*. When a script grows into a **coherent tool doing structured-data processing** (frontmatter, a graph, typed records) where untyped field-access causes **silent** bugs, it graduates to **sx/Rust**. Test: is it a script, or a tool with a shared library + tests processing structured data? The vault tooling (`_vaultlib` + `health/`) is the exemplar that graduated (sx#19).
+
+2. **Bidirectional boundary — one type, both sides (spitball #36).** Every **input** boundary validates against a typed struct's derived schema (`schemars` → JSON Schema); every **output** boundary renders from a template over that **same** typed struct (`askama` compile-time / `minijinja` runtime). The Rust type is the single source of truth for both boundaries. This makes idempotence free (`render` is pure) and generated-artifact drift impossible (there is no hand-edited copy). The vault (frontmatter schema + note templates) is the exemplar; generalize it fabric-wide (sx#24).
