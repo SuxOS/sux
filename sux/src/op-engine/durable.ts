@@ -160,6 +160,9 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 		}
 		case "map": {
 			const items: any[] = input;
+			if (!Array.isArray(items)) {
+				throw new Error(`map at '${path}' expected an array input, got ${items === undefined ? "undefined" : typeof items} — this op needs its input pre-fetched/shaped by its calling fn (see registry.ts's header note), not run bare with no {input}.`);
+			}
 			if (items.length > MAP_FANOUT_CEILING) {
 				// TODO(slice-2-scale): split into child workflows via env.OP_WORKFLOW.create()
 				// above this ceiling, awaited by polling instance status.
@@ -182,7 +185,10 @@ export async function interpretDurable(node: Op, input: any, step: WorkflowStep,
 		}
 		case "mapField": {
 			const obj = input as Record<string, unknown>;
-			const items = obj[node.arrayField] as any[];
+			const items = obj?.[node.arrayField] as any[];
+			if (!Array.isArray(items)) {
+				throw new Error(`mapField at '${path}' expected an array at field '${node.arrayField}', got ${items === undefined ? "undefined" : typeof items} — check the op tree's input shape.`);
+			}
 			if (items.length > MAP_FANOUT_CEILING) {
 				// TODO(slice-2-scale): split into child workflows via env.OP_WORKFLOW.create()
 				// above this ceiling, awaited by polling instance status.

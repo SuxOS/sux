@@ -1,12 +1,12 @@
 import { fail, failWith, type RtEnv, type ToolResult } from "./registry";
 import { hasAI } from "./ai";
-import { staged } from "./stage";
+import { staged, type FieldDiff } from "./stage";
 import { jmap } from "./fns/jmap";
 import { doUpload, downloadBlobBytes, jstr, scopeProbe, submissionMaxDelayedSend } from "./fns/_jmap";
 import { embedOne } from "./fns/_embed";
 import { mailSemanticIndex, topKMailByCosine } from "./fns/_mail_semantic";
 import { contactSemanticIndex, topKContactByCosine } from "./fns/_contact_semantic";
-import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, dateProp, hasCalDav, icalDateToIso, listCalendars, parseICal, replaceProps, reportObjects, textProp } from "./fns/_caldav";
+import { buildVEvent, buildVTodo, CALDAV_NOT_CONFIGURED, type CalendarRef, caldavFetch, calendarHome, dateProp, hasCalDav, icalDateToIso, listCalendars, parseICal, replaceProps, reportObjects, splitPropName, textProp } from "./fns/_caldav";
 import { htmlToMd } from "./fns/_markup";
 import { errMsg, putBlob, storeBase } from "./fns/_util";
 import { dropboxPut, hasDropbox } from "./fns/dropbox";
@@ -279,9 +279,32 @@ function buildCalSets(a: any, comp: "VEVENT" | "VTODO", tz: Record<string, strin
 
 /** The fields a caller meaningfully changed (excludes the always-stamped DTSTAMP + COMPLETED consequences). */
 const CHANGE_KEYS = ["SUMMARY", "DESCRIPTION", "DTSTART", "DTEND", "LOCATION", "DUE", "STATUS"];
+const DATE_KEYS = new Set(["DTSTART", "DTEND", "DUE"]);
 
-/** Shared cal_update/task_update/task_complete: GET the object, rewrite the requested properties in
- *  place (UID/alarms/timezone-encoding preserved), PUT with an If-Match guard. Stage-then-commit. */
+/** A generated property LINE (from dateProp/textProp, e.g. `DTSTART;TZID=x:20260101T120000`) or a
+ *  parsed-object's raw value → its resolved, human-readable form for a rich stage preview. Date
+ *  fields resolve through icalDateToIso (so a TZID re-anchor is visible as an actual wall-clock/zone
+ *  change, not just a touched field name); text fields are unescaped. `null` (a delete) stays `null`. */
+function humanizeCalValue(name: string, line: string | null): string | null {
+	if (line === null) return null;
+	const idx = line.indexOf(":");
+	const namePart = idx >= 0 ? line.slice(0, idx) : name;
+	const raw = idx >= 0 ? line.slice(idx + 1) : line;
+	const { params } = splitPropName(namePart);
+	if (DATE_KEYS.has(name)) {
+		try {
+			return icalDateToIso(raw, params).iso;
+		} catch {
+			return raw;
+		}
+	}
+	return raw.replace(/\\([\\nN,;])/g, (_, c) => (c === "n" || c === "N" ? "\n" : c));
+}
+
+/** Shared cal_update/task_update/task_complete: GET the object (once — its result feeds both the
+ *  rich stage preview and the eventual PUT, so staging costs no extra round trip beyond the read
+ *  every mutate already needed), rewrite the requested properties in place (UID/alarms/timezone-
+ *  encoding preserved), PUT with an If-Match guard. Stage-then-commit. */
 async function calPatch(env: RtEnv, a: any, comp: "VEVENT" | "VTODO"): Promise<ToolResult> {
 	const noun = comp === "VTODO" ? "task" : "event";
 	if (!hasCalDav(env)) return failWith("not_configured", CALDAV_NOT_CONFIGURED);
@@ -300,23 +323,29 @@ async function calPatch(env: RtEnv, a: any, comp: "VEVENT" | "VTODO"): Promise<T
 	const fields: Record<string, unknown> = {};
 	for (const k of ["summary", "start", "end", "description", "location", "due", "status"]) if (a?.[k] !== undefined) fields[k] = a[k];
 	const payload = { href, comp, complete: a?._complete === true, etag: a?.etag ?? null, ...fields };
-	const preview = { action: a?._complete ? "complete task" : `update ${noun}`, href, changes: changed };
-	const mutate = async () => {
+	try {
 		const cur = await caldavFetch(env, "GET", href);
-		if (cur.status === 404) throw new NotFound(`no ${noun} at '${href}' — list it with ${comp === "VTODO" ? "task_list" : "cal_events"}.`);
-		if (!cur.ok) throw new Error(`fetch-for-update failed: HTTP ${cur.status}`);
+		if (cur.status === 404) return failWith("not_found", `no ${noun} at '${href}' — list it with ${comp === "VTODO" ? "task_list" : "cal_events"}.`);
+		if (!cur.ok) return failWith("upstream_error", `fetch-for-update failed: HTTP ${cur.status}`);
 		// Read back the stored object's current TZID (if any) on the properties we're about to
 		// rewrite, so a start/end/due change re-anchors to the SAME zone instead of dropping it.
 		const curComp = parseICal(cur.text).find((c) => c.component === comp);
 		const tz = { DTSTART: curComp?.params?.DTSTART?.TZID ?? null, DTEND: curComp?.params?.DTEND?.TZID ?? null, DUE: curComp?.params?.DUE?.TZID ?? null };
-		const body = replaceProps(cur.text, comp, buildCalSets(a, comp, tz));
-		const ifMatch = a?.etag ? String(a.etag) : (cur.etag ?? undefined);
-		const r = await caldavFetch(env, "PUT", href, { body, contentType: "text/calendar; charset=utf-8", ...(ifMatch ? { ifMatch } : {}) });
-		if (r.status === 412) throw new Conflict(`${noun} update rejected — etag mismatch, the object changed since it was read: refetch and retry.`);
-		if (!r.ok) throw new Error(`${noun} update failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
-		return { updated: true, href, etag: r.etag, changed };
-	};
-	try {
+		const nextSets = buildCalSets(a, comp, tz);
+		const diff: FieldDiff[] = changed.map((field) => ({
+			field,
+			from: DATE_KEYS.has(field) && curComp?.props?.[field] ? icalDateToIso(curComp.props[field], curComp.params?.[field]).iso : (curComp?.props?.[field] ?? null),
+			to: humanizeCalValue(field, nextSets[field] ?? null),
+		}));
+		const preview = { action: a?._complete ? "complete task" : `update ${noun}`, href, changes: diff };
+		const mutate = async () => {
+			const body = replaceProps(cur.text, comp, nextSets);
+			const ifMatch = a?.etag ? String(a.etag) : (cur.etag ?? undefined);
+			const r = await caldavFetch(env, "PUT", href, { body, contentType: "text/calendar; charset=utf-8", ...(ifMatch ? { ifMatch } : {}) });
+			if (r.status === 412) throw new Conflict(`${noun} update rejected — etag mismatch, the object changed since it was read: refetch and retry.`);
+			if (!r.ok) throw new Error(`${noun} update failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
+			return { updated: true, href, etag: r.etag, changed };
+		};
 		const out = await staged(env, kind, gateArgs(a), payload, preview, mutate);
 		return ok("stageResult" in out ? out.stageResult : out.result);
 	} catch (e) {

@@ -710,3 +710,15 @@ fails the build if they drift. After bumping both, tag `vX.Y.Z` and push the tag
 deploy (`--var`, not committed to `wrangler.jsonc`), so `selftest`'s `version`
 field answers "what's live in production" — `SUX_VERSION` is unset outside
 deploy.yml (local `wrangler dev`, tests), so `selftest` reports `null` there.
+
+## `run({op, mode:"durable"})` called with no/wrong `{input}` (#1421)
+
+A composable op whose tree is documented as needing pre-fetched input (e.g. `mail-triage-plan`
+expects `TriageMsg[]`, fetched by `mail_triage_plan`'s own fn before it calls `runVerb` — see
+`op-engine/registry.ts`'s header note on why: a leaf only ever sees `caps`, never `env`) used to
+crash immediately with an opaque `Cannot read properties of undefined (reading 'length')` when
+called bare via `run` with no `{input}` (or the wrong shape) — `durable.ts`'s `map`/`mapField`
+cases did `input.length` with no type guard. Fixed to throw a clear "expected an array input"
+error instead. The lesson: an op tree documented as needing a specific input shape must be run
+through its FN wrapper (e.g. `mail_triage_plan`, not a bare `run({op:'mail-triage-plan'})`) —
+calling the raw op directly skips whatever env-needing fetch/shaping the wrapper fn does.
