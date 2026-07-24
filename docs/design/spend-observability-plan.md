@@ -5,7 +5,7 @@ status: draft (plumbing step 1 shipped — see #1061)
 
 # Spend observability plan
 
-Track E of `docs/knowledge/master-plan.md` calls for "Grafana billing dashboards —
+Track E of [Sux-Master-Plan (vault)](https://github.com/SuxOS/vault/blob/main/07-archive/Sux-Master-Plan.md) calls for "Grafana billing dashboards —
 make 'efficient' a gauge you watch (spend + free-credit-usage visible)." This is a
 design note, not a shipped dashboard: the underlying data isn't wired up yet, and a
 dashboard with panels pointing at nothing would be worse than no dashboard.

@@ -4,7 +4,7 @@ Status: draft / scoping · Date: 2026-07-23
 Scope: `sux` (MCP worker) · `suxlib` (op-engine) · a new D1 binding · reuses Vectorize
 Builds on: `2026-07-23-self-hosted-compute-and-model-tiering.md`,
 `2026-07-23-self-hosted-compute-implementation-plan.md` (the substrate arc / "the machine"),
-`2026-07-23-next-arc-capabilities-brainstorm-seed.md` (this arc's handoff)
+[Sux-Next-Arc-Capabilities-Seed (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-Next-Arc-Capabilities-Seed.md) (this arc's handoff)
 Feeds back into: Phase 0.5 (glue spine) — see the addendum in the implementation-plan doc
 
 ## 0. Thesis — the wedge the seed asked for

@@ -5,7 +5,7 @@ status: executing
 
 # Execution plan — serial chunks, each internally parallel, land green + deploy before next
 
-Anchored to `north-star.md`. Mode: **maximally deployed, maximally secure, minimally PR-staged,
+Anchored to [Sux-North-Star (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-North-Star.md). Mode: **maximally deployed, maximally secure, minimally PR-staged,
 bounded deadline.** Autonomy granted. Guardrails: keep `main` green; never touch creds/secrets or
 irreversible real-account acts unattended; reversible-only for anything auto-applied.
 

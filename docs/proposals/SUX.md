@@ -9,12 +9,12 @@ updated: 2026-07-09
 ---
 
 > **Status: current product thesis — as amended by
-> `pivot-validation-2026-07.md`** (GO on
+> [Sux-Pivot-Validation (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-Pivot-Validation.md)** (GO on
 > the store, NO-GO on the slogan; the core includes a query/index/integrity layer,
 > not just four git verbs). Canonical reading order:
-> `north-star.md` (principles) → this doc →
+> [Sux-North-Star (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-North-Star.md) (principles) → this doc →
 > [`op-engine-design.md`](../superpowers/specs/2026-07-15-suxos-v2-op-engine-design.md)
-> (execution architecture) → `PLAN.md` / `ROADMAP.md`
+> (execution architecture) → `PLAN.md` / [Sux-Build-Program-Roadmap (vault)](https://github.com/SuxOS/vault/blob/main/07-archive/Sux-Build-Program-Roadmap.md)
 > (historical/parked).
 
 # sux — the core and the tools on it

@@ -1,8 +1,8 @@
 # Mail — hand-installed Sieve artifacts
 
 Generated Sieve scripts staged for **manual** installation into Fastmail. Per the
-standing doctrine (docs/knowledge/product-vision-and-roadmap.md, restated in
-docs/design/personal-agent-roadmap.md W9 and docs/proposals/archive/jmap.md D5),
+standing doctrine ([Sux-Product-Vision-And-Roadmap (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-Product-Vision-And-Roadmap.md), restated in
+[Sux-Personal-Agent-Roadmap (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-Personal-Agent-Roadmap.md) W9 and docs/proposals/archive/jmap.md D5),
 sux **never installs a Sieve script via token** — Sieve/rule JMAP methods are a
 gated, lasting-effect capability class, so the floor is generate-and-paste.
 

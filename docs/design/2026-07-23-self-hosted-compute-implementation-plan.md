@@ -297,7 +297,7 @@ Depends on 0b/0c (vendor-axis consent).
 
 The *payoff* features the substrate unlocks are deliberately a **separate arc** (build on the
 spine, don't fold in). Seeded for continuation in
-`2026-07-23-next-arc-capabilities-brainstorm-seed.md`: persistent store/graph on the box
+[Sux-Next-Arc-Capabilities-Seed (vault)](https://github.com/SuxOS/vault/blob/main/04-projects/SuxOS/Sux-Next-Arc-Capabilities-Seed.md): persistent store/graph on the box
 (retire KV-cosine; a graph substrate for the knowledge graph / person-NER), multimodal recall
 (Immich CLIP + Whisper into the same recall/graph), a personal on-prem fine-tune/LoRA (the
 tight-integration north star), an always-on event agent (Home Assistant as source *and* sink),

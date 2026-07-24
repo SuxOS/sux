@@ -1,6 +1,6 @@
 # SuxOS refactor runbook (executable)
 
-> **STATUS: DONE (2026-07-13).** The colinxs/sux → SuxOS/sux transfer, secret re-provisioning, and org-repo setup described below all completed tonight. Kept as historical record of the executed runbook — not a live instruction set. See docs/knowledge/master-plan.md for current state.
+> **STATUS: DONE (2026-07-13).** The colinxs/sux → SuxOS/sux transfer, secret re-provisioning, and org-repo setup described below all completed tonight. Kept as historical record of the executed runbook — not a live instruction set. See [Sux-Master-Plan (vault)](https://github.com/SuxOS/vault/blob/main/07-archive/Sux-Master-Plan.md) for current state.
 
 The step-by-step execution of the split described in `org-structure-and-refactor-plan.md`
 (strategy). Grounded in the current `colinxs/sux` layout. Do the phases in order.
