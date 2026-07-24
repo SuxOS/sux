@@ -320,7 +320,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 			const args = fn.raw ? rawArgs : normalizeArgs(rawArgs);
 			const schemaErr = validateInputSchema(fn.inputSchema, args);
 			if (schemaErr) return sseResponse({ jsonrpc: "2.0", id, result: failWith("bad_input", schemaErr) });
-			const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8), login } };
+			const rtEnv: RtEnv = { ...env, _egress: newRequestContext(ctx, { reqId: crypto.randomUUID().slice(0, 8), login, deadlineMs: FN_DEADLINE_MS, now: Date.now() }) };
 			const taskField = rpc.params.task as { ttl?: unknown } | null;
 			const rec = createTask(env, ctx, name, taskField && typeof taskField === "object" ? taskField.ttl : undefined, async () => {
 				const ran = await withDeadline(name, FN_DEADLINE_MS, fn.run(rtEnv, args));
@@ -406,7 +406,7 @@ export async function handleRpc(env: RtEnv, ctx: ExecutionContext, rpc: JsonRpc 
 		// same isolate can't clobber each other's reqId or call ctx.waitUntil on the
 		// other's (possibly completed) context, the bug of parking it on the shared
 		// env. Inert unless Grafana is configured (shipEgress no-ops otherwise).
-		const rtEnv: RtEnv = { ...env, _egress: { ctx, reqId: crypto.randomUUID().slice(0, 8), login } };
+		const rtEnv: RtEnv = { ...env, _egress: newRequestContext(ctx, { reqId: crypto.randomUUID().slice(0, 8), login, deadlineMs: FN_DEADLINE_MS, now: Date.now() }) };
 		const key = fn.cacheable ? await cacheKey(summarize ? `${name}::summarize` : name, args) : null;
 		// The close path for one successful run: normalize the text output, optionally
 		// summarize it, then schedule the (single) cache write and return the cleaned
