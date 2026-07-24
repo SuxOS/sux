@@ -9,12 +9,12 @@ updated: 2026-07-09
 ---
 
 > **Status: current product thesis — as amended by
-> [`pivot-validation-2026-07.md`](../design/pivot-validation-2026-07.md)** (GO on
+> `pivot-validation-2026-07.md`** (GO on
 > the store, NO-GO on the slogan; the core includes a query/index/integrity layer,
 > not just four git verbs). Canonical reading order:
-> [`north-star.md`](../design/north-star.md) (principles) → this doc →
+> `north-star.md` (principles) → this doc →
 > [`op-engine-design.md`](../superpowers/specs/2026-07-15-suxos-v2-op-engine-design.md)
-> (execution architecture) → `PLAN.md` / [`ROADMAP.md`](ROADMAP.md)
+> (execution architecture) → `PLAN.md` / `ROADMAP.md`
 > (historical/parked).
 
 # sux — the core and the tools on it

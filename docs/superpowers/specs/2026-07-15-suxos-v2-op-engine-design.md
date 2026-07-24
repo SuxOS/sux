@@ -7,10 +7,10 @@
 
 > **Status: execution architecture** — third in the canonical vision-corpus
 > reading order (2026-07-16, Ledger R8):
-> [`north-star.md`](../../design/north-star.md) (principles) →
+> `north-star.md` (principles) →
 > [`SUX.md`](../../proposals/SUX.md) (product thesis, amended by
-> [`pivot-validation-2026-07.md`](../../design/pivot-validation-2026-07.md)) →
-> this doc → `PLAN.md` / [`ROADMAP.md`](../../proposals/ROADMAP.md)
+> `pivot-validation-2026-07.md`) →
+> this doc → `PLAN.md` / `ROADMAP.md`
 > (historical/parked).
 
 ---
