@@ -1,58 +1,58 @@
 #!/usr/bin/env bash
-# secret-sync — 1Password is the source of truth; push a secret from op to the
-# Cloudflare Worker and/or GitHub Actions stores. BOTH of those stores are
-# WRITE-ONLY (no `wrangler secret get`, no `gh secret get`), so op is the only
-# place a value can ever be read back from — hence op-first, always.
+# secret-sync.sh — push credential(s) from 1Password (source of truth) to the sux Worker.
 #
-# The value flows op -> store through a pipe and is NEVER printed or written to disk.
+# op migrated FLAT -> NESTED (2026-07): a value now lives at op://Secrets/<ITEM>/<field>,
+# so a Worker-secret name is NOT its op path. scripts/secrets.map owns that mapping — this
+# script never guesses. GitHub Actions is no longer synced here: CI reads op directly at
+# runtime via 1password/load-secrets-action (see docs/secrets.md § CI).
 #
 # Usage:
-#   scripts/secret-sync.sh NAME --worker                 # op://Secrets/NAME/credential -> Worker
-#   scripts/secret-sync.sh NAME --github                 # -> GitHub Actions
-#   scripts/secret-sync.sh NAME --worker --github        # -> both
-#   scripts/secret-sync.sh NAME --worker --op op://Secrets/Some Item/credential
+#   scripts/secret-sync.sh <WORKER_SECRET>        # sync one
+#   scripts/secret-sync.sh --all                  # sync every op:// credential in the map
+#   scripts/secret-sync.sh <NAME|--all> --dry-run # show what would happen, touch nothing
 #
-# Prereqs: `op` signed in (biometric ok), `wrangler` authed with Workers:edit,
-# `gh` authed. See docs/secrets.md for which secret belongs in which store.
+# Prereqs: `op` signed in, `wrangler` authed (Workers:edit). Values are piped op->wrangler;
+# nothing is ever printed (Worker/GitHub stores are write-only anyway).
 set -euo pipefail
-. "$(dirname "$0")/op-auth.sh"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+MAP="$HERE/secrets.map"
+[ -f "$MAP" ] || { echo "missing $MAP" >&2; exit 1; }
 
-NAME="${1:?usage: secret-sync.sh NAME [--worker] [--github] [--op op://Vault/Item/field]}"
-shift || true
-
-OP_REF=""
-TO_WORKER=false
-TO_GITHUB=false
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --worker) TO_WORKER=true ;;
-    --github) TO_GITHUB=true ;;
-    --op)     OP_REF="${2:?--op needs an op:// reference}"; shift ;;
-    *) echo "unknown arg: $1" >&2; exit 2 ;;
+DRY=0; NAME=""
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY=1 ;;
+    --all)     NAME="--all" ;;
+    -*)        echo "unknown flag: $a" >&2; exit 2 ;;
+    *)         NAME="$a" ;;
   esac
-  shift
 done
+[ -n "$NAME" ] || { echo "usage: secret-sync.sh <WORKER_SECRET> | --all [--dry-run]" >&2; exit 2; }
 
-if ! $TO_WORKER && ! $TO_GITHUB; then
-  echo "specify at least one of --worker / --github" >&2; exit 2
+ref_for() { awk -F'\t' -v n="$1" '$0 !~ /^[[:space:]]*#/ && $1==n {print $2; exit}' "$MAP"; }
+
+sync_one() {
+  name="$1"; ref="$(ref_for "$name")"
+  case "$ref" in
+    "")         echo "x $name: not in secrets.map" >&2; return 1 ;;
+    @switch*)   echo ". $name: @switch — set by hand, not synced" ; return 0 ;;
+    @setting*)  echo ". $name: @setting — belongs in wrangler.jsonc [vars]" ; return 0 ;;
+    @missing*)  echo "x $name: @missing from op — re-source from origin" >&2; return 1 ;;
+    @confirm*)  echo "x $name: @confirm — verify op ref in secrets.map first" >&2; return 1 ;;
+    op://*)
+      if [ "$DRY" = 1 ]; then echo "would: $name <- $ref"; return 0; fi
+      op read "$ref" | npx wrangler secret put "$name" --config sux/wrangler.jsonc >/dev/null \
+        && echo "ok $name <- $ref" || { echo "x $name: put failed" >&2; return 1; } ;;
+    *) echo "x $name: unrecognized map value" >&2; return 1 ;;
+  esac
+}
+
+if [ "$NAME" = "--all" ]; then
+  rc=0
+  for n in $(awk -F'\t' '$0 !~ /^[[:space:]]*#/ && $2 ~ /^op:\/\// {print $1}' "$MAP"); do
+    sync_one "$n" || rc=1
+  done
+  exit $rc
+else
+  sync_one "$NAME"
 fi
-
-OP_REF="${OP_REF:-op://Secrets/$NAME/credential}"
-
-op_preflight || exit 1
-
-# Read once into a shell var (never echoed). Fail loudly on empty/missing.
-if ! val="$(op_read "$OP_REF" 2>/dev/null)"; then
-  echo "✗ could not read $OP_REF from 1Password (is the item there? is op signed in?)" >&2; exit 1
-fi
-[ -n "$val" ] || { echo "✗ empty value at $OP_REF" >&2; exit 1; }
-
-if $TO_WORKER; then
-  printf '%s' "$val" | npx wrangler secret put "$NAME" --config sux/wrangler.jsonc >/dev/null
-  echo "✓ Worker  $NAME  (from $OP_REF)"
-fi
-if $TO_GITHUB; then
-  printf '%s' "$val" | gh secret set "$NAME"
-  echo "✓ GitHub  $NAME  (from $OP_REF)"
-fi
-unset val
