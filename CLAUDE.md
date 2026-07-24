@@ -205,6 +205,11 @@ the wiki. Run `npm run ci` locally before pushing — mirrors the full CI gate
   reports the whole doc as "data", and a plain `grep`/`grep -n` over it silently returns ZERO
   matches for anything, even unrelated terms, with no error. Don't take that as "this isn't
   documented here"; use `grep -a` against this specific file (confirmed while building #803).
+  **`sux/src/fns/_vectorize.ts` has the same property** (`file` reports it as "data" too;
+  `grep -n "export"` silently returns nothing) — confirmed while building #1406. This is
+  evidently not a one-off; `grep -a` (or `rg -a`) is the safe default for any `.ts` source file
+  in this repo when a plain grep returns a suspiciously-empty result, not just for the one
+  doc file above.
 - **`fns/obsidian.ts`'s `readVaultIndexBlob`/`writeVaultIndexBlob` are a SINGLE KV key per vault
   repo+branch (`cache:vault:git:{repo}@{branch}:index`), single-owned by `vault-mcp.ts`'s
   `scanVault`/`buildVaultIndex` (the derived {path,fm,tags,links,...} scan behind backlinks/
